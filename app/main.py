@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.orm import Session
 import json
-from .database import get_db, engine
+from .database import get_db, get_engine
 from .schemas import MapDataRequest, MapDataResponse, MappingConfig
 from .processors.csv_processor import process_csv, process_excel
 from .processors.json_processor import process_json
@@ -60,10 +60,10 @@ async def map_data_endpoint(
         mapped_records = map_data(records, config)
 
         # Create table if needed
-        create_table_if_not_exists(engine, config)
+        create_table_if_not_exists(get_engine(), config)
 
         # Insert records
-        records_processed = insert_records(engine, config.table_name, mapped_records)
+        records_processed = insert_records(get_engine(), config.table_name, mapped_records)
 
         return MapDataResponse(
             success=True,

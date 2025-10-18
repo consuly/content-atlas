@@ -16,6 +16,8 @@ A Python FastAPI application that accepts documents (XML, JSON, CSV, Excel) with
 3. Start PostgreSQL: `docker-compose up -d db`
 4. Run the application: `uvicorn app.main:app --reload`
 
+**Note:** Ensure PostgreSQL is running before starting the application. The API will fail to start if it cannot connect to the database.
+
 ## API Usage
 
 ### POST /map-data
@@ -30,7 +32,7 @@ Upload a file and mapping configuration to map data to the database.
 ```json
 {
   "table_name": "customers",
-  "schema": {
+  "db_schema": {
     "id": "INTEGER",
     "name": "VARCHAR(255)",
     "email": "VARCHAR(255)"

@@ -9,7 +9,7 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
     table_name = config.table_name
     columns = []
 
-    for col_name, col_type in config.schema.items():
+    for col_name, col_type in config.db_schema.items():
         columns.append(f'"{col_name}" {col_type}')
 
     columns_sql = ', '.join(columns)

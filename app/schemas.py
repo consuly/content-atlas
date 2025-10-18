@@ -4,7 +4,7 @@ from pydantic import BaseModel
 
 class MappingConfig(BaseModel):
     table_name: str
-    schema: Dict[str, str]  # column_name: sql_type
+    db_schema: Dict[str, str]  # column_name: sql_type
     mappings: Dict[str, str]  # output_column: input_field
     rules: Optional[Dict[str, Any]] = {}
 
