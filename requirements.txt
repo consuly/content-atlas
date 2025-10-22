@@ -8,3 +8,5 @@ pydantic-settings==2.1.0
 python-multipart==0.0.6
 lxml==4.9.3
 pytest==7.4.3
+httpx==0.25.2
+b2sdk==1.30.1
