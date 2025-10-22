@@ -140,6 +140,51 @@ Extract top N rows from each sheet in an Excel file from Backblaze B2 and return
 - If a sheet has fewer rows than requested, returns all available rows
 - Supports both .xlsx and .xls file formats
 
+### POST /detect-b2-mapping
+
+Analyze a CSV or Excel file from Backblaze B2 and return the auto-detected mapping configuration.
+
+**Request Body:**
+```json
+{
+  "file_name": "data/customers.csv"
+}
+```
+
+**Parameters:**
+- `file_name`: The name/key of the CSV or Excel file in the B2 bucket
+
+**Response:**
+```json
+{
+  "success": true,
+  "file_type": "csv",
+  "detected_mapping": {
+    "table_name": "customers",
+    "db_schema": {
+      "id": "INTEGER",
+      "name": "VARCHAR(255)",
+      "email": "VARCHAR(255)"
+    },
+    "mappings": {
+      "id": "Customer ID",
+      "name": "Customer Name",
+      "email": "Email Address"
+    },
+    "rules": {}
+  },
+  "columns_found": ["Customer ID", "Customer Name", "Email Address"],
+  "rows_sampled": 100
+}
+```
+
+**Notes:**
+- Only supports CSV and Excel files (.csv, .xlsx, .xls)
+- Automatically detects column data types (INTEGER, DECIMAL, TIMESTAMP, VARCHAR)
+- Generates SQL-safe table and column names
+- Table name is derived from the filename
+- Returns the complete mapping configuration that can be used with `/map-b2-data`
+
 ## Development
 
 - API documentation available at `http://localhost:8000/docs`

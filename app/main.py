@@ -2,11 +2,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.orm import Session
 import json
 from .database import get_db, get_engine
-from .schemas import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, ExtractB2ExcelRequest, ExtractExcelCsvResponse
+from .schemas import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, ExtractB2ExcelRequest, ExtractExcelCsvResponse, DetectB2MappingRequest, DetectB2MappingResponse
 from .processors.csv_processor import process_csv, process_excel, extract_excel_sheets_to_csv
 from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
-from .mapper import map_data
+from .mapper import map_data, detect_mapping_from_file
 from .models import create_table_if_not_exists, insert_records
 from .config import settings
 from .b2_utils import download_file_from_b2
@@ -131,6 +131,29 @@ async def extract_b2_excel_csv_endpoint(request: ExtractB2ExcelRequest):
         return ExtractExcelCsvResponse(
             success=True,
             sheets=sheets_csv
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/detect-b2-mapping", response_model=DetectB2MappingResponse)
+async def detect_b2_mapping_endpoint(request: DetectB2MappingRequest):
+    try:
+        # Download file from B2
+        file_content = download_file_from_b2(request.file_name)
+
+        # Detect mapping from file
+        file_type, detected_mapping, columns_found, rows_sampled = detect_mapping_from_file(
+            file_content, request.file_name
+        )
+
+        return DetectB2MappingResponse(
+            success=True,
+            file_type=file_type,
+            detected_mapping=detected_mapping,
+            columns_found=columns_found,
+            rows_sampled=rows_sampled
         )
 
     except Exception as e:

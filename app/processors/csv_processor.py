@@ -12,7 +12,15 @@ def process_csv(file_content: bytes) -> List[Dict[str, Any]]:
 
 def process_excel(file_content: bytes) -> List[Dict[str, Any]]:
     """Process Excel file and return list of dictionaries."""
-    df = pd.read_excel(io.BytesIO(file_content))
+    # Try openpyxl first (works for both .xlsx and .xls in many cases)
+    try:
+        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl')
+    except Exception:
+        # Fallback to default pandas engine
+        try:
+            df = pd.read_excel(io.BytesIO(file_content))
+        except Exception as e:
+            raise ValueError(f"Could not read Excel file: {str(e)}")
     return df.to_dict('records')
 
 
@@ -28,7 +36,14 @@ def extract_excel_sheets_to_csv(file_content: bytes, rows: int = 100) -> Dict[st
         Dict with sheet names as keys and CSV strings as values
     """
     # Read all sheets
-    sheets_dict = pd.read_excel(io.BytesIO(file_content), sheet_name=None)
+    try:
+        sheets_dict = pd.read_excel(io.BytesIO(file_content), sheet_name=None, engine='openpyxl')
+    except Exception:
+        # Fallback to default pandas engine
+        try:
+            sheets_dict = pd.read_excel(io.BytesIO(file_content), sheet_name=None)
+        except Exception as e:
+            raise ValueError(f"Could not read Excel file: {str(e)}")
 
     result = {}
     for sheet_name, df in sheets_dict.items():

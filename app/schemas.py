@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -33,3 +33,15 @@ class ExtractB2ExcelRequest(BaseModel):
 class ExtractExcelCsvResponse(BaseModel):
     success: bool
     sheets: Dict[str, str]  # sheet_name: csv_string
+
+
+class DetectB2MappingRequest(BaseModel):
+    file_name: str  # B2 file name/key
+
+
+class DetectB2MappingResponse(BaseModel):
+    success: bool
+    file_type: str  # 'csv' or 'excel'
+    detected_mapping: MappingConfig
+    columns_found: List[str]
+    rows_sampled: int

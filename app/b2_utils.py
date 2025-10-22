@@ -27,8 +27,8 @@ def download_file_from_b2(file_name: str) -> bytes:
     b2_api = get_b2_api()
     bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
 
-    # Download to memory
-    download_dest = io.BytesIO()
-    bucket.download_file_by_name(file_name, download_dest)
+    # Download file - bucket.download_file_by_name returns a DownloadedFile object
+    downloaded_file = bucket.download_file_by_name(file_name)
 
-    return download_dest.getvalue()
+    # Get the content from the response
+    return downloaded_file.response.content
