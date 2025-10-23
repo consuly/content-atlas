@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Dict
 from .database import get_db, get_engine
-from .schemas import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, ExtractB2ExcelRequest, ExtractExcelCsvResponse, DetectB2MappingRequest, DetectB2MappingResponse, TablesListResponse, TableInfo, TableSchemaResponse, ColumnInfo, TableDataResponse, TableStatsResponse, MapB2DataAsyncRequest, AsyncTaskStatus
+from .schemas import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, ExtractB2ExcelRequest, ExtractExcelCsvResponse, DetectB2MappingRequest, DetectB2MappingResponse, TablesListResponse, TableInfo, TableSchemaResponse, ColumnInfo, TableDataResponse, TableStatsResponse, MapB2DataAsyncRequest, AsyncTaskStatus, QueryDatabaseRequest, QueryDatabaseResponse
 from .processors.csv_processor import process_csv, process_excel, process_large_excel, extract_excel_sheets_to_csv
 from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
@@ -12,6 +12,7 @@ from .mapper import map_data, detect_mapping_from_file
 from .models import create_table_if_not_exists, insert_records
 from .config import settings
 from .b2_utils import download_file_from_b2
+from .query_agent import query_database_with_agent
 
 app = FastAPI(title="Data Mapper API", version="1.0.0")
 
@@ -460,6 +461,26 @@ async def get_task_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
 
     return task_storage[task_id]
+
+
+@app.post("/query-database", response_model=QueryDatabaseResponse)
+async def query_database_endpoint(request: QueryDatabaseRequest):
+    """Execute natural language queries against the database using LangChain agent."""
+    try:
+        result = query_database_with_agent(request.prompt)
+
+        return QueryDatabaseResponse(
+            success=result["success"],
+            response=result["response"],
+            executed_sql=result.get("executed_sql"),
+            data_csv=result.get("data_csv"),
+            execution_time_seconds=result.get("execution_time_seconds"),
+            rows_returned=result.get("rows_returned"),
+            error=result.get("error")
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
 @app.get("/")

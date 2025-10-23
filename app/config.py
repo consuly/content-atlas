@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     b2_application_key: str = ""
     b2_bucket_name: str = ""
 
+    # LangChain API Keys
+    anthropic_api_key: str = ""
+    google_api_key: str = ""  # For future Gemini support
+
     class Config:
         env_file = ".env"
 

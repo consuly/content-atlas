@@ -1,5 +1,8 @@
+import os
+import re
 import time
 import urllib.parse
+import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -110,3 +113,17 @@ def test_map_b2_data_real_file():
     else:
         # Timeout reached
         assert False, f"Task did not complete within {timeout} seconds"
+
+
+@pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")
+def test_query_database_endpoint_exists():
+    """Test that query-database endpoint exists and handles requests."""
+    # Test endpoint exists (will fail due to no database, but confirms endpoint)
+    response = client.post("/query-database", json={"prompt": "test query"})
+    # Should return 200 - agent handles requests gracefully
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] == True
+    assert "response" in data
+    # Agent either provides data or explains database issues
+    assert len(data["response"]) > 0

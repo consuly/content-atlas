@@ -100,3 +100,19 @@ class AsyncTaskStatus(BaseModel):
     progress: Optional[int] = None  # percentage 0-100
     message: Optional[str] = None
     result: Optional[MapDataResponse] = None
+
+
+# Natural Language Query Endpoints
+class QueryDatabaseRequest(BaseModel):
+    prompt: str = Field(..., description="Natural language query to execute against the database")
+    max_rows: Optional[int] = Field(default=1000, ge=1, le=10000, description="Maximum number of rows to return")
+
+
+class QueryDatabaseResponse(BaseModel):
+    success: bool
+    response: str = Field(..., description="Natural language explanation of the query and results")
+    executed_sql: Optional[str] = Field(None, description="The SQL query that was executed")
+    data_csv: Optional[str] = Field(None, description="Query results formatted as CSV string")
+    execution_time_seconds: Optional[float] = Field(None, description="Time taken to execute the query")
+    rows_returned: Optional[int] = Field(None, description="Number of rows returned by the query")
+    error: Optional[str] = Field(None, description="Error message if the query failed")
