@@ -185,6 +185,236 @@ Analyze a CSV or Excel file from Backblaze B2 and return the auto-detected mappi
 - Table name is derived from the filename
 - Returns the complete mapping configuration that can be used with `/map-b2-data`
 
+## Frontend Integration Endpoints
+
+### GET /tables
+
+List all dynamically created tables in the database.
+
+**Response:**
+```json
+{
+  "success": true,
+  "tables": [
+    {
+      "table_name": "customers",
+      "row_count": 1500
+    },
+    {
+      "table_name": "products",
+      "row_count": 250
+    }
+  ]
+}
+```
+
+### GET /tables/{table_name}
+
+Query data from a specific table with pagination.
+
+**Parameters:**
+- `limit`: Number of records to return (default: 100, max: 1000)
+- `offset`: Number of records to skip (default: 0)
+
+**Response:**
+```json
+{
+  "success": true,
+  "table_name": "customers",
+  "data": [
+    {"id": 1, "name": "John Doe", "email": "john@example.com"},
+    {"id": 2, "name": "Jane Smith", "email": "jane@example.com"}
+  ],
+  "total_rows": 1500,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### GET /tables/{table_name}/schema
+
+Get the column schema and metadata for a table.
+
+**Response:**
+```json
+{
+  "success": true,
+  "table_name": "customers",
+  "columns": [
+    {"name": "id", "type": "integer", "nullable": false},
+    {"name": "name", "type": "character varying", "nullable": true},
+    {"name": "email", "type": "character varying", "nullable": true}
+  ]
+}
+```
+
+### GET /tables/{table_name}/stats
+
+Get basic statistics for a table.
+
+**Response:**
+```json
+{
+  "success": true,
+  "table_name": "customers",
+  "total_rows": 1500,
+  "columns_count": 3,
+  "data_types": {
+    "name": "character varying",
+    "email": "character varying",
+    "created_at": "timestamp without time zone"
+  }
+}
+```
+
+## Async Processing
+
+### POST /map-b2-data-async
+
+Start asynchronous processing of large files from Backblaze B2.
+
+**Request Body:**
+```json
+{
+  "file_name": "data/large_file.xlsx",
+  "mapping": {
+    "table_name": "large_dataset",
+    "db_schema": {
+      "id": "INTEGER",
+      "name": "VARCHAR(255)",
+      "value": "DECIMAL"
+    },
+    "mappings": {
+      "name": "Name",
+      "value": "Value"
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending",
+  "message": "Task queued for processing"
+}
+```
+
+### GET /tasks/{task_id}
+
+Check the status of an async processing task.
+
+**Response:**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "processing",
+  "progress": 60,
+  "message": "Mapping data...",
+  "result": null
+}
+```
+
+**Completed Response:**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "progress": 100,
+  "message": "Processing completed successfully",
+  "result": {
+    "success": true,
+    "message": "B2 data mapped and inserted successfully",
+    "records_processed": 50000,
+    "table_name": "large_dataset"
+  }
+}
+```
+
+## Complete Testing Strategy
+
+### Environment Setup
+
+1. **Start the complete stack:**
+```bash
+docker-compose up -d
+```
+
+2. **Verify services are running:**
+```bash
+docker-compose ps
+```
+
+### Data Processing Pipeline Testing
+
+1. **Test schema detection:**
+```bash
+POST /detect-b2-mapping
+{
+  "file_name": "test_data/sample.csv"
+}
+```
+
+2. **Test data preview:**
+```bash
+POST /extract-b2-excel-csv
+{
+  "file_name": "test_data/sample.xlsx",
+  "rows": 100
+}
+```
+
+3. **Test full processing:**
+```bash
+POST /map-b2-data
+{
+  "file_name": "test_data/sample.xlsx",
+  "mapping": {...}
+}
+```
+
+### Frontend Integration Testing
+
+4. **Test table listing:**
+```bash
+GET /tables
+```
+
+5. **Test data queries:**
+```bash
+GET /tables/customers?limit=1000
+GET /tables/customers/schema
+GET /tables/customers/stats
+```
+
+### Large File Testing
+
+6. **Test chunked processing (>50MB files):**
+```bash
+POST /map-b2-data
+# Upload a file >50MB to test chunked processing
+```
+
+7. **Test async processing:**
+```bash
+POST /map-b2-data-async
+{
+  "file_name": "large_data/huge_file.xlsx",
+  "mapping": {...}
+}
+
+# Check progress
+GET /tasks/{task_id}
+```
+
+### Performance Validation
+
+- Files >50MB should use chunked processing automatically
+- Async processing should handle long-running tasks without timeouts
+- Database queries should support pagination for large datasets
+- Memory usage should remain stable during processing
+
 ## Development
 
 - API documentation available at `http://localhost:8000/docs`
@@ -196,3 +426,16 @@ Build and run with Docker:
 ```bash
 docker build -t data-mapper .
 docker run -p 8000:8000 data-mapper
+```
+
+**Complete Stack with Docker Compose:**
+```bash
+# Start everything
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```

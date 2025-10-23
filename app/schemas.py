@@ -45,3 +45,58 @@ class DetectB2MappingResponse(BaseModel):
     detected_mapping: MappingConfig
     columns_found: List[str]
     rows_sampled: int
+
+
+# Frontend Query Endpoints
+class TableInfo(BaseModel):
+    table_name: str
+    created_at: Optional[str] = None
+    row_count: Optional[int] = None
+
+
+class TablesListResponse(BaseModel):
+    success: bool
+    tables: List[TableInfo]
+
+
+class ColumnInfo(BaseModel):
+    name: str
+    type: str
+    nullable: bool = True
+
+
+class TableSchemaResponse(BaseModel):
+    success: bool
+    table_name: str
+    columns: List[ColumnInfo]
+
+
+class TableDataResponse(BaseModel):
+    success: bool
+    table_name: str
+    data: List[Dict[str, Any]]
+    total_rows: int
+    limit: int
+    offset: int
+
+
+class TableStatsResponse(BaseModel):
+    success: bool
+    table_name: str
+    total_rows: int
+    columns_count: int
+    data_types: Dict[str, str]
+
+
+# Async Processing
+class MapB2DataAsyncRequest(BaseModel):
+    file_name: str
+    mapping: MappingConfig
+
+
+class AsyncTaskStatus(BaseModel):
+    task_id: str
+    status: str  # 'pending', 'processing', 'completed', 'failed'
+    progress: Optional[int] = None  # percentage 0-100
+    message: Optional[str] = None
+    result: Optional[MapDataResponse] = None

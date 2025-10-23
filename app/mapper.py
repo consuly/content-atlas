@@ -53,7 +53,7 @@ def detect_column_type(series: pd.Series) -> str:
         if all(pd.to_numeric(sample_values, errors='coerce').dropna() == sample_values.astype(int)):
             return "INTEGER"
         else:
-            return "DECIMAL(10,2)"
+            return "DECIMAL"
     except (ValueError, TypeError):
         pass
 
@@ -64,10 +64,8 @@ def detect_column_type(series: pd.Series) -> str:
     except (ValueError, TypeError):
         pass
 
-    # Default to VARCHAR with reasonable length
-    max_length = max(len(str(val)) for val in sample_values) if len(sample_values) > 0 else 255
-    varchar_length = min(max(max_length * 2, 50), 1000)  # Min 50, max 1000, double the max length
-    return f"VARCHAR({varchar_length})"
+    # Use TEXT for all string columns to avoid length issues
+    return "TEXT"
 
 
 def detect_mapping_from_file(file_content: bytes, file_name: str) -> tuple[str, MappingConfig, List[str], int]:
@@ -108,6 +106,10 @@ def detect_mapping_from_file(file_content: bytes, file_name: str) -> tuple[str, 
         table_name = 'auto_detected_table'
     if not table_name[0].isalpha():
         table_name = 'table_' + table_name
+
+    # Add timestamp to make table name unique for testing
+    import time
+    table_name = f"{table_name}_{int(time.time())}"
 
     # Detect schema types
     db_schema = {}

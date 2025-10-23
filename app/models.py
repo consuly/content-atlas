@@ -42,9 +42,8 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
 
     with engine.connect() as conn:
         for record in records:
-            # Clean None values or handle them
-            clean_record = {k: v for k, v in record.items() if v is not None}
-            conn.execute(text(insert_sql), clean_record)
+            # Keep None values as they should be inserted as NULL
+            conn.execute(text(insert_sql), record)
         conn.commit()
 
     return len(records)
