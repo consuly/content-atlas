@@ -5,7 +5,7 @@ openpyxl==3.1.2
 xlrd==2.0.1
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
-pydantic==2.5.0
+pydantic>=2.7.4
 pydantic-settings==2.1.0
 python-multipart==0.0.6
 lxml==4.9.3
@@ -16,3 +16,4 @@ langchain>=1.0.0
 langchain-anthropic>=0.2.0
 langchain-google-genai>=2.0.0
 langchain-core>=0.3.0
+rich>=13.0.0

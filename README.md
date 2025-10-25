@@ -415,6 +415,45 @@ GET /tasks/{task_id}
 - Database queries should support pagination for large datasets
 - Memory usage should remain stable during processing
 
+## Console Interface
+
+The application includes an interactive console for running natural language database queries directly from the terminal.
+
+### Starting the Console
+
+```bash
+# Interactive mode
+python -m app.console
+
+# Single query mode
+python -m app.console "Show me all customers"
+```
+
+### Console Features
+
+- **Natural Language Queries**: Ask questions in plain English (e.g., "What are the top 5 products by sales?")
+- **Rich Formatting**: Colorized output with formatted tables and panels
+- **SQL Display**: Shows the generated SQL queries
+- **Query History**: Track your previous queries
+- **Help System**: Built-in help and command reference
+
+### Console Commands
+
+- `help` - Show available commands
+- `history` - View query history
+- `clear` - Clear the screen
+- `exit` or `quit` - Exit the console
+
+### Environment Setup
+
+Make sure you have the required environment variables set:
+
+```bash
+export ANTHROPIC_API_KEY="your-anthropic-api-key-here"
+```
+
+The console will check for this key on startup and provide helpful error messages if it's missing.
+
 ## Development
 
 - API documentation available at `http://localhost:8000/docs`
