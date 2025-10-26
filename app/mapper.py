@@ -150,7 +150,7 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
 
     # Check if they look like dates - use TEXT for flexibility in date formats
     try:
-        pd.to_datetime(sample_values, errors='raise')
+        pd.to_datetime(sample_values, errors='raise', format='mixed')
 
         # If datetime transformation rules exist, test if conversion works
         if has_datetime_transformation:
