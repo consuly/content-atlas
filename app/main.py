@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, BackgroundTasks
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 import json
 import uuid
@@ -9,7 +10,7 @@ from .processors.csv_processor import process_csv, process_excel, process_large_
 from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
 from .mapper import map_data, detect_mapping_from_file
-from .models import create_table_if_not_exists, insert_records
+from .models import create_table_if_not_exists, insert_records, DuplicateDataException, FileAlreadyImportedException
 from .config import settings
 from .b2_utils import download_file_from_b2
 from .query_agent import query_database_with_agent
@@ -45,7 +46,9 @@ async def map_data_endpoint(
         if not mapping_json:
             raise HTTPException(status_code=400, detail="Mapping configuration required")
         mapping_data = json.loads(mapping_json)
+        print(f"DEBUG: Parsed mapping data: {mapping_data}")
         config = MappingConfig(**mapping_data)
+        print(f"DEBUG: Created config with duplicate_check: {config.duplicate_check}")
 
         # Read file content
         file_content = await file.read()
@@ -64,13 +67,13 @@ async def map_data_endpoint(
             raise HTTPException(status_code=400, detail="Unsupported file type")
 
         # Map data
-        mapped_records = map_data(records, config)
+        mapped_records, errors = map_data(records, config)
 
         # Create table if needed
         create_table_if_not_exists(get_engine(), config)
 
         # Insert records
-        records_processed = insert_records(get_engine(), config.table_name, mapped_records)
+        records_processed = insert_records(get_engine(), config.table_name, mapped_records, config=config, file_content=file_content, file_name=file.filename)
 
         return MapDataResponse(
             success=True,
@@ -79,6 +82,10 @@ async def map_data_endpoint(
             table_name=config.table_name
         )
 
+    except FileAlreadyImportedException as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except DuplicateDataException as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -110,13 +117,13 @@ async def map_b2_data_endpoint(
             raise HTTPException(status_code=400, detail="Unsupported file type")
 
         # Map data
-        mapped_records = map_data(records, request.mapping)
+        mapped_records, errors = map_data(records, request.mapping)
 
         # Create table if needed
         create_table_if_not_exists(get_engine(), request.mapping)
 
         # Insert records
-        records_processed = insert_records(get_engine(), request.mapping.table_name, mapped_records)
+        records_processed = insert_records(get_engine(), request.mapping.table_name, mapped_records, config=request.mapping, file_content=file_content, file_name=request.file_name)
 
         return MapDataResponse(
             success=True,
@@ -125,6 +132,10 @@ async def map_b2_data_endpoint(
             table_name=request.mapping.table_name
         )
 
+    except FileAlreadyImportedException as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except DuplicateDataException as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -388,7 +399,7 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
         )
 
         # Map data
-        mapped_records = map_data(records, mapping)
+        mapped_records, errors = map_data(records, mapping)
 
         task_storage[task_id] = AsyncTaskStatus(
             task_id=task_id,
@@ -401,7 +412,7 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
         create_table_if_not_exists(get_engine(), mapping)
 
         # Insert records
-        records_processed = insert_records(get_engine(), mapping.table_name, mapped_records)
+        records_processed = insert_records(get_engine(), mapping.table_name, mapped_records, config=mapping, file_content=file_content, file_name=file_name)
 
         # Update task as completed
         result = MapDataResponse(
@@ -419,6 +430,20 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
             result=result
         )
 
+    except FileAlreadyImportedException as e:
+        # Update task as failed due to duplicate file
+        task_storage[task_id] = AsyncTaskStatus(
+            task_id=task_id,
+            status="failed",
+            message=str(e)
+        )
+    except DuplicateDataException as e:
+        # Update task as failed due to duplicate data
+        task_storage[task_id] = AsyncTaskStatus(
+            task_id=task_id,
+            status="failed",
+            message=str(e)
+        )
     except Exception as e:
         # Update task as failed
         task_storage[task_id] = AsyncTaskStatus(

@@ -2,10 +2,20 @@ from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
 
+class DuplicateCheckConfig(BaseModel):
+    enabled: bool = True
+    check_file_level: bool = True  # Check if entire file was already imported
+    uniqueness_columns: Optional[List[str]] = None  # Columns to check for uniqueness (None = all columns)
+    allow_duplicates: bool = False  # If true, skip duplicate checking entirely
+    force_import: bool = False  # If true, force import even with duplicates
+    error_message: Optional[str] = "Duplicate data detected. The uploaded data overlaps with existing records."
+
+
 class MappingConfig(BaseModel):
     table_name: str
     db_schema: Dict[str, str]  # column_name: sql_type
     mappings: Dict[str, str]  # output_column: input_field
+    duplicate_check: Optional[DuplicateCheckConfig] = DuplicateCheckConfig()
     rules: Optional[Dict[str, Any]] = {}
 
 
