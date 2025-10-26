@@ -1,10 +1,14 @@
 import hashlib
 from sqlalchemy import text, MetaData
 from sqlalchemy.engine import Engine
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from decimal import Decimal
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 from .schemas import MappingConfig
+
+logger = logging.getLogger(__name__)
 
 
 class DuplicateDataException(Exception):
@@ -468,14 +472,237 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
     return len(records)
 
 
+def _check_chunk_for_duplicates(
+    engine: Engine,
+    table_name: str,
+    chunk_records: List[Dict[str, Any]],
+    config: MappingConfig,
+    chunk_num: int,
+    existing_data_cache: Any = None
+) -> Tuple[int, int]:
+    """
+    Check a single chunk for duplicates. Designed to be called in parallel.
+    
+    Args:
+        engine: Database engine
+        table_name: Name of the table
+        chunk_records: Records in this chunk
+        config: Mapping configuration
+        chunk_num: Chunk number (for logging)
+        existing_data_cache: Pre-loaded existing data (optional, for optimization)
+    
+    Returns:
+        Tuple of (chunk_num, duplicates_found)
+    """
+    import pandas as pd
+    
+    logger.info(f"Checking chunk {chunk_num} for duplicates ({len(chunk_records)} records)")
+    
+    if not chunk_records:
+        return (chunk_num, 0)
+    
+    # Determine which columns to check for uniqueness
+    if config.duplicate_check.uniqueness_columns:
+        uniqueness_columns = config.duplicate_check.uniqueness_columns
+    else:
+        uniqueness_columns = list(chunk_records[0].keys())
+    
+    # Convert chunk records to DataFrame with type coercion
+    coerced_records = []
+    for record in chunk_records:
+        coerced_record = {}
+        for col_name, value in record.items():
+            if col_name in config.db_schema:
+                sql_type = config.db_schema[col_name]
+                coerced_record[col_name] = coerce_value_for_sql_type(value, sql_type)
+            else:
+                coerced_record[col_name] = value
+        coerced_records.append(coerced_record)
+    
+    new_df = pd.DataFrame(coerced_records)
+    
+    # Load existing data if not cached
+    if existing_data_cache is None:
+        with engine.connect() as conn:
+            # Check if table exists and has data
+            table_exists_result = conn.execute(text("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = :table_name
+            """), {"table_name": table_name})
+            table_exists = table_exists_result.scalar() > 0
+            
+            if not table_exists:
+                logger.info(f"Chunk {chunk_num}: Table does not exist yet, no duplicates possible")
+                return (chunk_num, 0)
+            
+            # Get row count
+            count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+            row_count = count_result.scalar()
+            
+            if row_count == 0:
+                logger.info(f"Chunk {chunk_num}: Table is empty, no duplicates possible")
+                return (chunk_num, 0)
+            
+            # Load existing data
+            columns_sql = ', '.join([f'"{col}"' for col in uniqueness_columns])
+            query = f'SELECT {columns_sql} FROM "{table_name}"'
+            existing_df = pd.read_sql(query, conn)
+    else:
+        existing_df = existing_data_cache
+    
+    if len(existing_df) == 0:
+        logger.info(f"Chunk {chunk_num}: No existing data to compare against")
+        return (chunk_num, 0)
+    
+    # Prepare data for comparison
+    new_df_subset = new_df[uniqueness_columns].copy()
+    
+    # Convert data types to ensure proper comparison
+    for col in uniqueness_columns:
+        new_df_subset[col] = new_df_subset[col].where(pd.notna(new_df_subset[col]), None)
+        existing_df[col] = existing_df[col].where(pd.notna(existing_df[col]), None)
+        
+        if col in config.db_schema:
+            sql_type = config.db_schema[col].upper()
+            if 'INTEGER' in sql_type:
+                new_df_subset[col] = pd.to_numeric(new_df_subset[col], errors='coerce').astype('Int64')
+                existing_df[col] = pd.to_numeric(existing_df[col], errors='coerce').astype('Int64')
+            elif 'DECIMAL' in sql_type or 'NUMERIC' in sql_type:
+                new_df_subset[col] = pd.to_numeric(new_df_subset[col], errors='coerce')
+                existing_df[col] = pd.to_numeric(existing_df[col], errors='coerce')
+            else:
+                new_df_subset[col] = new_df_subset[col].astype(str).replace('None', None)
+                existing_df[col] = existing_df[col].astype(str).replace('None', None)
+    
+    # Use merge to find duplicates
+    merged = new_df_subset.merge(
+        existing_df,
+        on=uniqueness_columns,
+        how='left',
+        indicator=True
+    )
+    
+    duplicates = merged[merged['_merge'] == 'both']
+    total_duplicates = len(duplicates)
+    
+    if total_duplicates > 0:
+        logger.warning(f"Chunk {chunk_num}: Found {total_duplicates} duplicate rows")
+    else:
+        logger.info(f"Chunk {chunk_num}: No duplicates found")
+    
+    return (chunk_num, total_duplicates)
+
+
+def _check_chunks_parallel(
+    engine: Engine,
+    table_name: str,
+    chunks: List[List[Dict[str, Any]]],
+    config: MappingConfig,
+    max_workers: int = 4
+) -> int:
+    """
+    Check multiple chunks for duplicates in parallel.
+    
+    Args:
+        engine: Database engine
+        table_name: Name of the table
+        chunks: List of record chunks
+        config: Mapping configuration
+        max_workers: Maximum number of parallel workers
+    
+    Returns:
+        Total number of duplicates found across all chunks
+    
+    Raises:
+        DuplicateDataException: If any duplicates are found
+    """
+    import pandas as pd
+    
+    logger.info(f"Starting parallel duplicate check for {len(chunks)} chunks with {max_workers} workers")
+    
+    # Pre-load existing data once (shared across all workers)
+    existing_data_cache = None
+    if config.duplicate_check.uniqueness_columns:
+        uniqueness_columns = config.duplicate_check.uniqueness_columns
+    else:
+        # Use first chunk to determine columns
+        uniqueness_columns = list(chunks[0][0].keys()) if chunks and chunks[0] else []
+    
+    if uniqueness_columns:
+        with engine.connect() as conn:
+            # Check if table exists and has data
+            table_exists_result = conn.execute(text("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = :table_name
+            """), {"table_name": table_name})
+            table_exists = table_exists_result.scalar() > 0
+            
+            if table_exists:
+                count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+                row_count = count_result.scalar()
+                
+                if row_count > 0:
+                    columns_sql = ', '.join([f'"{col}"' for col in uniqueness_columns])
+                    query = f'SELECT {columns_sql} FROM "{table_name}"'
+                    existing_data_cache = pd.read_sql(query, conn)
+                    logger.info(f"Pre-loaded {len(existing_data_cache)} existing rows for comparison")
+    
+    # If no existing data, no duplicates possible
+    if existing_data_cache is None or len(existing_data_cache) == 0:
+        logger.info("No existing data to check against, skipping duplicate check")
+        return 0
+    
+    # Check chunks in parallel
+    total_duplicates = 0
+    duplicate_chunks = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all chunk checks
+        future_to_chunk = {
+            executor.submit(
+                _check_chunk_for_duplicates,
+                engine,
+                table_name,
+                chunk_records,
+                config,
+                chunk_num + 1,
+                existing_data_cache
+            ): chunk_num
+            for chunk_num, chunk_records in enumerate(chunks)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_chunk):
+            chunk_num = future_to_chunk[future]
+            try:
+                result_chunk_num, duplicates_found = future.result()
+                if duplicates_found > 0:
+                    total_duplicates += duplicates_found
+                    duplicate_chunks.append(result_chunk_num)
+                    logger.warning(f"Chunk {result_chunk_num} has {duplicates_found} duplicates")
+            except Exception as e:
+                logger.error(f"Error checking chunk {chunk_num + 1}: {e}")
+                raise
+    
+    # If duplicates found, raise exception
+    if total_duplicates > 0:
+        error_message = config.duplicate_check.error_message or \
+            f"Duplicate data detected. {total_duplicates} records overlap with existing data in {len(duplicate_chunks)} chunk(s)."
+        logger.error(f"Parallel duplicate check failed: {error_message}")
+        raise DuplicateDataException(table_name, total_duplicates, error_message)
+    
+    logger.info(f"Parallel duplicate check completed successfully - no duplicates found")
+    return 0
+
+
 def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig, file_content: bytes, file_name: str, chunk_size: int):
     """
     Insert records in chunks for better performance with large datasets.
-    This approach:
-    1. Checks file-level duplicates once upfront
-    2. Processes records in chunks to manage memory
-    3. Checks each chunk for row-level duplicates
-    4. Inserts non-duplicate chunks efficiently using bulk insert
+    This approach uses two-phase parallel processing:
+    1. Phase 1: Check all chunks for duplicates in parallel (CPU-intensive)
+    2. Phase 2: Insert all chunks sequentially (I/O-intensive, avoids race conditions)
+    
+    This provides significant speedup while maintaining data integrity.
     """
     import pandas as pd
     
@@ -493,31 +720,38 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
                 print("DEBUG: Raising FileAlreadyImportedException")
                 raise FileAlreadyImportedException(file_hash, table_name)
     
-    # Process records in chunks
-    total_inserted = 0
-    total_duplicates_found = 0
-    
+    # Split records into chunks
+    chunks = []
     for chunk_start in range(0, total_records, chunk_size):
         chunk_end = min(chunk_start + chunk_size, total_records)
         chunk_records = records[chunk_start:chunk_end]
-        chunk_num = (chunk_start // chunk_size) + 1
-        total_chunks = (total_records + chunk_size - 1) // chunk_size
-        
-        print(f"DEBUG: Processing chunk {chunk_num}/{total_chunks} ({len(chunk_records)} records)")
-        
-        # Check for duplicates in this chunk
-        if config and config.duplicate_check and config.duplicate_check.enabled and not config.duplicate_check.force_import:
-            if not config.duplicate_check.allow_duplicates:
-                try:
-                    with engine.connect() as check_conn:
-                        _check_for_duplicates(check_conn, table_name, chunk_records, config)
-                except DuplicateDataException as e:
-                    # Accumulate duplicate count and continue or raise based on strategy
-                    total_duplicates_found += e.duplicates_found
-                    print(f"DEBUG: Found {e.duplicates_found} duplicates in chunk {chunk_num}")
-                    # For now, raise immediately on first duplicate chunk
-                    # In future, could implement partial import strategy
-                    raise
+        chunks.append(chunk_records)
+    
+    total_chunks = len(chunks)
+    logger.info(f"Split {total_records} records into {total_chunks} chunks of {chunk_size}")
+    
+    # PHASE 1: Parallel duplicate checking (CPU-intensive)
+    if config and config.duplicate_check and config.duplicate_check.enabled and not config.duplicate_check.force_import:
+        if not config.duplicate_check.allow_duplicates:
+            logger.info("Phase 1: Starting parallel duplicate check")
+            # Determine number of workers based on CPU count (max 4 to avoid overwhelming the system)
+            import os
+            max_workers = min(4, os.cpu_count() or 2)
+            logger.info(f"Using {max_workers} parallel workers for duplicate checking")
+            
+            try:
+                _check_chunks_parallel(engine, table_name, chunks, config, max_workers)
+                logger.info("Phase 1: Parallel duplicate check completed - no duplicates found")
+            except DuplicateDataException as e:
+                logger.error(f"Phase 1: Duplicate check failed - {e.message}")
+                raise
+    
+    # PHASE 2: Sequential insertion (I/O-intensive, avoids race conditions)
+    logger.info("Phase 2: Starting sequential chunk insertion")
+    total_inserted = 0
+    
+    for chunk_num, chunk_records in enumerate(chunks, start=1):
+        print(f"DEBUG: Inserting chunk {chunk_num}/{total_chunks} ({len(chunk_records)} records)")
         
         # Insert chunk using bulk insert for better performance
         columns = list(chunk_records[0].keys())

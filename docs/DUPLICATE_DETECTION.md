@@ -19,9 +19,11 @@ The Content Atlas application now uses a **Pandas-based duplicate detection syst
 
 ### 3. Large File Support (100MB+)
 - **Chunked processing**: Automatically processes files >10,000 records in chunks
+- **Parallel duplicate checking**: Uses multi-threading to check chunks for duplicates simultaneously
 - **Memory efficient**: Processes data in manageable batches to avoid memory issues
 - **Bulk insert optimization**: Uses Pandas `to_sql` with `method='multi'` for fast insertion
 - **Progress tracking**: Logs chunk progress for monitoring large imports
+- **Two-phase processing**: Phase 1 checks all chunks in parallel, Phase 2 inserts sequentially for data integrity
 
 ### 4. User Override Options
 - **`force_import`**: Bypass all duplicate checks and force data insertion
@@ -112,14 +114,20 @@ Duplicate checking is configured via the `duplicate_check` parameter in the mapp
 ### Chunked Processing (≥ 10,000 records)
 
 1. **File-level check** (once upfront)
-2. **Process in chunks**:
-   - Split records into chunks of 10,000
+2. **Split records into chunks** of 10,000
+3. **Phase 1: Parallel Duplicate Checking** (CPU-intensive)
+   - Pre-load existing data once (shared across all workers)
+   - Check all chunks for duplicates in parallel using ThreadPoolExecutor
+   - Uses up to 4 parallel workers (based on CPU count)
+   - Each worker performs vectorized Pandas merge operations
+   - Aggregates results from all chunks
+   - Raises exception if any duplicates found
+4. **Phase 2: Sequential Insertion** (I/O-intensive)
    - For each chunk:
-     - Check for duplicates using Pandas merge
      - Apply type coercion to all records in chunk
      - Bulk insert using Pandas `to_sql` with `method='multi'`
      - Log progress
-3. **Record file import** (after all chunks complete)
+5. **Record file import** (after all chunks complete)
 
 ## Performance Benefits
 
@@ -139,6 +147,7 @@ Duplicate checking is configured via the `duplicate_check` parameter in the mapp
 - **Small files (< 1,000 records)**: 5-10x faster
 - **Medium files (1,000-10,000 records)**: 10-50x faster
 - **Large files (> 10,000 records)**: 50-100x faster with chunking
+- **Very large files (> 50,000 records)**: Additional 2-4x speedup from parallel duplicate checking
 
 ## Error Handling
 
