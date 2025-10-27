@@ -134,6 +134,54 @@ The console understands various question formats:
 - "Show customers who haven't ordered in 30 days"
 - "Calculate revenue by product category"
 
+### Conversation Memory
+
+The console now remembers your conversation history within a session, allowing for natural follow-up questions and context-aware queries:
+
+**Follow-up Questions:**
+```
+Query> Show me all customers
+
+[Results displayed...]
+
+Query> Now filter for California only
+
+[Filtered results - the agent remembers the previous query context]
+
+Query> Sort them by name
+
+[Sorted California customers - building on previous context]
+```
+
+**References to Past Results:**
+```
+Query> What's the total revenue for Q1?
+
+Total revenue: $125,450.00
+
+Query> How does that compare to Q2?
+
+[Agent remembers Q1 total and compares with Q2]
+```
+
+**Context-Aware Queries:**
+```
+Query> Show me all products
+
+[Products displayed...]
+
+Query> Which of those have low stock?
+
+[Agent filters the previously shown products for low stock]
+```
+
+**How It Works:**
+- Each console session generates a unique thread ID
+- All queries in that session share conversation history
+- The agent can reference previous queries and results
+- Message history is automatically trimmed to manage context window (keeps last 5-6 conversation turns)
+- Memory is session-based (lost when you exit the console)
+
 ### Rich Formatting
 
 The console provides beautiful, readable output:

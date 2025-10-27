@@ -6,15 +6,23 @@ and determine the optimal import strategy by comparing with existing database ta
 """
 
 from typing import List, Dict, Any, Optional, Tuple
+from typing_extensions import NotRequired
 from enum import Enum
 import numpy as np
 from dataclasses import dataclass
 from langchain.tools import tool, ToolRuntime
-from langchain.agents import create_agent
+from langchain.agents import create_agent, AgentState
+from langchain.agents.middleware import before_model
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import RemoveMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
 from .config import settings
 from .db_context import get_database_schema, format_schema_for_prompt
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +49,16 @@ class ConflictResolutionMode(str, Enum):
     PREFER_FLEXIBLE = "prefer_flexible" # Use most flexible data type
 
 
+# Custom AgentState for file analysis with retry tracking
+class FileAnalysisState(AgentState):
+    """State for file analysis agent with conversation memory and retry tracking."""
+    attempt_count: NotRequired[int]  # Number of analysis attempts
+    retry_count: NotRequired[int]  # Number of retries due to errors
+    error_history: NotRequired[List[str]]  # History of errors encountered
+    resolution_attempts: NotRequired[List[str]]  # History of resolution attempts
+    start_time: NotRequired[float]  # Analysis start time for timeout tracking
+
+
 @dataclass
 class AnalysisContext:
     """Context passed through the analysis pipeline"""
@@ -50,6 +68,16 @@ class AnalysisContext:
     analysis_mode: AnalysisMode
     conflict_mode: ConflictResolutionMode
     user_id: Optional[str] = None
+    attempt_count: int = 0
+    retry_count: int = 0
+    error_history: List[str] = None
+    resolution_attempts: List[str] = None
+    
+    def __post_init__(self):
+        if self.error_history is None:
+            self.error_history = []
+        if self.resolution_attempts is None:
+            self.resolution_attempts = []
 
 
 @dataclass
@@ -315,9 +343,46 @@ def resolve_conflict(
         return "LLM_WILL_DECIDE"
 
 
+# Global checkpointer instance for conversation memory
+_file_analyzer_checkpointer = InMemorySaver()
+
+
+# Constants for loop prevention
+MAX_RETRY_ATTEMPTS = 3
+MAX_TOTAL_TOOL_CALLS = 10
+ANALYSIS_TIMEOUT_SECONDS = 60
+
+
+@before_model
+def track_analysis_attempts(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """Track analysis attempts and enforce limits to prevent loops."""
+    # Initialize counters if not present
+    if not hasattr(state, 'attempt_count'):
+        return {"attempt_count": 1, "start_time": time.time()}
+    
+    # Check timeout
+    start_time = getattr(state, 'start_time', time.time())
+    if time.time() - start_time > ANALYSIS_TIMEOUT_SECONDS:
+        logger.warning(f"Analysis timeout exceeded ({ANALYSIS_TIMEOUT_SECONDS}s)")
+        raise TimeoutError(f"Analysis exceeded {ANALYSIS_TIMEOUT_SECONDS} second timeout")
+    
+    # Increment attempt count
+    attempt_count = getattr(state, 'attempt_count', 0) + 1
+    
+    # Check if we've exceeded total tool call limit
+    messages = state.get("messages", [])
+    tool_call_count = len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])
+    
+    if tool_call_count >= MAX_TOTAL_TOOL_CALLS:
+        logger.warning(f"Max total tool calls exceeded ({MAX_TOTAL_TOOL_CALLS})")
+        raise RuntimeError(f"Analysis exceeded maximum of {MAX_TOTAL_TOOL_CALLS} tool calls")
+    
+    return {"attempt_count": attempt_count}
+
+
 def create_file_analyzer_agent(max_iterations: int = 5):
     """
-    Create an LLM-powered agent for file analysis.
+    Create an LLM-powered agent for file analysis with conversation memory.
     
     The agent has access to tools for:
     - Analyzing file structure
@@ -325,10 +390,10 @@ def create_file_analyzer_agent(max_iterations: int = 5):
     - Resolving conflicts
     
     Args:
-        max_iterations: Maximum number of tool calls allowed (prevents runaway costs)
+        max_iterations: Maximum number of tool calls allowed per attempt
         
     Returns:
-        Configured LangChain agent
+        Configured LangChain agent with memory and retry support
     """
     model = ChatAnthropic(
         model="claude-sonnet-4-5",
@@ -347,6 +412,11 @@ def create_file_analyzer_agent(max_iterations: int = 5):
     system_prompt = """You are a database consolidation expert helping users organize data from multiple sources.
 
 Your task is to analyze an uploaded file and determine the best way to import it into an existing database.
+
+You can remember previous analysis attempts in this conversation, allowing you to:
+- Learn from previous errors or conflicts
+- Refine your recommendations based on user feedback
+- Retry with different strategies if the first attempt had issues
 
 Available Import Strategies:
 1. NEW_TABLE - Data is unique enough to warrant a new table
@@ -367,6 +437,7 @@ Important Considerations:
 - Consider existing table usage patterns and row counts
 - Provide clear reasoning for your recommendations
 - Include confidence scores (0.0 to 1.0) based on match quality
+- If you encounter errors or conflicts, explain them clearly for potential retry
 
 CRITICAL: You have a maximum of {max_iterations} tool calls to complete your analysis.
 Be efficient and strategic with your tool usage.
@@ -379,12 +450,16 @@ Provide a structured recommendation including:
 - If merging/extending: which table to use
 - Suggested column mappings
 - Any data quality issues or conflicts found
+- Any errors that require user input or retry
 """
     
     agent = create_agent(
         model=model,
         tools=tools,
-        system_prompt=system_prompt.format(max_iterations=max_iterations)
+        system_prompt=system_prompt.format(max_iterations=max_iterations),
+        state_schema=FileAnalysisState,
+        checkpointer=_file_analyzer_checkpointer,
+        middleware=[track_analysis_attempts]
     )
     
     return agent
@@ -396,7 +471,8 @@ def analyze_file_for_import(
     analysis_mode: AnalysisMode = AnalysisMode.MANUAL,
     conflict_mode: ConflictResolutionMode = ConflictResolutionMode.ASK_USER,
     user_id: Optional[str] = None,
-    max_iterations: int = 5
+    max_iterations: int = 5,
+    thread_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Analyze a file and determine the optimal import strategy.
@@ -408,6 +484,7 @@ def analyze_file_for_import(
         conflict_mode: How to handle conflicts
         user_id: Optional user identifier
         max_iterations: Maximum LLM iterations
+        thread_id: Optional thread ID for conversation continuity. If not provided, uses "default".
         
     Returns:
         Analysis results with recommendations
@@ -429,6 +506,13 @@ def analyze_file_for_import(
         # Create and run agent
         agent = create_file_analyzer_agent(max_iterations=max_iterations)
         
+        # Use default thread if none provided
+        if thread_id is None:
+            thread_id = "default"
+        
+        # Create config with thread_id for conversation continuity
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        
         prompt = f"""Analyze this file for database import:
 
 File: {file_metadata.get('name', 'unknown')}
@@ -439,7 +523,8 @@ Please analyze the file structure, compare it with existing tables, and recommen
         
         result = agent.invoke(
             {"messages": [{"role": "user", "content": prompt}]},
-            context=context
+            context=context,
+            config=config
         )
         
         # Extract the agent's response

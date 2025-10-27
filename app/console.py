@@ -7,6 +7,7 @@ Provides a REPL-like interface to query the database using natural language.
 import argparse
 import sys
 import os
+import uuid
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
@@ -31,6 +32,8 @@ class DatabaseConsole:
     def __init__(self):
         self.console = Console()
         self.history = []
+        # Generate unique thread_id for this console session to maintain conversation memory
+        self.thread_id = str(uuid.uuid4())
 
     def print_welcome(self):
         """Print welcome message."""
@@ -135,11 +138,12 @@ class DatabaseConsole:
                 self.console.print(csv_panel)
 
     def execute_query(self, query: str) -> dict:
-        """Execute a natural language query."""
+        """Execute a natural language query with conversation memory."""
         try:
             # Show spinner while processing
             with self.console.status("[bold green]Processing query...", spinner="dots"):
-                result = query_database_with_agent(query)
+                # Pass thread_id to maintain conversation memory across queries
+                result = query_database_with_agent(query, thread_id=self.thread_id)
 
             return result
 

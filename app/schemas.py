@@ -117,6 +117,7 @@ class AsyncTaskStatus(BaseModel):
 class QueryDatabaseRequest(BaseModel):
     prompt: str = Field(..., description="Natural language query to execute against the database")
     max_rows: Optional[int] = Field(default=1000, ge=1, le=10000, description="Maximum number of rows to return")
+    thread_id: Optional[str] = Field(None, description="Optional thread ID for conversation continuity. If not provided, each query starts fresh.")
 
 
 class QueryDatabaseResponse(BaseModel):

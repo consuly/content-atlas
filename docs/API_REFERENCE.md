@@ -263,6 +263,170 @@ Analyze a CSV or Excel file from Backblaze B2 and return the auto-detected mappi
 
 ---
 
+## Natural Language Query Endpoints
+
+### POST /query-database
+
+Execute natural language queries against the database using AI-powered SQL generation with conversation memory.
+
+**Request Body:**
+```json
+{
+  "prompt": "Show me all customers from California",
+  "max_rows": 1000,
+  "thread_id": "user-session-123"
+}
+```
+
+**Parameters:**
+- `prompt` (required): Natural language query to execute
+- `max_rows` (optional): Maximum number of rows to return (default: 1000, max: 10000)
+- `thread_id` (optional): Conversation thread ID for memory continuity
+
+**Response:**
+```json
+{
+  "success": true,
+  "response": "I found 45 customers from California. Here are the results:",
+  "executed_sql": "SELECT * FROM customers WHERE state = 'California' LIMIT 1000;",
+  "data_csv": "id,name,email,state\n1,John Doe,john@example.com,California\n...",
+  "execution_time_seconds": 0.15,
+  "rows_returned": 45,
+  "error": null
+}
+```
+
+**Conversation Memory:**
+
+The endpoint supports conversation memory through the `thread_id` parameter, allowing for:
+
+**Follow-up Questions:**
+```json
+// First query
+{
+  "prompt": "Show me all customers",
+  "thread_id": "session-abc"
+}
+
+// Follow-up query (remembers previous context)
+{
+  "prompt": "Now filter for California only",
+  "thread_id": "session-abc"
+}
+
+// Another follow-up
+{
+  "prompt": "Sort them by name",
+  "thread_id": "session-abc"
+}
+```
+
+**References to Past Results:**
+```json
+// First query
+{
+  "prompt": "What's the total revenue for Q1?",
+  "thread_id": "session-xyz"
+}
+
+// Follow-up comparing to previous result
+{
+  "prompt": "How does that compare to Q2?",
+  "thread_id": "session-xyz"
+}
+```
+
+**Context-Aware Queries:**
+```json
+// First query
+{
+  "prompt": "Show me all products",
+  "thread_id": "session-123"
+}
+
+// Follow-up using context from previous query
+{
+  "prompt": "Which of those have low stock?",
+  "thread_id": "session-123"
+}
+```
+
+**Memory Management:**
+- Each unique `thread_id` maintains its own conversation history
+- Message history is automatically trimmed to keep the last 5-6 conversation turns
+- Memory is stored in-memory (lost on server restart)
+- If `thread_id` is not provided, each query starts fresh without context
+
+**Supported Query Types:**
+- Simple queries: "Show me all customers"
+- Filtered queries: "Find products with price greater than 100"
+- Aggregations: "What's the average order value?"
+- Complex queries: "Show top 5 products by revenue"
+- JOINs: "List customers with their recent orders"
+
+**Security:**
+- Only SELECT queries are allowed
+- No INSERT, UPDATE, DELETE, or DDL operations
+- Query timeout: 30 seconds
+- Result limit: 1000 rows (configurable via `max_rows`)
+
+**Error Response:**
+```json
+{
+  "success": false,
+  "response": "An error occurred while processing your query",
+  "executed_sql": null,
+  "data_csv": null,
+  "execution_time_seconds": null,
+  "rows_returned": null,
+  "error": "Table 'nonexistent_table' does not exist"
+}
+```
+
+**Use Cases:**
+- Build conversational data exploration interfaces
+- Create chatbot-style database query tools
+- Enable non-technical users to query databases
+- Rapid data analysis and exploration
+- Multi-turn analytical conversations
+
+**Example Conversation Flow:**
+```json
+// Query 1
+POST /query-database
+{
+  "prompt": "Show me all products",
+  "thread_id": "analytics-session-1"
+}
+// Returns: List of all products
+
+// Query 2 (builds on Query 1)
+POST /query-database
+{
+  "prompt": "Which of those cost more than $100?",
+  "thread_id": "analytics-session-1"
+}
+// Returns: Filtered list of expensive products
+
+// Query 3 (builds on Query 2)
+POST /query-database
+{
+  "prompt": "How many are there?",
+  "thread_id": "analytics-session-1"
+}
+// Returns: Count of expensive products
+
+// Query 4 (builds on entire conversation)
+POST /query-database
+{
+  "prompt": "What's the average price of those?",
+  "thread_id": "analytics-session-1"
+}
+// Returns: Average price of expensive products
+```
+
+---
+
 ## Table Management Endpoints
 
 ### GET /tables

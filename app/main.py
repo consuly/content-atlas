@@ -502,9 +502,22 @@ async def get_task_status(task_id: str):
 
 @app.post("/query-database", response_model=QueryDatabaseResponse)
 async def query_database_endpoint(request: QueryDatabaseRequest):
-    """Execute natural language queries against the database using LangChain agent."""
+    """
+    Execute natural language queries against the database using LangChain agent with conversation memory.
+    
+    The agent remembers previous queries within the same thread_id, allowing for:
+    - Follow-up questions: "Now filter for California only"
+    - References to past results: "What was the total from the last query?"
+    - Context-aware queries: "Show products" → "Which of those have low stock?"
+    
+    Parameters:
+    - prompt: Natural language query
+    - max_rows: Maximum rows to return (1-10000)
+    - thread_id: Optional conversation thread ID for memory continuity
+    """
     try:
-        result = query_database_with_agent(request.prompt)
+        # Pass thread_id to maintain conversation memory
+        result = query_database_with_agent(request.prompt, thread_id=request.thread_id)
 
         return QueryDatabaseResponse(
             success=result["success"],

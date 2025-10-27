@@ -6,11 +6,15 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 import pandas as pd
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
 from langchain_anthropic import ChatAnthropic
 from langchain.agents import create_agent, AgentState
-from langchain.agents.middleware import SummarizationMiddleware, HumanInTheLoopMiddleware
+from langchain.agents.middleware import SummarizationMiddleware, HumanInTheLoopMiddleware, before_model
 from langchain.agents.structured_output import ToolStrategy
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
+from langchain_core.runnables import RunnableConfig
 from .database import get_engine
 from .db_context import get_database_schema, format_schema_for_prompt, get_related_tables
 from .config import settings
@@ -55,6 +59,32 @@ def get_related_tables_tool(query: str) -> str:
             return "No specific table relationships detected. You may need to examine the schema more carefully."
     except Exception as e:
         return f"Error analyzing related tables: {str(e)}"
+
+
+@before_model
+def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """Keep only the last few messages to fit context window and maintain performance."""
+    messages = state["messages"]
+    
+    # Keep at least 3 messages (system + user + assistant)
+    if len(messages) <= 6:
+        return None  # No changes needed
+    
+    # Keep the first message (system prompt with schema context)
+    first_msg = messages[0]
+    
+    # Keep the last 5-6 conversation turns (10-12 messages)
+    # Ensure we keep an even number to maintain user/assistant pairs
+    recent_messages = messages[-10:] if len(messages) % 2 == 0 else messages[-11:]
+    
+    new_messages = [first_msg] + recent_messages
+    
+    return {
+        "messages": [
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            *new_messages
+        ]
+    }
 
 
 @tool
@@ -116,8 +146,12 @@ CSV Data:
         return f"ERROR executing query: {str(e)}"
 
 
+# Global checkpointer instance for conversation memory
+_checkpointer = InMemorySaver()
+
+
 def create_query_agent(system_prompt: str):
-    """Create a LangChain v1.0 agent for natural language database queries."""
+    """Create a LangChain v1.0 agent for natural language database queries with memory."""
 
     # Initialize LLM (Anthropic Claude)
     llm = ChatAnthropic(
@@ -134,30 +168,39 @@ def create_query_agent(system_prompt: str):
         execute_sql_query
     ]
 
-    # Create the agent with v1.0 features
+    # Create the agent with v1.0 features including memory and message trimming
     agent = create_agent(
         model=llm,
         tools=tools,
         system_prompt=system_prompt,
-        state_schema=DatabaseQueryState
+        state_schema=DatabaseQueryState,
+        checkpointer=_checkpointer,  # Enable conversation memory
+        middleware=[trim_messages]  # Trim old messages to manage context window
     )
 
     return agent
 
 
-def query_database_with_agent(user_prompt: str) -> Dict[str, Any]:
+def query_database_with_agent(user_prompt: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Process a natural language query using the LangChain v1.0 agent.
+    Process a natural language query using the LangChain v1.0 agent with conversation memory.
 
     Args:
         user_prompt: The natural language query from the user
+        thread_id: Optional thread ID for conversation continuity. If not provided, uses "default".
 
     Returns:
         Dict containing response data with structured output
     """
     try:
+        # Use default thread if none provided
+        if thread_id is None:
+            thread_id = "default"
+        
         # System prompt with context
         system_prompt = f"""You are an expert SQL analyst helping users query their PostgreSQL database.
+
+You can remember previous queries and results in this conversation, so users can refer back to them.
 
 First, use the get_database_schema_tool to understand the available tables and their structure.
 
@@ -181,8 +224,11 @@ IMPORTANT: After executing a query with execute_sql_query, provide a final struc
         # Prepare messages (just the user message since system prompt is now in agent)
         messages = [HumanMessage(content=user_prompt)]
 
-        # Run the agent
-        result = agent.invoke({"messages": messages})
+        # Create config with thread_id for conversation continuity
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+        # Run the agent with the config to enable memory
+        result = agent.invoke({"messages": messages}, config)
 
         # Extract data from v1.0 agent tool calls and responses
         executed_sql = None
