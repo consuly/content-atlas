@@ -3,9 +3,17 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import json
 import uuid
-from typing import Dict
+from typing import Dict, Optional
 from .database import get_db, get_engine
-from .schemas import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, ExtractB2ExcelRequest, ExtractExcelCsvResponse, DetectB2MappingRequest, DetectB2MappingResponse, TablesListResponse, TableInfo, TableSchemaResponse, ColumnInfo, TableDataResponse, TableStatsResponse, MapB2DataAsyncRequest, AsyncTaskStatus, QueryDatabaseRequest, QueryDatabaseResponse
+from .schemas import (
+    MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, 
+    ExtractB2ExcelRequest, ExtractExcelCsvResponse, DetectB2MappingRequest, 
+    DetectB2MappingResponse, TablesListResponse, TableInfo, TableSchemaResponse, 
+    ColumnInfo, TableDataResponse, TableStatsResponse, MapB2DataAsyncRequest, 
+    AsyncTaskStatus, QueryDatabaseRequest, QueryDatabaseResponse,
+    AnalyzeFileRequest, AnalyzeB2FileRequest, AnalyzeFileResponse,
+    ExecuteRecommendedImportRequest, AnalysisMode, ConflictResolutionMode
+)
 from .processors.csv_processor import process_csv, process_excel, process_large_excel, extract_excel_sheets_to_csv
 from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
@@ -14,11 +22,15 @@ from .models import create_table_if_not_exists, insert_records, DuplicateDataExc
 from .config import settings
 from .b2_utils import download_file_from_b2
 from .query_agent import query_database_with_agent
+from .file_analyzer import (
+    analyze_file_for_import, sample_file_data, ImportStrategy
+)
 
 app = FastAPI(title="Data Mapper API", version="1.0.0")
 
 # Global task storage (in production, use Redis or database)
 task_storage: Dict[str, AsyncTaskStatus] = {}
+analysis_storage: Dict[str, AnalyzeFileResponse] = {}
 
 
 def detect_file_type(filename: str) -> str:
@@ -506,6 +518,245 @@ async def query_database_endpoint(request: QueryDatabaseRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+@app.post("/analyze-file", response_model=AnalyzeFileResponse)
+async def analyze_file_endpoint(
+    file: UploadFile = File(...),
+    sample_size: Optional[int] = Form(None),
+    analysis_mode: AnalysisMode = Form(AnalysisMode.MANUAL),
+    conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.ASK_USER),
+    auto_execute_confidence_threshold: float = Form(0.9),
+    max_iterations: int = Form(5),
+    db: Session = Depends(get_db)
+):
+    """
+    Analyze uploaded file and recommend import strategy using AI.
+    
+    This endpoint uses Claude Sonnet to intelligently analyze the file structure,
+    compare it with existing database tables, and recommend the best import strategy.
+    
+    Parameters:
+    - file: The file to analyze (CSV, Excel, JSON, or XML)
+    - sample_size: Number of rows to sample (auto-calculated if not provided)
+    - analysis_mode: MANUAL (user approval), AUTO_HIGH_CONFIDENCE, or AUTO_ALWAYS
+    - conflict_resolution: ASK_USER, LLM_DECIDE, or PREFER_FLEXIBLE
+    - auto_execute_confidence_threshold: Minimum confidence for auto-execution (0.0-1.0)
+    - max_iterations: Maximum LLM iterations (1-10)
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Detect and process file
+        file_type = detect_file_type(file.filename)
+        if file_type == 'csv':
+            records = process_csv(file_content)
+        elif file_type == 'excel':
+            records = process_excel(file_content)
+        elif file_type == 'json':
+            records = process_json(file_content)
+        elif file_type == 'xml':
+            records = process_xml(file_content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Smart sampling
+        sample, total_rows = sample_file_data(records, sample_size)
+        
+        # Prepare metadata
+        file_metadata = {
+            "name": file.filename,
+            "total_rows": total_rows,
+            "file_type": file_type
+        }
+        
+        # Run AI analysis
+        analysis_result = analyze_file_for_import(
+            file_sample=sample,
+            file_metadata=file_metadata,
+            analysis_mode=analysis_mode,
+            conflict_mode=conflict_resolution,
+            user_id=None,  # Could be extracted from auth
+            max_iterations=max_iterations
+        )
+        
+        if not analysis_result["success"]:
+            return AnalyzeFileResponse(
+                success=False,
+                error=analysis_result.get("error", "Analysis failed"),
+                llm_response=analysis_result.get("response"),
+                iterations_used=analysis_result.get("iterations_used", 0),
+                max_iterations=max_iterations
+            )
+        
+        # Parse LLM response to extract structured data
+        # For now, return the raw response - in production, parse this into structured format
+        response = AnalyzeFileResponse(
+            success=True,
+            llm_response=analysis_result["response"],
+            iterations_used=analysis_result["iterations_used"],
+            max_iterations=max_iterations,
+            can_auto_execute=False  # Will be determined by parsing LLM response
+        )
+        
+        # Store analysis result for later execution
+        analysis_id = str(uuid.uuid4())
+        analysis_storage[analysis_id] = response
+        
+        # Determine if can auto-execute based on mode
+        if analysis_mode == AnalysisMode.AUTO_ALWAYS:
+            response.can_auto_execute = True
+        elif analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
+            # Would need to parse confidence from LLM response
+            response.can_auto_execute = False  # Conservative default
+        
+        return response
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/analyze-b2-file", response_model=AnalyzeFileResponse)
+async def analyze_b2_file_endpoint(
+    request: AnalyzeB2FileRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Analyze a file from B2 storage and recommend import strategy using AI.
+    
+    This endpoint downloads a file from Backblaze B2, then uses Claude Sonnet
+    to analyze its structure and recommend the best import strategy.
+    """
+    try:
+        # Download file from B2
+        file_content = download_file_from_b2(request.file_name)
+        
+        # Detect and process file
+        file_type = detect_file_type(request.file_name)
+        
+        if file_type == 'csv':
+            records = process_csv(file_content)
+        elif file_type == 'excel':
+            records = process_excel(file_content)
+        elif file_type == 'json':
+            records = process_json(file_content)
+        elif file_type == 'xml':
+            records = process_xml(file_content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Smart sampling
+        sample, total_rows = sample_file_data(records, request.sample_size)
+        
+        # Prepare metadata
+        file_metadata = {
+            "name": request.file_name,
+            "total_rows": total_rows,
+            "file_type": file_type
+        }
+        
+        # Run AI analysis
+        analysis_result = analyze_file_for_import(
+            file_sample=sample,
+            file_metadata=file_metadata,
+            analysis_mode=request.analysis_mode,
+            conflict_mode=request.conflict_resolution,
+            user_id=None,
+            max_iterations=request.max_iterations
+        )
+        
+        if not analysis_result["success"]:
+            return AnalyzeFileResponse(
+                success=False,
+                error=analysis_result.get("error", "Analysis failed"),
+                llm_response=analysis_result.get("response"),
+                iterations_used=analysis_result.get("iterations_used", 0),
+                max_iterations=request.max_iterations
+            )
+        
+        # Parse LLM response
+        response = AnalyzeFileResponse(
+            success=True,
+            llm_response=analysis_result["response"],
+            iterations_used=analysis_result["iterations_used"],
+            max_iterations=request.max_iterations,
+            can_auto_execute=False
+        )
+        
+        # Store analysis result
+        analysis_id = str(uuid.uuid4())
+        analysis_storage[analysis_id] = response
+        
+        # Determine auto-execute capability
+        if request.analysis_mode == AnalysisMode.AUTO_ALWAYS:
+            response.can_auto_execute = True
+        elif request.analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
+            response.can_auto_execute = False  # Conservative default
+        
+        return response
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/execute-recommended-import", response_model=MapDataResponse)
+async def execute_recommended_import_endpoint(
+    request: ExecuteRecommendedImportRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Execute a previously analyzed import recommendation.
+    
+    This endpoint takes an analysis ID from a previous /analyze-file or /analyze-b2-file
+    call and executes the recommended import strategy. Users can optionally modify
+    the suggested mapping before execution.
+    """
+    try:
+        # Retrieve stored analysis
+        if request.analysis_id not in analysis_storage:
+            raise HTTPException(status_code=404, detail="Analysis not found. Please run /analyze-file first.")
+        
+        analysis = analysis_storage[request.analysis_id]
+        
+        if not analysis.success:
+            raise HTTPException(status_code=400, detail="Cannot execute failed analysis")
+        
+        # Use user's confirmed mapping or the suggested one
+        if request.confirmed_mapping:
+            mapping = request.confirmed_mapping
+        elif analysis.suggested_mapping:
+            mapping = analysis.suggested_mapping
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail="No mapping available. Please provide confirmed_mapping in request."
+            )
+        
+        # Check for conflicts
+        if analysis.conflicts and not request.force_execute:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Analysis has {len(analysis.conflicts)} unresolved conflicts. "
+                       "Set force_execute=true to proceed anyway."
+            )
+        
+        # Execute import using existing pipeline
+        # Note: This is a simplified version - in production, you'd need to:
+        # 1. Retrieve the original file content
+        # 2. Process it according to the mapping
+        # 3. Insert into database
+        
+        raise HTTPException(
+            status_code=501,
+            detail="Import execution not yet implemented. This endpoint will execute "
+                   "the recommended import strategy in the next phase."
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
 
 
 @app.get("/")

@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
+from enum import Enum
 
 
 class DuplicateCheckConfig(BaseModel):
@@ -126,3 +127,146 @@ class QueryDatabaseResponse(BaseModel):
     execution_time_seconds: Optional[float] = Field(None, description="Time taken to execute the query")
     rows_returned: Optional[int] = Field(None, description="Number of rows returned by the query")
     error: Optional[str] = Field(None, description="Error message if the query failed")
+
+
+# AI-Powered File Analysis Endpoints
+class ImportStrategy(str, Enum):
+    """Strategies for importing data into the database"""
+    NEW_TABLE = "new_table"           # Create fresh table
+    MERGE_EXACT = "merge_exact"       # Exact schema match
+    EXTEND_TABLE = "extend_table"     # Add columns to existing
+    ADAPT_DATA = "adapt_data"         # Transform to fit existing
+
+
+class AnalysisMode(str, Enum):
+    """Controls auto-execution behavior"""
+    MANUAL = "manual"                      # User reviews and approves
+    AUTO_HIGH_CONFIDENCE = "auto_high"     # Auto-execute if confidence > threshold
+    AUTO_ALWAYS = "auto_always"            # Always auto-execute
+
+
+class ConflictResolutionMode(str, Enum):
+    """How to handle schema conflicts"""
+    ASK_USER = "ask_user"              # Stop and ask for clarification
+    LLM_DECIDE = "llm_decide"          # Let LLM resolve conflicts
+    PREFER_FLEXIBLE = "prefer_flexible" # Use most flexible data type
+
+
+class TableMatchInfo(BaseModel):
+    """Information about a potential table match"""
+    table_name: str
+    similarity_score: float = Field(..., ge=0.0, le=1.0, description="Similarity score from 0.0 to 1.0")
+    matching_columns: List[str]
+    missing_columns: List[str]
+    extra_columns: List[str]
+    reasoning: str
+
+
+class SchemaConflictInfo(BaseModel):
+    """Information about a schema conflict"""
+    conflict_type: str
+    description: str
+    options: List[str]
+    recommended_option: str
+    reasoning: str
+
+
+class AnalyzeFileRequest(BaseModel):
+    """Request to analyze a file for import strategy"""
+    sample_size: Optional[int] = Field(
+        default=None,
+        description="Number of rows to sample. If None, auto-calculated based on file size"
+    )
+    analysis_mode: AnalysisMode = Field(
+        default=AnalysisMode.MANUAL,
+        description="Whether to require user approval before executing"
+    )
+    conflict_resolution: ConflictResolutionMode = Field(
+        default=ConflictResolutionMode.ASK_USER,
+        description="How to handle schema conflicts"
+    )
+    auto_execute_confidence_threshold: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence for auto-execution (only used if analysis_mode is AUTO_HIGH_CONFIDENCE)"
+    )
+    max_iterations: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum number of LLM iterations for analysis"
+    )
+
+
+class AnalyzeB2FileRequest(BaseModel):
+    """Request to analyze a B2 file for import strategy"""
+    file_name: str = Field(..., description="B2 file name/key")
+    sample_size: Optional[int] = Field(
+        default=None,
+        description="Number of rows to sample. If None, auto-calculated based on file size"
+    )
+    analysis_mode: AnalysisMode = Field(
+        default=AnalysisMode.MANUAL,
+        description="Whether to require user approval before executing"
+    )
+    conflict_resolution: ConflictResolutionMode = Field(
+        default=ConflictResolutionMode.ASK_USER,
+        description="How to handle schema conflicts"
+    )
+    auto_execute_confidence_threshold: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence for auto-execution"
+    )
+    max_iterations: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum number of LLM iterations for analysis"
+    )
+
+
+class AnalyzeFileResponse(BaseModel):
+    """Response from file analysis"""
+    success: bool
+    recommended_strategy: Optional[ImportStrategy] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence score from 0.0 to 1.0")
+    reasoning: Optional[str] = None
+    
+    # Table matches
+    table_matches: List[TableMatchInfo] = []
+    selected_table: Optional[str] = None
+    
+    # Suggested mapping
+    suggested_mapping: Optional[MappingConfig] = None
+    
+    # Issues and conflicts
+    data_quality_issues: List[str] = []
+    conflicts: List[SchemaConflictInfo] = []
+    
+    # Execution info
+    requires_user_input: bool = False
+    can_auto_execute: bool = False
+    iterations_used: int = 0
+    max_iterations: int = 5
+    
+    # Raw LLM response
+    llm_response: Optional[str] = None
+    
+    # Error info
+    error: Optional[str] = None
+
+
+class ExecuteRecommendedImportRequest(BaseModel):
+    """Request to execute a recommended import"""
+    analysis_id: str = Field(..., description="ID of the analysis result to execute")
+    confirmed_mapping: Optional[MappingConfig] = Field(
+        None,
+        description="User can optionally modify the suggested mapping before execution"
+    )
+    force_execute: bool = Field(
+        default=False,
+        description="Force execution even if conflicts exist"
+    )
