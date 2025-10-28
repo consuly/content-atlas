@@ -27,17 +27,20 @@ from .file_analyzer import (
 )
 from .auto_import import execute_llm_import_decision
 from .table_metadata import create_table_metadata_table
+from .import_history import create_import_history_table
+import time
 
 app = FastAPI(title="Data Mapper API", version="1.0.0")
 
-# Initialize table_metadata table on startup
+# Initialize tables on startup
 @app.on_event("startup")
 async def startup_event():
     """Initialize database tables on application startup."""
     try:
         create_table_metadata_table()
+        create_import_history_table()
     except Exception as e:
-        print(f"Warning: Could not initialize table_metadata: {e}")
+        print(f"Warning: Could not initialize tables: {e}")
 
 # Global task storage (in production, use Redis or database)
 task_storage: Dict[str, AsyncTaskStatus] = {}
@@ -64,6 +67,12 @@ async def map_data_endpoint(
     mapping_json: str = Form(...),
     db: Session = Depends(get_db)
 ):
+    from .import_history import start_import_tracking, complete_import_tracking
+    from .models import calculate_file_hash
+    
+    start_time = time.time()
+    import_id = None
+    
     try:
         # Parse mapping config
         if not mapping_json:
@@ -75,9 +84,26 @@ async def map_data_endpoint(
 
         # Read file content
         file_content = await file.read()
+        file_size = len(file_content)
+        file_hash = calculate_file_hash(file_content)
 
-        # Detect and process file
+        # Detect file type
         file_type = detect_file_type(file.filename)
+        
+        # Start import tracking
+        import_id = start_import_tracking(
+            source_type="local_upload",
+            file_name=file.filename,
+            table_name=config.table_name,
+            file_size_bytes=file_size,
+            file_type=file_type,
+            file_hash=file_hash,
+            mapping_config=config
+        )
+        
+        parse_start = time.time()
+        
+        # Process file
         if file_type == 'csv':
             records = process_csv(file_content)
         elif file_type == 'excel':
@@ -88,6 +114,9 @@ async def map_data_endpoint(
             records = process_xml(file_content)
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        parse_time = time.time() - parse_start
+        total_rows = len(records)
 
         # Map data
         mapped_records, errors = map_data(records, config)
@@ -96,7 +125,22 @@ async def map_data_endpoint(
         create_table_if_not_exists(get_engine(), config)
 
         # Insert records
+        insert_start = time.time()
         records_processed = insert_records(get_engine(), config.table_name, mapped_records, config=config, file_content=file_content, file_name=file.filename)
+        insert_time = time.time() - insert_start
+        
+        # Complete import tracking
+        duration = time.time() - start_time
+        complete_import_tracking(
+            import_id=import_id,
+            status="success",
+            total_rows_in_file=total_rows,
+            rows_processed=records_processed,
+            rows_inserted=records_processed,
+            duration_seconds=duration,
+            parsing_time_seconds=parse_time,
+            insert_time_seconds=insert_time
+        )
 
         return MapDataResponse(
             success=True,
@@ -106,10 +150,41 @@ async def map_data_endpoint(
         )
 
     except FileAlreadyImportedException as e:
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=0,
+                rows_processed=0,
+                rows_inserted=0,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
         raise HTTPException(status_code=409, detail=str(e))
     except DuplicateDataException as e:
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=len(records) if 'records' in locals() else 0,
+                rows_processed=0,
+                rows_inserted=0,
+                duplicates_found=e.duplicates_found,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=len(records) if 'records' in locals() else 0,
+                rows_processed=0,
+                rows_inserted=0,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -118,12 +193,34 @@ async def map_b2_data_endpoint(
     request: MapB2DataRequest,
     db: Session = Depends(get_db)
 ):
+    from .import_history import start_import_tracking, complete_import_tracking
+    from .models import calculate_file_hash
+    
+    start_time = time.time()
+    import_id = None
+    
     try:
         # Download file from B2
         file_content = download_file_from_b2(request.file_name)
+        file_size = len(file_content)
+        file_hash = calculate_file_hash(file_content)
 
-        # Detect and process file
+        # Detect file type
         file_type = detect_file_type(request.file_name)
+        
+        # Start import tracking
+        import_id = start_import_tracking(
+            source_type="b2_storage",
+            file_name=request.file_name,
+            table_name=request.mapping.table_name,
+            file_size_bytes=file_size,
+            file_type=file_type,
+            file_hash=file_hash,
+            source_path=request.file_name,
+            mapping_config=request.mapping
+        )
+        
+        parse_start = time.time()
 
         # Use chunked processing for large Excel files (>50MB)
         if file_type == 'excel' and len(file_content) > 50 * 1024 * 1024:  # 50MB
@@ -138,6 +235,9 @@ async def map_b2_data_endpoint(
             records = process_xml(file_content)
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        parse_time = time.time() - parse_start
+        total_rows = len(records)
 
         # Map data
         mapped_records, errors = map_data(records, request.mapping)
@@ -146,7 +246,22 @@ async def map_b2_data_endpoint(
         create_table_if_not_exists(get_engine(), request.mapping)
 
         # Insert records
+        insert_start = time.time()
         records_processed = insert_records(get_engine(), request.mapping.table_name, mapped_records, config=request.mapping, file_content=file_content, file_name=request.file_name)
+        insert_time = time.time() - insert_start
+        
+        # Complete import tracking
+        duration = time.time() - start_time
+        complete_import_tracking(
+            import_id=import_id,
+            status="success",
+            total_rows_in_file=total_rows,
+            rows_processed=records_processed,
+            rows_inserted=records_processed,
+            duration_seconds=duration,
+            parsing_time_seconds=parse_time,
+            insert_time_seconds=insert_time
+        )
 
         return MapDataResponse(
             success=True,
@@ -156,10 +271,41 @@ async def map_b2_data_endpoint(
         )
 
     except FileAlreadyImportedException as e:
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=0,
+                rows_processed=0,
+                rows_inserted=0,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
         raise HTTPException(status_code=409, detail=str(e))
     except DuplicateDataException as e:
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=len(records) if 'records' in locals() else 0,
+                rows_processed=0,
+                rows_inserted=0,
+                duplicates_found=e.duplicates_found,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=len(records) if 'records' in locals() else 0,
+                rows_processed=0,
+                rows_inserted=0,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -806,6 +952,162 @@ async def execute_recommended_import_endpoint(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
+
+
+@app.get("/import-history")
+async def list_import_history(
+    table_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    List import history with optional filters.
+    
+    Parameters:
+    - table_name: Filter by destination table name
+    - user_id: Filter by user ID
+    - status: Filter by status ('success', 'failed', 'partial')
+    - limit: Maximum number of records to return (default: 100)
+    - offset: Number of records to skip for pagination (default: 0)
+    """
+    from .import_history import get_import_history
+    from .schemas import ImportHistoryListResponse, ImportHistoryRecord
+    
+    try:
+        records = get_import_history(
+            table_name=table_name,
+            user_id=user_id,
+            status=status,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Convert to Pydantic models
+        import_records = [ImportHistoryRecord(**record) for record in records]
+        
+        return ImportHistoryListResponse(
+            success=True,
+            imports=import_records,
+            total_count=len(import_records),
+            limit=limit,
+            offset=offset
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve import history: {str(e)}")
+
+
+@app.get("/import-history/{import_id}")
+async def get_import_detail(
+    import_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a specific import.
+    
+    Parameters:
+    - import_id: UUID of the import to retrieve
+    """
+    from .import_history import get_import_history
+    from .schemas import ImportHistoryDetailResponse, ImportHistoryRecord
+    
+    try:
+        records = get_import_history(import_id=import_id, limit=1)
+        
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+        
+        import_record = ImportHistoryRecord(**records[0])
+        
+        return ImportHistoryDetailResponse(
+            success=True,
+            import_record=import_record
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve import details: {str(e)}")
+
+
+@app.get("/import-statistics")
+async def get_import_statistics(
+    table_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+    days: int = 30,
+    db: Session = Depends(get_db)
+):
+    """
+    Get aggregate statistics about imports.
+    
+    Parameters:
+    - table_name: Filter by destination table name
+    - user_id: Filter by user ID
+    - days: Number of days to look back (default: 30)
+    """
+    from .import_history import get_import_statistics
+    from .schemas import ImportStatisticsResponse
+    
+    try:
+        stats = get_import_statistics(
+            table_name=table_name,
+            user_id=user_id,
+            days=days
+        )
+        
+        return ImportStatisticsResponse(
+            success=True,
+            total_imports=stats.get("total_imports", 0),
+            successful_imports=stats.get("successful_imports", 0),
+            failed_imports=stats.get("failed_imports", 0),
+            total_rows_inserted=stats.get("total_rows_inserted", 0),
+            total_duplicates_found=stats.get("total_duplicates_found", 0),
+            avg_duration_seconds=stats.get("avg_duration_seconds", 0.0),
+            tables_affected=stats.get("tables_affected", 0),
+            unique_users=stats.get("unique_users", 0),
+            period_days=days
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve import statistics: {str(e)}")
+
+
+@app.get("/tables/{table_name}/lineage")
+async def get_table_lineage(
+    table_name: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get import lineage for a specific table - all imports that contributed data.
+    
+    Parameters:
+    - table_name: Name of the table to get lineage for
+    """
+    from .import_history import get_table_import_lineage
+    from .schemas import TableLineageResponse, ImportHistoryRecord
+    
+    try:
+        records = get_table_import_lineage(table_name)
+        
+        # Convert to Pydantic models
+        import_records = [ImportHistoryRecord(**record) for record in records]
+        
+        # Calculate total rows contributed
+        total_rows = sum(r.rows_inserted or 0 for r in import_records)
+        
+        return TableLineageResponse(
+            success=True,
+            table_name=table_name,
+            imports=import_records,
+            total_imports=len(import_records),
+            total_rows_contributed=total_rows
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve table lineage: {str(e)}")
 
 
 @app.get("/")

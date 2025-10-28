@@ -271,3 +271,78 @@ class ExecuteRecommendedImportRequest(BaseModel):
         default=False,
         description="Force execution even if conflicts exist"
     )
+
+
+# Import History Endpoints
+class ImportHistoryRecord(BaseModel):
+    """Single import history record"""
+    import_id: str
+    import_timestamp: Optional[str] = None
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    source_type: str
+    source_path: Optional[str] = None
+    file_name: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    file_type: Optional[str] = None
+    file_hash: Optional[str] = None
+    table_name: str
+    import_strategy: Optional[str] = None
+    mapping_config: Optional[Dict[str, Any]] = None
+    duplicate_check_enabled: Optional[bool] = None
+    status: str
+    error_message: Optional[str] = None
+    warnings: Optional[List[str]] = None
+    total_rows_in_file: Optional[int] = None
+    rows_processed: Optional[int] = None
+    rows_inserted: Optional[int] = None
+    rows_skipped: Optional[int] = None
+    duplicates_found: Optional[int] = None
+    validation_errors: Optional[int] = None
+    duration_seconds: Optional[float] = None
+    parsing_time_seconds: Optional[float] = None
+    duplicate_check_time_seconds: Optional[float] = None
+    insert_time_seconds: Optional[float] = None
+    analysis_id: Optional[str] = None
+    task_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ImportHistoryListResponse(BaseModel):
+    """Response for listing import history"""
+    success: bool
+    imports: List[ImportHistoryRecord]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class ImportHistoryDetailResponse(BaseModel):
+    """Response for single import history detail"""
+    success: bool
+    import_record: ImportHistoryRecord
+
+
+class ImportStatisticsResponse(BaseModel):
+    """Response for import statistics"""
+    success: bool
+    total_imports: int
+    successful_imports: int
+    failed_imports: int
+    total_rows_inserted: int
+    total_duplicates_found: int
+    avg_duration_seconds: float
+    tables_affected: int
+    unique_users: int
+    period_days: int
+
+
+class TableLineageResponse(BaseModel):
+    """Response for table import lineage"""
+    success: bool
+    table_name: str
+    imports: List[ImportHistoryRecord]
+    total_imports: int
+    total_rows_contributed: int

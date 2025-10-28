@@ -62,6 +62,10 @@ def test_llm_sequential_file_merge():
             conn.execute(text("DELETE FROM table_metadata WHERE table_name LIKE '%client%'"))
             print("  Cleaned up table_metadata records")
             
+            # Clean up import_history records
+            conn.execute(text("DELETE FROM import_history WHERE file_name LIKE '%client-list%'"))
+            print("  Cleaned up import_history records")
+            
     except Exception as e:
         print(f"  Warning during cleanup: {e}")
     
@@ -119,7 +123,7 @@ def test_llm_sequential_file_merge():
     # Filter to only user data tables (exclude system and test tables)
     user_tables_1 = [
         t for t in tables_data_1['tables'] 
-        if t['table_name'] not in ['file_imports', 'table_metadata'] 
+        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history'] 
         and not t['table_name'].startswith('test_')
         and not t['table_name'].startswith('uploads')
     ]
@@ -199,7 +203,7 @@ def test_llm_sequential_file_merge():
     # Filter to only user data tables (exclude system and test tables)
     user_tables_2 = [
         t for t in tables_data_2['tables'] 
-        if t['table_name'] not in ['file_imports', 'table_metadata'] 
+        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history'] 
         and not t['table_name'].startswith('test_')
         and not t['table_name'].startswith('uploads')
     ]
@@ -262,6 +266,116 @@ def test_llm_sequential_file_merge():
                 print(f"      {col}: {value}")
     
     # ============================================================================
+    # STEP 4: VERIFY IMPORT HISTORY TRACKING
+    # ============================================================================
+    print("\n" + "="*80)
+    print("STEP 4: Verify Import History Tracking")
+    print("="*80)
+    
+    # Get all import history for this table
+    history_response = client.get(f"/tables/{final_table_name}/lineage")
+    assert history_response.status_code == 200, f"Failed to get import history: {history_response.text}"
+    
+    history_data = history_response.json()
+    print(f"\n  Import lineage retrieved successfully")
+    print(f"    Total imports: {history_data['total_imports']}")
+    print(f"    Total rows contributed: {history_data['total_rows_contributed']}")
+    
+    # Should have exactly 2 imports (one for each file)
+    assert history_data['total_imports'] == 2, \
+        f"Expected 2 imports, got {history_data['total_imports']}"
+    
+    print(f"\n  ✓ Correct number of imports tracked: 2")
+    
+    # Verify import details
+    imports = history_data['imports']
+    
+    # Sort by timestamp (oldest first)
+    imports_sorted = sorted(imports, key=lambda x: x['import_timestamp'])
+    
+    print(f"\n  Import Details:")
+    for i, imp in enumerate(imports_sorted, 1):
+        print(f"\n    Import {i}:")
+        print(f"      ID: {imp['import_id']}")
+        print(f"      Timestamp: {imp['import_timestamp']}")
+        print(f"      File: {imp['file_name']}")
+        print(f"      Source: {imp['source_type']}")
+        print(f"      Status: {imp['status']}")
+        print(f"      Rows inserted: {imp['rows_inserted']}")
+        print(f"      Duration: {imp['duration_seconds']:.2f}s")
+        
+        if imp.get('parsing_time_seconds'):
+            print(f"      Parsing time: {imp['parsing_time_seconds']:.2f}s")
+        if imp.get('insert_time_seconds'):
+            print(f"      Insert time: {imp['insert_time_seconds']:.2f}s")
+    
+    # Verify first import
+    first_import = imports_sorted[0]
+    assert first_import['file_name'] == 'client-list-a.csv', \
+        f"First import should be client-list-a.csv, got {first_import['file_name']}"
+    assert first_import['status'] == 'success', \
+        f"First import should be successful, got {first_import['status']}"
+    assert first_import['rows_inserted'] == first_table_rows, \
+        f"First import rows mismatch: expected {first_table_rows}, got {first_import['rows_inserted']}"
+    
+    print(f"\n  ✓ First import tracked correctly")
+    
+    # Verify second import
+    second_import = imports_sorted[1]
+    assert second_import['file_name'] == 'client-list-b.csv', \
+        f"Second import should be client-list-b.csv, got {second_import['file_name']}"
+    assert second_import['status'] == 'success', \
+        f"Second import should be successful, got {second_import['status']}"
+    
+    expected_second_rows = final_table_rows - first_table_rows
+    assert second_import['rows_inserted'] == expected_second_rows, \
+        f"Second import rows mismatch: expected {expected_second_rows}, got {second_import['rows_inserted']}"
+    
+    print(f"  ✓ Second import tracked correctly")
+    
+    # Verify total rows match
+    total_tracked_rows = sum(imp['rows_inserted'] for imp in imports)
+    assert total_tracked_rows == final_table_rows, \
+        f"Total tracked rows ({total_tracked_rows}) doesn't match table rows ({final_table_rows})"
+    
+    print(f"  ✓ Total tracked rows match table rows: {total_tracked_rows}")
+    
+    # Test import statistics endpoint
+    stats_response = client.get("/import-statistics", params={"table_name": final_table_name})
+    assert stats_response.status_code == 200
+    stats_data = stats_response.json()
+    
+    print(f"\n  Import Statistics:")
+    print(f"    Total imports: {stats_data['total_imports']}")
+    print(f"    Successful: {stats_data['successful_imports']}")
+    print(f"    Failed: {stats_data['failed_imports']}")
+    print(f"    Total rows inserted: {stats_data['total_rows_inserted']}")
+    print(f"    Avg duration: {stats_data['avg_duration_seconds']:.2f}s")
+    
+    assert stats_data['total_imports'] >= 2, \
+        f"Statistics should show at least 2 imports"
+    assert stats_data['successful_imports'] >= 2, \
+        f"Statistics should show at least 2 successful imports"
+    
+    print(f"\n  ✓ Import statistics calculated correctly")
+    
+    # Test individual import detail endpoint
+    first_import_detail = client.get(f"/import-history/{first_import['import_id']}")
+    assert first_import_detail.status_code == 200
+    detail_data = first_import_detail.json()
+    
+    print(f"\n  Individual Import Detail Retrieved:")
+    print(f"    Import ID: {detail_data['import_record']['import_id']}")
+    print(f"    File: {detail_data['import_record']['file_name']}")
+    print(f"    Table: {detail_data['import_record']['table_name']}")
+    print(f"    File hash: {detail_data['import_record']['file_hash'][:16]}...")
+    
+    assert detail_data['import_record']['file_name'] == 'client-list-a.csv'
+    assert detail_data['import_record']['table_name'] == final_table_name
+    
+    print(f"  ✓ Individual import details retrieved correctly")
+    
+    # ============================================================================
     # FINAL RESULTS
     # ============================================================================
     print("\n" + "="*80)
@@ -272,6 +386,10 @@ def test_llm_sequential_file_merge():
     print(f"  ✓ Total rows in table: {final_table_rows}")
     print(f"  ✓ Only ONE table created: {final_table_name}")
     print(f"  ✓ LLM successfully merged similar files with different schemas")
+    print(f"  ✓ Import history tracked: 2 imports recorded")
+    print(f"  ✓ Import lineage verified: {total_tracked_rows} total rows")
+    print(f"  ✓ Import statistics calculated correctly")
+    print(f"  ✓ Individual import details retrievable")
     print("="*80)
     
     # ============================================================================
@@ -286,7 +404,9 @@ def test_llm_sequential_file_merge():
         with engine.begin() as conn:
             conn.execute(text(f'DROP TABLE IF EXISTS "{final_table_name}" CASCADE'))
             conn.execute(text("DELETE FROM file_imports WHERE file_name LIKE '%client-list%'"))
+            conn.execute(text("DELETE FROM import_history WHERE file_name LIKE '%client-list%'"))
             print(f"  ✓ Cleaned up table: {final_table_name}")
+            print(f"  ✓ Cleaned up import history")
     except Exception as e:
         print(f"  Warning during cleanup: {e}")
     

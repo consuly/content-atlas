@@ -7,12 +7,14 @@ This module handles the execution of import strategies recommended by the LLM ag
 from typing import Dict, Any, List
 from sqlalchemy import text, inspect
 from .mapper import detect_mapping_from_file
-from .models import create_table_if_not_exists, insert_records
+from .models import create_table_if_not_exists, insert_records, calculate_file_hash
 from .database import get_engine
 from .schemas import MappingConfig
 from .table_metadata import store_table_metadata, enrich_table_metadata
 from .schema_mapper import analyze_schema_compatibility, transform_record
+from .import_history import start_import_tracking, complete_import_tracking
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +37,50 @@ def execute_llm_import_decision(
     Returns:
         Execution result with success status and details
     """
+    start_time = time.time()
+    import_id = None
+    
     try:
         strategy = llm_decision["strategy"]
         target_table = llm_decision["target_table"]
         
         logger.info(f"Executing LLM decision: {strategy} into table '{target_table}'")
         
+        # Detect file type
+        if file_name.endswith('.csv'):
+            file_type = 'csv'
+        elif file_name.endswith(('.xlsx', '.xls')):
+            file_type = 'excel'
+        elif file_name.endswith('.json'):
+            file_type = 'json'
+        elif file_name.endswith('.xml'):
+            file_type = 'xml'
+        else:
+            file_type = 'unknown'
+        
+        # Calculate file hash
+        file_hash = calculate_file_hash(file_content)
+        file_size = len(file_content)
+        
         # Use existing detection logic to generate MappingConfig
-        file_type, detected_mapping, columns_found, rows_sampled = detect_mapping_from_file(
+        _, detected_mapping, columns_found, rows_sampled = detect_mapping_from_file(
             file_content, file_name
         )
         
         # Override table name with LLM's decision
         detected_mapping.table_name = target_table
+        
+        # Start import tracking
+        import_id = start_import_tracking(
+            source_type="local_upload",
+            file_name=file_name,
+            table_name=target_table,
+            file_size_bytes=file_size,
+            file_type=file_type,
+            file_hash=file_hash,
+            mapping_config=detected_mapping,
+            import_strategy=strategy
+        )
         
         # Map data using the detected mapping
         from .mapper import map_data
@@ -115,6 +148,7 @@ def execute_llm_import_decision(
             create_table_if_not_exists(engine, detected_mapping)
         
         # Insert records
+        insert_start = time.time()
         records_processed = insert_records(
             engine,
             detected_mapping.table_name,
@@ -123,6 +157,7 @@ def execute_llm_import_decision(
             file_content=file_content,
             file_name=file_name
         )
+        insert_time = time.time() - insert_start
         
         # Store or enrich table metadata
         if strategy == "NEW_TABLE":
@@ -143,6 +178,18 @@ def execute_llm_import_decision(
             )
             logger.info(f"Enriched metadata for existing table '{target_table}'")
         
+        # Complete import tracking
+        duration = time.time() - start_time
+        complete_import_tracking(
+            import_id=import_id,
+            status="success",
+            total_rows_in_file=len(all_records),
+            rows_processed=records_processed,
+            rows_inserted=records_processed,
+            duration_seconds=duration,
+            insert_time_seconds=insert_time
+        )
+        
         return {
             "success": True,
             "strategy_executed": strategy,
@@ -153,6 +200,19 @@ def execute_llm_import_decision(
         
     except Exception as e:
         logger.error(f"Error executing LLM import decision: {str(e)}", exc_info=True)
+        
+        # Complete import tracking with failure
+        if import_id:
+            complete_import_tracking(
+                import_id=import_id,
+                status="failed",
+                total_rows_in_file=len(all_records) if all_records else 0,
+                rows_processed=0,
+                rows_inserted=0,
+                duration_seconds=time.time() - start_time,
+                error_message=str(e)
+            )
+        
         return {
             "success": False,
             "error": str(e),
