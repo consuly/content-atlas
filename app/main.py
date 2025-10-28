@@ -25,8 +25,19 @@ from .query_agent import query_database_with_agent
 from .file_analyzer import (
     analyze_file_for_import, sample_file_data, ImportStrategy
 )
+from .auto_import import execute_llm_import_decision
+from .table_metadata import create_table_metadata_table
 
 app = FastAPI(title="Data Mapper API", version="1.0.0")
+
+# Initialize table_metadata table on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database tables on application startup."""
+    try:
+        create_table_metadata_table()
+    except Exception as e:
+        print(f"Warning: Could not initialize table_metadata: {e}")
 
 # Global task storage (in production, use Redis or database)
 task_storage: Dict[str, AsyncTaskStatus] = {}
@@ -603,23 +614,48 @@ async def analyze_file_endpoint(
                 max_iterations=max_iterations
             )
         
+        # Check if LLM made a decision
+        llm_decision = analysis_result.get("llm_decision")
+        
         # Parse LLM response to extract structured data
-        # For now, return the raw response - in production, parse this into structured format
         response = AnalyzeFileResponse(
             success=True,
             llm_response=analysis_result["response"],
             iterations_used=analysis_result["iterations_used"],
             max_iterations=max_iterations,
-            can_auto_execute=False  # Will be determined by parsing LLM response
+            can_auto_execute=False
         )
         
         # Store analysis result for later execution
         analysis_id = str(uuid.uuid4())
         analysis_storage[analysis_id] = response
         
-        # Determine if can auto-execute based on mode
-        if analysis_mode == AnalysisMode.AUTO_ALWAYS:
-            response.can_auto_execute = True
+        # AUTO-EXECUTION LOGIC
+        if analysis_mode == AnalysisMode.AUTO_ALWAYS and llm_decision:
+            # Execute the import automatically
+            try:
+                execution_result = execute_llm_import_decision(
+                    file_content=file_content,
+                    file_name=file.filename,
+                    all_records=records,  # Use all records, not just sample
+                    llm_decision=llm_decision
+                )
+                
+                if execution_result["success"]:
+                    # Update response with execution results
+                    response.can_auto_execute = True
+                    # Add execution info to response (note: this extends the schema)
+                    response.llm_response += f"\n\n✅ AUTO-EXECUTION COMPLETED:\n"
+                    response.llm_response += f"- Strategy: {execution_result['strategy_executed']}\n"
+                    response.llm_response += f"- Table: {execution_result['table_name']}\n"
+                    response.llm_response += f"- Records Processed: {execution_result['records_processed']}\n"
+                else:
+                    response.llm_response += f"\n\n❌ AUTO-EXECUTION FAILED:\n"
+                    response.llm_response += f"- Error: {execution_result.get('error', 'Unknown error')}\n"
+                    
+            except Exception as e:
+                response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {str(e)}\n"
+        
         elif analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
             # Would need to parse confidence from LLM response
             response.can_auto_execute = False  # Conservative default

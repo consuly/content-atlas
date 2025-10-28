@@ -343,6 +343,102 @@ def resolve_conflict(
         return "LLM_WILL_DECIDE"
 
 
+@tool
+def describe_file_purpose(
+    runtime: ToolRuntime[AnalysisContext]
+) -> Dict[str, Any]:
+    """
+    Analyze the semantic purpose and business domain of this file.
+    
+    CRITICAL: This should be your FIRST analysis step before any structural comparison.
+    
+    Look at the column names and sample data to determine:
+    - What is the business purpose of this data? (e.g., "customer contact information for sales")
+    - What domain/category does it belong to? (e.g., "contacts", "sales", "inventory")
+    - What are the key entities? (e.g., ["customer", "contact", "lead"])
+    
+    Returns:
+        Analysis of file's semantic purpose for matching with existing tables
+    """
+    context = runtime.context
+    sample_data = context.file_sample
+    
+    if not sample_data:
+        return {"error": "No sample data provided"}
+    
+    # Extract column names
+    columns = list(sample_data[0].keys())
+    
+    # Get a few sample records for context
+    sample_records = sample_data[:5]
+    
+    return {
+        "columns": columns,
+        "sample_records": sample_records,
+        "instruction": "Based on these columns and sample data, determine:\n"
+                      "1. Business purpose (what is this data used for?)\n"
+                      "2. Data domain (contacts, products, sales, etc.)\n"
+                      "3. Key entities (customer, product, transaction, etc.)\n"
+                      "Provide your analysis in your response."
+    }
+
+
+@tool
+def make_import_decision(
+    strategy: str,
+    target_table: str,
+    reasoning: str,
+    purpose_short: str,
+    data_domain: Optional[str] = None,
+    key_entities: Optional[List[str]] = None,
+    runtime: ToolRuntime[AnalysisContext] = None
+) -> Dict[str, Any]:
+    """
+    Make final import decision with strategy and target table.
+    
+    This tool should be called when you've completed your analysis and are ready
+    to make a recommendation. It records your decision for execution.
+    
+    Args:
+        strategy: Import strategy - one of: NEW_TABLE, MERGE_EXACT, EXTEND_TABLE, ADAPT_DATA
+        target_table: Name of target table (for NEW_TABLE, this is the new table name; 
+                     for merge strategies, this is the existing table to merge into)
+        reasoning: Clear explanation of why this strategy was chosen
+        purpose_short: Brief description of what this data is for (e.g., "Customer contact list")
+        data_domain: Category/domain (e.g., "contacts", "sales") - optional
+        key_entities: List of key entity types (e.g., ["customer", "contact"]) - optional
+        
+    Returns:
+        Confirmation of decision recorded
+    """
+    context = runtime.context
+    
+    # Validate strategy
+    valid_strategies = ["NEW_TABLE", "MERGE_EXACT", "EXTEND_TABLE", "ADAPT_DATA"]
+    if strategy not in valid_strategies:
+        return {
+            "error": f"Invalid strategy '{strategy}'. Must be one of: {', '.join(valid_strategies)}"
+        }
+    
+    # Store decision in context (will be retrieved by caller)
+    context.file_metadata["llm_decision"] = {
+        "strategy": strategy,
+        "target_table": target_table,
+        "reasoning": reasoning,
+        "purpose_short": purpose_short,
+        "data_domain": data_domain,
+        "key_entities": key_entities or []
+    }
+    
+    return {
+        "success": True,
+        "message": f"Decision recorded: {strategy} into table '{target_table}'",
+        "strategy": strategy,
+        "target_table": target_table,
+        "purpose": purpose_short
+    }
+
+
 # Global checkpointer instance for conversation memory
 _file_analyzer_checkpointer = InMemorySaver()
 
@@ -403,10 +499,12 @@ def create_file_analyzer_agent(max_iterations: int = 5):
     )
     
     tools = [
+        describe_file_purpose,
         analyze_file_structure,
         get_existing_database_schema,
         compare_file_with_tables,
-        resolve_conflict
+        resolve_conflict,
+        make_import_decision
     ]
     
     system_prompt = """You are a database consolidation expert helping users organize data from multiple sources.
@@ -424,33 +522,52 @@ Available Import Strategies:
 3. EXTEND_TABLE - File is similar to an existing table but has additional columns
 4. ADAPT_DATA - File data can be transformed to fit an existing table structure
 
-Analysis Process:
-1. Use analyze_file_structure to understand the file's columns and data types
-2. Use get_existing_database_schema to see what tables already exist
-3. Use compare_file_with_tables to find potential matches
-4. Consider business semantics - do columns represent the same concepts?
-5. Use resolve_conflict if there are data type or naming conflicts
+**CRITICAL FIRST STEP - SEMANTIC ANALYSIS:**
+Before ANY structural comparison, you MUST:
+1. Call describe_file_purpose to understand what this data is about
+2. Analyze the business purpose and domain of the file
+3. Get existing table purposes from get_existing_database_schema
+4. Look for SEMANTIC matches first (similar business purpose)
+
+Analysis Process (SEMANTIC-FIRST):
+1. **FIRST**: Call describe_file_purpose - understand what this data is for
+2. Call get_existing_database_schema - see existing tables AND their purposes
+3. **SEMANTIC MATCHING**: Compare file purpose with existing table purposes
+   - If semantic match found (similar business purpose) → prioritize merging
+   - If no semantic match → likely needs NEW_TABLE
+4. Call analyze_file_structure for detailed column analysis
+5. Call compare_file_with_tables for structural comparison
+6. Make decision based on BOTH semantic AND structural fit
+7. Call resolve_conflict if needed
+8. **FINAL**: Call make_import_decision with strategy, target_table, AND purpose information
+
+Decision Priority (MOST IMPORTANT):
+- **Semantic match + reasonable structure = MERGE** (even with column name differences)
+- **Semantic match + incompatible structure = You decide if reconciliation is possible**
+- **No semantic match = NEW_TABLE** (even if some columns overlap)
+
+Example: Two "customer contact list" files with different column names should MERGE because they serve the same business purpose.
 
 Important Considerations:
-- Column name variations (e.g., "customer_id" vs "client_id") may represent the same data
+- Business purpose is MORE important than exact column matches
+- Column name variations (e.g., "customer_id" vs "client_id") are acceptable if purpose matches
 - Data consolidation benefits should be weighed against data integrity
 - Consider existing table usage patterns and row counts
 - Provide clear reasoning for your recommendations
 - Include confidence scores (0.0 to 1.0) based on match quality
-- If you encounter errors or conflicts, explain them clearly for potential retry
 
 CRITICAL: You have a maximum of {max_iterations} tool calls to complete your analysis.
 Be efficient and strategic with your tool usage.
 
 Output Format:
-Provide a structured recommendation including:
+After calling make_import_decision, provide a structured recommendation including:
 - Recommended strategy (NEW_TABLE, MERGE_EXACT, EXTEND_TABLE, or ADAPT_DATA)
 - Confidence score (0.0 to 1.0)
-- Clear reasoning for the recommendation
-- If merging/extending: which table to use
+- Clear reasoning emphasizing SEMANTIC match
+- Business purpose of the data
+- If merging/extending: which table to use and why purposes align
 - Suggested column mappings
 - Any data quality issues or conflicts found
-- Any errors that require user input or retry
 """
     
     agent = create_agent(
@@ -534,11 +651,15 @@ Please analyze the file structure, compare it with existing tables, and recommen
         # Count iterations used
         iterations_used = len([m for m in result["messages"] if hasattr(m, 'tool_calls') and m.tool_calls])
         
+        # Extract LLM decision if it was made
+        llm_decision = context.file_metadata.get("llm_decision")
+        
         return {
             "success": True,
             "response": response_text,
             "iterations_used": iterations_used,
-            "max_iterations": max_iterations
+            "max_iterations": max_iterations,
+            "llm_decision": llm_decision  # Will be None if LLM didn't call make_import_decision
         }
         
     except Exception as e:
