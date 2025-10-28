@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 import json
 import uuid
 from typing import Dict, Optional
+from contextlib import asynccontextmanager
 from .database import get_db, get_engine
 from .schemas import (
     MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, 
@@ -30,17 +31,28 @@ from .table_metadata import create_table_metadata_table
 from .import_history import create_import_history_table
 import time
 
-app = FastAPI(title="Data Mapper API", version="1.0.0")
 
-# Initialize tables on startup
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database tables on application startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle - startup and shutdown events."""
+    # Startup: Initialize database tables
     try:
         create_table_metadata_table()
         create_import_history_table()
     except Exception as e:
         print(f"Warning: Could not initialize tables: {e}")
+    
+    yield  # Application runs here
+    
+    # Shutdown: Add cleanup logic here if needed in future
+    pass
+
+
+app = FastAPI(
+    title="Data Mapper API",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # Global task storage (in production, use Redis or database)
 task_storage: Dict[str, AsyncTaskStatus] = {}
@@ -769,14 +781,23 @@ async def analyze_file_endpoint(
             llm_response=analysis_result["response"],
             iterations_used=analysis_result["iterations_used"],
             max_iterations=max_iterations,
-            can_auto_execute=False
+            can_auto_execute=False  # Will be set below based on analysis_mode
         )
+        
+        # Determine can_auto_execute based on analysis_mode
+        if analysis_mode == AnalysisMode.AUTO_ALWAYS:
+            response.can_auto_execute = True
+        elif analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
+            # Would need to parse confidence from LLM response
+            response.can_auto_execute = False  # Conservative default
+        else:  # MANUAL
+            response.can_auto_execute = False
         
         # Store analysis result for later execution
         analysis_id = str(uuid.uuid4())
         analysis_storage[analysis_id] = response
         
-        # AUTO-EXECUTION LOGIC
+        # AUTO-EXECUTION LOGIC (separate from determining can_auto_execute)
         if analysis_mode == AnalysisMode.AUTO_ALWAYS and llm_decision:
             # Execute the import automatically
             try:
@@ -802,9 +823,6 @@ async def analyze_file_endpoint(
             except Exception as e:
                 response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {str(e)}\n"
         
-        elif analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
-            # Would need to parse confidence from LLM response
-            response.can_auto_execute = False  # Conservative default
         
         return response
         
@@ -876,18 +894,21 @@ async def analyze_b2_file_endpoint(
             llm_response=analysis_result["response"],
             iterations_used=analysis_result["iterations_used"],
             max_iterations=request.max_iterations,
-            can_auto_execute=False
+            can_auto_execute=False  # Will be set below based on analysis_mode
         )
+        
+        # Determine can_auto_execute based on analysis_mode
+        if request.analysis_mode == AnalysisMode.AUTO_ALWAYS:
+            response.can_auto_execute = True
+        elif request.analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
+            # Would need to parse confidence from LLM response
+            response.can_auto_execute = False  # Conservative default
+        else:  # MANUAL
+            response.can_auto_execute = False
         
         # Store analysis result
         analysis_id = str(uuid.uuid4())
         analysis_storage[analysis_id] = response
-        
-        # Determine auto-execute capability
-        if request.analysis_mode == AnalysisMode.AUTO_ALWAYS:
-            response.can_auto_execute = True
-        elif request.analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
-            response.can_auto_execute = False  # Conservative default
         
         return response
         

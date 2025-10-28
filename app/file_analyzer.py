@@ -1,7 +1,7 @@
 """
 AI-powered file analysis for intelligent database consolidation.
 
-This module uses LangChain agents with Claude Sonnet to analyze uploaded files
+This module uses LangChain agents with Claude Haiku to analyze uploaded files
 and determine the optimal import strategy by comparing with existing database tables.
 """
 
@@ -492,7 +492,7 @@ def create_file_analyzer_agent(max_iterations: int = 5):
         Configured LangChain agent with memory and retry support
     """
     model = ChatAnthropic(
-        model="claude-sonnet-4-5",
+        model="claude-haiku-4-5-20251001",  # Much faster than Sonnet
         api_key=settings.anthropic_api_key,
         temperature=0,  # Deterministic for consistent decisions
         max_tokens=4096

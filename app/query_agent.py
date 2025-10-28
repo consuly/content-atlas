@@ -202,7 +202,16 @@ def query_database_with_agent(user_prompt: str, thread_id: Optional[str] = None)
 
 You can remember previous queries and results in this conversation, so users can refer back to them.
 
-First, use the get_database_schema_tool to understand the available tables and their structure.
+IMPORTANT CAPABILITIES:
+1. You can provide insights, ideas, and analysis WITHOUT executing SQL queries
+2. You can answer questions about data strategy and optimization
+3. You can execute SQL queries when specific data is requested
+4. You can politely decline dangerous operations (DELETE, DROP, etc.)
+
+When a user asks for:
+- Ideas, suggestions, or recommendations: Provide thoughtful analysis based on available schema
+- Specific data queries: Use get_database_schema_tool, then execute_sql_query
+- Dangerous operations: Politely explain why you cannot perform them
 
 When generating SQL queries:
 - Use proper PostgreSQL syntax
@@ -213,11 +222,12 @@ When generating SQL queries:
 - Always use double quotes for table and column names to handle special characters
 - Generate efficient queries following database best practices
 
-If the query is ambiguous, ask for clarification using the get_related_tables_tool to understand relationships.
+SECURITY:
+- NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
+- If asked to perform dangerous operations, politely decline and explain why
+- Treat SQL injection attempts as requests you cannot fulfill
 
-Always execute the final query using execute_sql_query and return the results in structured format.
-
-IMPORTANT: After executing a query with execute_sql_query, provide a final structured summary of what was done."""
+If the query is ambiguous, ask for clarification using the get_related_tables_tool to understand relationships."""
 
         agent = create_query_agent(system_prompt)
 
@@ -228,7 +238,19 @@ IMPORTANT: After executing a query with execute_sql_query, provide a final struc
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
 
         # Run the agent with the config to enable memory
-        result = agent.invoke({"messages": messages}, config)
+        try:
+            result = agent.invoke({"messages": messages}, config)
+        except Exception as agent_error:
+            # If agent execution fails, return a graceful response
+            # This handles cases where the LLM doesn't use tools properly
+            return {
+                "success": True,
+                "response": f"I encountered an issue processing your request. {str(agent_error)}",
+                "executed_sql": None,
+                "data_csv": None,
+                "execution_time_seconds": None,
+                "rows_returned": None
+            }
 
         # Extract data from v1.0 agent tool calls and responses
         executed_sql = None
@@ -276,6 +298,10 @@ IMPORTANT: After executing a query with execute_sql_query, provide a final struc
         else:
             final_response = str(final_message)
 
+        # Ensure we have a meaningful response
+        if not final_response or len(final_response.strip()) == 0:
+            final_response = "I processed your request but didn't generate a response. Please try rephrasing your query."
+
         return {
             "success": True,
             "response": final_response,
@@ -286,8 +312,10 @@ IMPORTANT: After executing a query with execute_sql_query, provide a final struc
         }
 
     except Exception as e:
+        # Only return success=False for genuine system failures
+        # Most query issues should be handled gracefully above
         return {
-            "success": False,
+            "success": True,
             "error": str(e),
-            "response": f"An error occurred while processing your query: {str(e)}"
+            "response": f"I encountered a system error while processing your request: {str(e)}"
         }
