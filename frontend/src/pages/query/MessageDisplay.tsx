@@ -144,9 +144,6 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
         {/* Results Table */}
         {message.dataCsv && (
           <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 8 }}>
-              <Text strong>Query Results</Text>
-            </div>
             <ResultsTable csvData={message.dataCsv} />
           </div>
         )}

@@ -127,7 +127,7 @@ def execute_sql_query(sql_query: str) -> str:
             execution_time = time.time() - start_time
 
             if not rows:
-                return f"Query executed successfully in {execution_time:.2f}s. No results returned."
+                return f"Query executed successfully. No results returned.\n\nExecution time: {execution_time:.2f}s"
 
             # Convert to DataFrame for CSV formatting
             df = pd.DataFrame(rows, columns=columns)
@@ -135,9 +135,10 @@ def execute_sql_query(sql_query: str) -> str:
             # Format as CSV string
             csv_output = df.to_csv(index=False)
 
-            return f"""Query executed successfully in {execution_time:.2f}s.
+            return f"""Query executed successfully.
 Rows returned: {len(df)}
 Columns: {', '.join(columns)}
+Execution time: {execution_time:.2f}s
 
 CSV Data:
 {csv_output}"""

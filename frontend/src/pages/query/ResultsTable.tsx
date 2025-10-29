@@ -3,9 +3,12 @@
  */
 
 import React, { useMemo } from 'react';
-import { Table } from 'antd';
+import { Table, Button, Space, Typography } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import Papa from 'papaparse';
+
+const { Text } = Typography;
 
 interface ResultsTableProps {
   csvData: string;
@@ -16,6 +19,23 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   csvData, 
   maxHeight = 400 
 }) => {
+  const handleDownload = () => {
+    // Create a blob from the CSV data
+    const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
+    // Create a temporary link and trigger download
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `query-results-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    
+    // Cleanup
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const { columns, dataSource } = useMemo(() => {
     try {
       // Parse CSV data
@@ -46,6 +66,16 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
             if (value === null || value === undefined || value === '') {
               return <span style={{ color: '#999' }}>-</span>;
             }
+            
+            // Check if value is numeric and format with thousand separators
+            const numValue = Number(value);
+            if (!isNaN(numValue) && typeof value !== 'boolean' && value !== '') {
+              return numValue.toLocaleString('en-US', {
+                maximumFractionDigits: 10, // Preserve decimals
+                minimumFractionDigits: 0   // Don't force decimals on integers
+              });
+            }
+            
             return String(value);
           },
         })
@@ -88,18 +118,33 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   }
 
   return (
-    <Table
-      columns={columns}
-      dataSource={dataSource}
-      pagination={{
-        pageSize: 10,
-        showSizeChanger: true,
-        showTotal: (total) => `Total ${total} rows`,
-        pageSizeOptions: ['10', '20', '50', '100'],
-      }}
-      scroll={{ x: 'max-content', y: maxHeight }}
-      size="small"
-      bordered
-    />
+    <div>
+      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Space>
+          <Text strong>Query Results</Text>
+          <Text type="secondary">({dataSource.length} rows)</Text>
+        </Space>
+        <Button
+          icon={<DownloadOutlined />}
+          onClick={handleDownload}
+          size="small"
+        >
+          Download CSV
+        </Button>
+      </div>
+      <Table
+        columns={columns}
+        dataSource={dataSource}
+        pagination={{
+          pageSize: 10,
+          showSizeChanger: true,
+          showTotal: (total) => `Total ${total} rows`,
+          pageSizeOptions: ['10', '20', '50', '100'],
+        }}
+        scroll={{ x: 'max-content', y: maxHeight }}
+        size="small"
+        bordered
+      />
+    </div>
   );
 };
