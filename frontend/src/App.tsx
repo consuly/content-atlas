@@ -25,6 +25,7 @@ import { ColorModeContextProvider } from "./contexts/color-mode";
 import { ForgotPassword } from "./pages/forgotPassword";
 import { Login } from "./pages/login";
 import { Register } from "./pages/register";
+import { ImportPage } from "./pages/import";
 
 function App() {
   return (
@@ -102,7 +103,7 @@ function App() {
                       <Route index element={<div>Tables List - Coming Soon</div>} />
                     </Route>
                     <Route path="/import">
-                      <Route index element={<div>Import Data - Coming Soon</div>} />
+                      <Route index element={<ImportPage />} />
                     </Route>
                     <Route path="/query">
                       <Route index element={<div>Query Database - Coming Soon</div>} />

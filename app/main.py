@@ -44,8 +44,10 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown events."""
     # Startup: Initialize database tables
     try:
+        from .uploaded_files import create_uploaded_files_table
         create_table_metadata_table()
         create_import_history_table()
+        create_uploaded_files_table()
         init_auth_tables()
         print("✓ Database tables initialized successfully")
     except Exception as e:
@@ -957,6 +959,344 @@ async def get_table_lineage(
 @app.get("/")
 async def root():
     return {"message": "Data Mapper API", "version": "1.0.0"}
+
+
+# ============================================================================
+# FILE UPLOAD ENDPOINTS
+# ============================================================================
+
+@app.post("/upload-to-b2")
+async def upload_file_to_b2_endpoint(
+    file: UploadFile = File(...),
+    allow_duplicate: bool = Form(False),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload a file to Backblaze B2 storage.
+    
+    Parameters:
+    - file: The file to upload
+    - allow_duplicate: If true, allow uploading file with same name (creates new ID)
+    
+    Returns:
+    - File metadata including B2 file ID and upload status
+    """
+    from .b2_utils import upload_file_to_b2, check_file_exists_in_b2
+    from .uploaded_files import insert_uploaded_file, get_uploaded_file_by_name
+    from .schemas import UploadFileResponse, UploadedFileInfo, FileExistsResponse
+    import traceback
+    
+    print(f"\n{'='*80}")
+    print(f"[UPLOAD] Starting upload process for file: {file.filename}")
+    print(f"[UPLOAD] Content type: {file.content_type}")
+    print(f"[UPLOAD] Allow duplicate: {allow_duplicate}")
+    print(f"{'='*80}\n")
+    
+    try:
+        # Check if file already exists
+        print(f"[UPLOAD] Checking if file exists in database...")
+        existing_file = get_uploaded_file_by_name(file.filename)
+        
+        if existing_file:
+            print(f"[UPLOAD] File found in database: {existing_file['id']}")
+            if not allow_duplicate:
+                print(f"[UPLOAD] Duplicate not allowed, returning conflict response")
+                return FileExistsResponse(
+                    success=False,
+                    exists=True,
+                    message=f"File '{file.filename}' already exists. Choose to overwrite, create duplicate, or skip.",
+                    existing_file=UploadedFileInfo(**existing_file)
+                )
+            else:
+                print(f"[UPLOAD] Duplicate allowed, proceeding with upload")
+        else:
+            print(f"[UPLOAD] File not found in database, proceeding with new upload")
+        
+        # Read file content
+        print(f"[UPLOAD] Reading file content...")
+        file_content = await file.read()
+        file_size = len(file_content)
+        print(f"[UPLOAD] File size: {file_size} bytes ({file_size / 1024:.2f} KB)")
+        
+        # Upload to B2
+        print(f"[UPLOAD] Calling upload_file_to_b2()...")
+        print(f"[UPLOAD] Target folder: uploads")
+        print(f"[UPLOAD] Target filename: {file.filename}")
+        
+        b2_result = upload_file_to_b2(
+            file_content=file_content,
+            file_name=file.filename,
+            folder="uploads"
+        )
+        
+        print(f"[UPLOAD] B2 upload successful!")
+        print(f"[UPLOAD] B2 File ID: {b2_result['file_id']}")
+        print(f"[UPLOAD] B2 File Path: {b2_result['file_path']}")
+        print(f"[UPLOAD] B2 File Size: {b2_result['size']} bytes")
+        
+        # Store in database
+        print(f"[UPLOAD] Storing file metadata in database...")
+        uploaded_file = insert_uploaded_file(
+            file_name=file.filename,
+            b2_file_id=b2_result["file_id"],
+            b2_file_path=b2_result["file_path"],
+            file_size=file_size,
+            content_type=file.content_type,
+            user_id=None  # TODO: Get from auth context
+        )
+        
+        print(f"[UPLOAD] Database record created: {uploaded_file['id']}")
+        print(f"[UPLOAD] Upload process completed successfully!")
+        print(f"{'='*80}\n")
+        
+        return UploadFileResponse(
+            success=True,
+            message="File uploaded successfully",
+            files=[UploadedFileInfo(**uploaded_file)]
+        )
+        
+    except Exception as e:
+        print(f"\n{'!'*80}")
+        print(f"[UPLOAD ERROR] Upload failed for file: {file.filename}")
+        print(f"[UPLOAD ERROR] Error type: {type(e).__name__}")
+        print(f"[UPLOAD ERROR] Error message: {str(e)}")
+        print(f"[UPLOAD ERROR] Traceback:")
+        print(traceback.format_exc())
+        print(f"{'!'*80}\n")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.post("/upload-to-b2/overwrite")
+async def overwrite_file_in_b2_endpoint(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Overwrite an existing file in B2 storage.
+    
+    Parameters:
+    - file: The file to upload (will replace existing file with same name)
+    
+    Returns:
+    - Updated file metadata
+    """
+    from .b2_utils import upload_file_to_b2, delete_file_from_b2
+    from .uploaded_files import get_uploaded_file_by_name, delete_uploaded_file, insert_uploaded_file
+    from .schemas import UploadFileResponse, UploadedFileInfo
+    
+    try:
+        # Check if file exists
+        existing_file = get_uploaded_file_by_name(file.filename)
+        
+        if existing_file:
+            # Delete old file from B2
+            delete_file_from_b2(existing_file["b2_file_path"])
+            # Delete old database record
+            delete_uploaded_file(existing_file["id"])
+        
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+        
+        # Upload new version to B2
+        b2_result = upload_file_to_b2(
+            file_content=file_content,
+            file_name=file.filename,
+            folder="uploads"
+        )
+        
+        # Store in database
+        uploaded_file = insert_uploaded_file(
+            file_name=file.filename,
+            b2_file_id=b2_result["file_id"],
+            b2_file_path=b2_result["file_path"],
+            file_size=file_size,
+            content_type=file.content_type,
+            user_id=None  # TODO: Get from auth context
+        )
+        
+        return UploadFileResponse(
+            success=True,
+            message="File overwritten successfully",
+            files=[UploadedFileInfo(**uploaded_file)]
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Overwrite failed: {str(e)}")
+
+
+@app.get("/uploaded-files")
+async def list_uploaded_files_endpoint(
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    List uploaded files with optional status filter.
+    
+    Parameters:
+    - status: Filter by status ('uploaded', 'mapping', 'mapped', 'failed')
+    - limit: Maximum number of files to return (default: 100)
+    - offset: Number of files to skip for pagination (default: 0)
+    
+    Returns:
+    - List of uploaded files with metadata
+    """
+    from .uploaded_files import get_uploaded_files, get_uploaded_files_count
+    from .schemas import UploadedFilesListResponse, UploadedFileInfo
+    
+    try:
+        files = get_uploaded_files(
+            status=status,
+            user_id=None,  # TODO: Filter by current user
+            limit=limit,
+            offset=offset
+        )
+        
+        total_count = get_uploaded_files_count(status=status)
+        
+        return UploadedFilesListResponse(
+            success=True,
+            files=[UploadedFileInfo(**f) for f in files],
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+
+@app.get("/uploaded-files/{file_id}")
+async def get_uploaded_file_endpoint(
+    file_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get details of a specific uploaded file.
+    
+    Parameters:
+    - file_id: UUID of the uploaded file
+    
+    Returns:
+    - File metadata and status
+    """
+    from .uploaded_files import get_uploaded_file_by_id
+    from .schemas import UploadedFileDetailResponse, UploadedFileInfo
+    
+    try:
+        file = get_uploaded_file_by_id(file_id)
+        
+        if not file:
+            raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+        
+        return UploadedFileDetailResponse(
+            success=True,
+            file=UploadedFileInfo(**file)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get file: {str(e)}")
+
+
+@app.delete("/uploaded-files/{file_id}")
+async def delete_uploaded_file_endpoint(
+    file_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete an uploaded file from B2 and database.
+    
+    Parameters:
+    - file_id: UUID of the uploaded file to delete
+    
+    Returns:
+    - Success message
+    """
+    from .b2_utils import delete_file_from_b2
+    from .uploaded_files import get_uploaded_file_by_id, delete_uploaded_file
+    from .schemas import DeleteFileResponse
+    
+    try:
+        # Get file info
+        file = get_uploaded_file_by_id(file_id)
+        
+        if not file:
+            raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+        
+        # Delete from B2
+        b2_deleted = delete_file_from_b2(file["b2_file_path"])
+        
+        if not b2_deleted:
+            raise HTTPException(status_code=500, detail="Failed to delete file from B2")
+        
+        # Delete from database
+        db_deleted = delete_uploaded_file(file_id)
+        
+        if not db_deleted:
+            raise HTTPException(status_code=500, detail="Failed to delete file from database")
+        
+        return DeleteFileResponse(
+            success=True,
+            message=f"File '{file['file_name']}' deleted successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@app.patch("/uploaded-files/{file_id}/status")
+async def update_file_status_endpoint(
+    file_id: str,
+    status: str,
+    mapped_table_name: Optional[str] = None,
+    mapped_rows: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Update the status of an uploaded file.
+    
+    Parameters:
+    - file_id: UUID of the uploaded file
+    - status: New status ('uploaded', 'mapping', 'mapped', 'failed')
+    - mapped_table_name: Table name if status is 'mapped'
+    - mapped_rows: Number of rows if status is 'mapped'
+    
+    Returns:
+    - Updated file metadata
+    """
+    from .uploaded_files import update_file_status, get_uploaded_file_by_id
+    from .schemas import UploadedFileDetailResponse, UploadedFileInfo
+    
+    try:
+        # Update status
+        updated = update_file_status(
+            file_id=file_id,
+            status=status,
+            mapped_table_name=mapped_table_name,
+            mapped_rows=mapped_rows
+        )
+        
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+        
+        # Get updated file
+        file = get_uploaded_file_by_id(file_id)
+        
+        return UploadedFileDetailResponse(
+            success=True,
+            file=UploadedFileInfo(**file)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Status update failed: {str(e)}")
 
 
 # ============================================================================

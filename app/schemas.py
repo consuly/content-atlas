@@ -346,3 +346,56 @@ class TableLineageResponse(BaseModel):
     imports: List[ImportHistoryRecord]
     total_imports: int
     total_rows_contributed: int
+
+
+# File Upload Endpoints
+class UploadedFileInfo(BaseModel):
+    """Information about an uploaded file"""
+    id: str
+    file_name: str
+    b2_file_id: str
+    b2_file_path: str
+    file_size: int
+    content_type: Optional[str] = None
+    upload_date: Optional[str] = None
+    status: str  # 'uploaded', 'mapping', 'mapped', 'failed'
+    mapped_table_name: Optional[str] = None
+    mapped_date: Optional[str] = None
+    mapped_rows: Optional[int] = None
+    error_message: Optional[str] = None
+
+
+class UploadFileResponse(BaseModel):
+    """Response from file upload"""
+    success: bool
+    message: str
+    files: List[UploadedFileInfo]
+
+
+class FileExistsResponse(BaseModel):
+    """Response when file already exists"""
+    success: bool
+    exists: bool
+    message: str
+    existing_file: Optional[UploadedFileInfo] = None
+
+
+class UploadedFilesListResponse(BaseModel):
+    """Response for listing uploaded files"""
+    success: bool
+    files: List[UploadedFileInfo]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class UploadedFileDetailResponse(BaseModel):
+    """Response for single uploaded file detail"""
+    success: bool
+    file: UploadedFileInfo
+
+
+class DeleteFileResponse(BaseModel):
+    """Response from file deletion"""
+    success: bool
+    message: str
