@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import json
@@ -29,6 +30,12 @@ from .file_analyzer import (
 from .auto_import import execute_llm_import_decision
 from .table_metadata import create_table_metadata_table
 from .import_history import create_import_history_table
+from .auth import (
+    authenticate_user, create_access_token, get_current_user, 
+    create_user, init_auth_tables, User
+)
+from .auth_schemas import UserLogin, UserRegister, AuthResponse, Token, UserResponse
+from datetime import timedelta
 import time
 
 
@@ -39,6 +46,8 @@ async def lifespan(app: FastAPI):
     try:
         create_table_metadata_table()
         create_import_history_table()
+        init_auth_tables()
+        print("✓ Database tables initialized successfully")
     except Exception as e:
         print(f"Warning: Could not initialize tables: {e}")
     
@@ -52,6 +61,18 @@ app = FastAPI(
     title="Data Mapper API",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:3000",  # Alternative frontend port
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PUT, DELETE, OPTIONS, etc.)
+    allow_headers=["*"],  # Allow all headers including Authorization
 )
 
 # Global task storage (in production, use Redis or database)
@@ -936,3 +957,94 @@ async def get_table_lineage(
 @app.get("/")
 async def root():
     return {"message": "Data Mapper API", "version": "1.0.0"}
+
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/auth/register", response_model=AuthResponse)
+async def register(user_data: UserRegister, db: Session = Depends(get_db)):
+    """
+    Register a new user.
+    
+    Parameters:
+    - email: User's email address
+    - password: User's password (will be hashed)
+    - full_name: Optional full name
+    """
+    try:
+        # Create user
+        user = create_user(
+            db=db,
+            email=user_data.email,
+            password=user_data.password,
+            full_name=user_data.full_name
+        )
+        
+        # Generate JWT token
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=60 * 24)  # 24 hours
+        )
+        
+        return AuthResponse(
+            success=True,
+            token=Token(access_token=access_token),
+            user=UserResponse.from_orm(user)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    """
+    Login with email and password.
+    
+    Parameters:
+    - email: User's email address
+    - password: User's password
+    
+    Returns:
+    - JWT access token
+    - User information
+    """
+    try:
+        # Authenticate user
+        user = authenticate_user(db, credentials.email, credentials.password)
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect email or password"
+            )
+        
+        # Generate JWT token
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=60 * 24)  # 24 hours
+        )
+        
+        return AuthResponse(
+            success=True,
+            token=Token(access_token=access_token),
+            user=UserResponse.from_orm(user)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """
+    Get current authenticated user information.
+    
+    Requires: Bearer token in Authorization header
+    """
+    return UserResponse.from_orm(current_user)

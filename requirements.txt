@@ -7,6 +7,7 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 pydantic>=2.7.4
 pydantic-settings==2.1.0
+email-validator>=2.0.0
 python-multipart==0.0.6
 lxml==4.9.3
 pytest==7.4.3
@@ -17,3 +18,5 @@ langchain-anthropic>=0.2.0
 langchain-google-genai>=2.0.0
 langchain-core>=0.3.0
 rich>=13.0.0
+python-jose[cryptography]==3.3.0
+bcrypt>=4.0.0

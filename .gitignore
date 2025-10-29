@@ -145,4 +145,19 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
-.env
+
+# Frontend (React/Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/.env.development
+frontend/.env.test
+frontend/.env.production
+frontend/*.local
+
+# Frontend build and cache
+frontend/.vite/
+frontend/.cache/
