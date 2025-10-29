@@ -26,6 +26,7 @@ import { ForgotPassword } from "./pages/forgotPassword";
 import { Login } from "./pages/login";
 import { Register } from "./pages/register";
 import { ImportPage } from "./pages/import";
+import { QueryPage } from "./pages/query";
 
 function App() {
   return (
@@ -41,11 +42,11 @@ function App() {
                 authProvider={authProvider}
                 resources={[
                   {
-                    name: "tables",
-                    list: "/tables",
+                    name: "query",
+                    list: "/query",
                     meta: {
-                      label: "Tables",
-                      icon: "📊",
+                      label: "Query Database",
+                      icon: "💬",
                     },
                   },
                   {
@@ -54,14 +55,6 @@ function App() {
                     meta: {
                       label: "Import Data",
                       icon: "📤",
-                    },
-                  },
-                  {
-                    name: "query",
-                    list: "/query",
-                    meta: {
-                      label: "Query Database",
-                      icon: "💬",
                     },
                   },
                   {
@@ -97,16 +90,13 @@ function App() {
                   >
                     <Route
                       index
-                      element={<NavigateToResource resource="tables" />}
+                      element={<NavigateToResource resource="query" />}
                     />
-                    <Route path="/tables">
-                      <Route index element={<div>Tables List - Coming Soon</div>} />
-                    </Route>
                     <Route path="/import">
                       <Route index element={<ImportPage />} />
                     </Route>
                     <Route path="/query">
-                      <Route index element={<div>Query Database - Coming Soon</div>} />
+                      <Route index element={<QueryPage />} />
                     </Route>
                     <Route path="/import-history">
                       <Route index element={<div>Import History - Coming Soon</div>} />
