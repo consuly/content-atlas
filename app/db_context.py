@@ -16,7 +16,8 @@ def get_database_schema() -> Dict[str, Any]:
             FROM information_schema.tables
             WHERE table_schema = 'public'
             AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns',
-                                 'raster_columns', 'raster_overviews')
+                                 'raster_columns', 'raster_overviews',
+                                 'file_imports', 'table_metadata', 'import_history')
             AND table_name NOT LIKE 'pg_%'
             ORDER BY table_name
         """))
