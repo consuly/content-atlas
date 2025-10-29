@@ -79,124 +79,39 @@ async def map_data_endpoint(
     mapping_json: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    from .import_history import start_import_tracking, complete_import_tracking
-    from .models import calculate_file_hash
-    
-    start_time = time.time()
-    import_id = None
+    from .import_orchestrator import execute_data_import
+    from .models import FileAlreadyImportedException, DuplicateDataException
     
     try:
         # Parse mapping config
         if not mapping_json:
             raise HTTPException(status_code=400, detail="Mapping configuration required")
         mapping_data = json.loads(mapping_json)
-        print(f"DEBUG: Parsed mapping data: {mapping_data}")
         config = MappingConfig(**mapping_data)
-        print(f"DEBUG: Created config with duplicate_check: {config.duplicate_check}")
 
         # Read file content
         file_content = await file.read()
-        file_size = len(file_content)
-        file_hash = calculate_file_hash(file_content)
-
-        # Detect file type
-        file_type = detect_file_type(file.filename)
         
-        # Start import tracking
-        import_id = start_import_tracking(
-            source_type="local_upload",
+        # Execute unified import
+        result = execute_data_import(
+            file_content=file_content,
             file_name=file.filename,
-            table_name=config.table_name,
-            file_size_bytes=file_size,
-            file_type=file_type,
-            file_hash=file_hash,
-            mapping_config=config
-        )
-        
-        parse_start = time.time()
-        
-        # Process file
-        if file_type == 'csv':
-            records = process_csv(file_content)
-        elif file_type == 'excel':
-            records = process_excel(file_content)
-        elif file_type == 'json':
-            records = process_json(file_content)
-        elif file_type == 'xml':
-            records = process_xml(file_content)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
-        
-        parse_time = time.time() - parse_start
-        total_rows = len(records)
-
-        # Map data
-        mapped_records, errors = map_data(records, config)
-
-        # Create table if needed
-        create_table_if_not_exists(get_engine(), config)
-
-        # Insert records
-        insert_start = time.time()
-        records_processed = insert_records(get_engine(), config.table_name, mapped_records, config=config, file_content=file_content, file_name=file.filename)
-        insert_time = time.time() - insert_start
-        
-        # Complete import tracking
-        duration = time.time() - start_time
-        complete_import_tracking(
-            import_id=import_id,
-            status="success",
-            total_rows_in_file=total_rows,
-            rows_processed=records_processed,
-            rows_inserted=records_processed,
-            duration_seconds=duration,
-            parsing_time_seconds=parse_time,
-            insert_time_seconds=insert_time
+            mapping_config=config,
+            source_type="local_upload"
         )
 
         return MapDataResponse(
             success=True,
             message="Data mapped and inserted successfully",
-            records_processed=records_processed,
-            table_name=config.table_name
+            records_processed=result["records_processed"],
+            table_name=result["table_name"]
         )
 
     except FileAlreadyImportedException as e:
-        if import_id:
-            complete_import_tracking(
-                import_id=import_id,
-                status="failed",
-                total_rows_in_file=0,
-                rows_processed=0,
-                rows_inserted=0,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e)
-            )
         raise HTTPException(status_code=409, detail=str(e))
     except DuplicateDataException as e:
-        if import_id:
-            complete_import_tracking(
-                import_id=import_id,
-                status="failed",
-                total_rows_in_file=len(records) if 'records' in locals() else 0,
-                rows_processed=0,
-                rows_inserted=0,
-                duplicates_found=e.duplicates_found,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e)
-            )
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        if import_id:
-            complete_import_tracking(
-                import_id=import_id,
-                status="failed",
-                total_rows_in_file=len(records) if 'records' in locals() else 0,
-                rows_processed=0,
-                rows_inserted=0,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e)
-            )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -205,119 +120,34 @@ async def map_b2_data_endpoint(
     request: MapB2DataRequest,
     db: Session = Depends(get_db)
 ):
-    from .import_history import start_import_tracking, complete_import_tracking
-    from .models import calculate_file_hash
-    
-    start_time = time.time()
-    import_id = None
+    from .import_orchestrator import execute_data_import
+    from .models import FileAlreadyImportedException, DuplicateDataException
     
     try:
         # Download file from B2
         file_content = download_file_from_b2(request.file_name)
-        file_size = len(file_content)
-        file_hash = calculate_file_hash(file_content)
-
-        # Detect file type
-        file_type = detect_file_type(request.file_name)
         
-        # Start import tracking
-        import_id = start_import_tracking(
-            source_type="b2_storage",
+        # Execute unified import
+        result = execute_data_import(
+            file_content=file_content,
             file_name=request.file_name,
-            table_name=request.mapping.table_name,
-            file_size_bytes=file_size,
-            file_type=file_type,
-            file_hash=file_hash,
-            source_path=request.file_name,
-            mapping_config=request.mapping
-        )
-        
-        parse_start = time.time()
-
-        # Use chunked processing for large Excel files (>50MB)
-        if file_type == 'excel' and len(file_content) > 50 * 1024 * 1024:  # 50MB
-            records = process_large_excel(file_content)
-        elif file_type == 'csv':
-            records = process_csv(file_content)
-        elif file_type == 'excel':
-            records = process_excel(file_content)
-        elif file_type == 'json':
-            records = process_json(file_content)
-        elif file_type == 'xml':
-            records = process_xml(file_content)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
-        
-        parse_time = time.time() - parse_start
-        total_rows = len(records)
-
-        # Map data
-        mapped_records, errors = map_data(records, request.mapping)
-
-        # Create table if needed
-        create_table_if_not_exists(get_engine(), request.mapping)
-
-        # Insert records
-        insert_start = time.time()
-        records_processed = insert_records(get_engine(), request.mapping.table_name, mapped_records, config=request.mapping, file_content=file_content, file_name=request.file_name)
-        insert_time = time.time() - insert_start
-        
-        # Complete import tracking
-        duration = time.time() - start_time
-        complete_import_tracking(
-            import_id=import_id,
-            status="success",
-            total_rows_in_file=total_rows,
-            rows_processed=records_processed,
-            rows_inserted=records_processed,
-            duration_seconds=duration,
-            parsing_time_seconds=parse_time,
-            insert_time_seconds=insert_time
+            mapping_config=request.mapping,
+            source_type="b2_storage",
+            source_path=request.file_name
         )
 
         return MapDataResponse(
             success=True,
             message="B2 data mapped and inserted successfully",
-            records_processed=records_processed,
-            table_name=request.mapping.table_name
+            records_processed=result["records_processed"],
+            table_name=result["table_name"]
         )
 
     except FileAlreadyImportedException as e:
-        if import_id:
-            complete_import_tracking(
-                import_id=import_id,
-                status="failed",
-                total_rows_in_file=0,
-                rows_processed=0,
-                rows_inserted=0,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e)
-            )
         raise HTTPException(status_code=409, detail=str(e))
     except DuplicateDataException as e:
-        if import_id:
-            complete_import_tracking(
-                import_id=import_id,
-                status="failed",
-                total_rows_in_file=len(records) if 'records' in locals() else 0,
-                rows_processed=0,
-                rows_inserted=0,
-                duplicates_found=e.duplicates_found,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e)
-            )
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        if import_id:
-            complete_import_tracking(
-                import_id=import_id,
-                status="failed",
-                total_rows_in_file=len(records) if 'records' in locals() else 0,
-                rows_processed=0,
-                rows_inserted=0,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e)
-            )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -537,6 +367,8 @@ async def get_table_stats(table_name: str, db: Session = Depends(get_db)):
 
 def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
     """Background task for processing B2 data asynchronously."""
+    from .import_orchestrator import execute_data_import
+    
     try:
         # Update task status to processing
         task_storage[task_id] = AsyncTaskStatus(
@@ -553,55 +385,24 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
             task_id=task_id,
             status="processing",
             progress=30,
-            message="Processing file..."
+            message="Processing and importing data..."
         )
 
-        # Detect and process file
-        file_type = detect_file_type(file_name)
-
-        # Use chunked processing for large Excel files (>50MB)
-        if file_type == 'excel' and len(file_content) > 50 * 1024 * 1024:  # 50MB
-            records = process_large_excel(file_content)
-        elif file_type == 'csv':
-            records = process_csv(file_content)
-        elif file_type == 'excel':
-            records = process_excel(file_content)
-        elif file_type == 'json':
-            records = process_json(file_content)
-        elif file_type == 'xml':
-            records = process_xml(file_content)
-        else:
-            raise Exception("Unsupported file type")
-
-        task_storage[task_id] = AsyncTaskStatus(
-            task_id=task_id,
-            status="processing",
-            progress=60,
-            message="Mapping data..."
+        # Execute unified import
+        result = execute_data_import(
+            file_content=file_content,
+            file_name=file_name,
+            mapping_config=mapping,
+            source_type="b2_storage",
+            source_path=file_name
         )
-
-        # Map data
-        mapped_records, errors = map_data(records, mapping)
-
-        task_storage[task_id] = AsyncTaskStatus(
-            task_id=task_id,
-            status="processing",
-            progress=80,
-            message="Creating table and inserting data..."
-        )
-
-        # Create table if needed
-        create_table_if_not_exists(get_engine(), mapping)
-
-        # Insert records
-        records_processed = insert_records(get_engine(), mapping.table_name, mapped_records, config=mapping, file_content=file_content, file_name=file_name)
 
         # Update task as completed
-        result = MapDataResponse(
+        response = MapDataResponse(
             success=True,
             message="B2 data mapped and inserted successfully",
-            records_processed=records_processed,
-            table_name=mapping.table_name
+            records_processed=result["records_processed"],
+            table_name=result["table_name"]
         )
 
         task_storage[task_id] = AsyncTaskStatus(
@@ -609,7 +410,7 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
             status="completed",
             progress=100,
             message="Processing completed successfully",
-            result=result
+            result=response
         )
 
     except FileAlreadyImportedException as e:
