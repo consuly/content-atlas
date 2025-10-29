@@ -227,7 +227,7 @@ async def list_tables(db: Session = Depends(get_db)):
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
-                                     'file_imports', 'table_metadata', 'import_history')
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users'  )
                 AND table_name NOT LIKE 'pg_%'
                 ORDER BY table_name
             """))
