@@ -43,15 +43,31 @@ def execute_llm_import_decision(
         strategy = llm_decision["strategy"]
         target_table = llm_decision["target_table"]
         
-        logger.info(f"Executing LLM decision: {strategy} into table '{target_table}'")
+        logger.info(f"="*80)
+        logger.info(f"AUTO-IMPORT: Executing LLM decision")
+        logger.info(f"  Strategy: {strategy}")
+        logger.info(f"  Target Table: {target_table}")
+        logger.info(f"  File: {file_name}")
+        logger.info(f"  Records to import: {len(all_records)}")
+        logger.info(f"="*80)
         
         # Use existing detection logic to generate MappingConfig
-        _, detected_mapping, columns_found, rows_sampled = detect_mapping_from_file(
-            file_content, file_name
+        # Note: detect_mapping_from_file returns (file_type, mapping, columns, rows_sampled, records)
+        # We don't need the records since we already have all_records
+        logger.info(f"AUTO-IMPORT: Detecting mapping from file...")
+        _, detected_mapping, columns_found, rows_sampled, _ = detect_mapping_from_file(
+            file_content, file_name, return_records=False
         )
+        
+        logger.info(f"AUTO-IMPORT: Detected mapping:")
+        logger.info(f"  Original table name: {detected_mapping.table_name}")
+        logger.info(f"  Columns found: {columns_found}")
+        logger.info(f"  DB Schema: {detected_mapping.db_schema}")
+        logger.info(f"  Mappings: {detected_mapping.mappings}")
         
         # Override table name with LLM's decision
         detected_mapping.table_name = target_table
+        logger.info(f"AUTO-IMPORT: Overriding table name to: {target_table}")
         
         # Prepare metadata info
         metadata_info = {
@@ -59,6 +75,8 @@ def execute_llm_import_decision(
             "data_domain": llm_decision.get("data_domain"),
             "key_entities": llm_decision.get("key_entities", [])
         }
+        
+        logger.info(f"AUTO-IMPORT: Calling execute_data_import with strategy: {strategy}")
         
         # Execute unified import
         result = execute_data_import(
@@ -69,6 +87,10 @@ def execute_llm_import_decision(
             import_strategy=strategy,
             metadata_info=metadata_info
         )
+        
+        logger.info(f"AUTO-IMPORT: Import completed successfully")
+        logger.info(f"  Records processed: {result['records_processed']}")
+        logger.info(f"  Table: {result['table_name']}")
         
         return {
             "success": True,

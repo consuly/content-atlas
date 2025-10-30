@@ -539,7 +539,7 @@ Analysis Process (SEMANTIC-FIRST):
 5. Call compare_file_with_tables for structural comparison
 6. Make decision based on BOTH semantic AND structural fit
 7. Call resolve_conflict if needed
-8. **FINAL**: Call make_import_decision with strategy, target_table, AND purpose information
+8. **FINAL AND REQUIRED**: Call make_import_decision with strategy, target_table, AND purpose information
 
 Decision Priority (MOST IMPORTANT):
 - **Semantic match + reasonable structure = MERGE** (even with column name differences)
@@ -558,6 +558,9 @@ Important Considerations:
 
 CRITICAL: You have a maximum of {max_iterations} tool calls to complete your analysis.
 Be efficient and strategic with your tool usage.
+
+**MANDATORY FINAL STEP:**
+You MUST call the make_import_decision tool before providing your final response. This tool records your decision for execution. Do NOT end your analysis without calling this tool. Your response should come AFTER calling make_import_decision, not instead of it.
 
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:
