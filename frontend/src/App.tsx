@@ -21,6 +21,7 @@ import { BrowserRouter, Outlet, Route, Routes } from "react-router";
 import { authProvider } from "./authProvider";
 import { dataProvider } from "./dataProvider";
 import { Header } from "./components/header";
+import { Title } from "./components/title";
 import { ColorModeContextProvider } from "./contexts/color-mode";
 import { ForgotPassword } from "./pages/forgotPassword";
 import { Login } from "./pages/login";
@@ -57,14 +58,6 @@ function App() {
                       icon: "📤",
                     },
                   },
-                  {
-                    name: "import-history",
-                    list: "/import-history",
-                    meta: {
-                      label: "Import History",
-                      icon: "📜",
-                    },
-                  },
                 ]}
                 options={{
                   syncWithLocation: true,
@@ -82,6 +75,7 @@ function App() {
                         <ThemedLayout
                           Header={Header}
                           Sider={(props) => <ThemedSider {...props} fixed />}
+                          Title={Title}
                         >
                           <Outlet />
                         </ThemedLayout>
@@ -97,9 +91,6 @@ function App() {
                     </Route>
                     <Route path="/query">
                       <Route index element={<QueryPage />} />
-                    </Route>
-                    <Route path="/import-history">
-                      <Route index element={<div>Import History - Coming Soon</div>} />
                     </Route>
                     <Route path="*" element={<ErrorComponent />} />
                   </Route>
