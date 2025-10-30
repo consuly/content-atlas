@@ -11,23 +11,41 @@ logger = logging.getLogger(__name__)
 def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Map input data according to the configuration.
+    
+    Optimized for performance:
+    - Pre-computes mapping items once (not per record)
+    - Uses list comprehension for fast path (no rules)
+    - Minimizes dictionary operations
 
     Returns:
         Tuple of (mapped_records, list_of_all_errors)
     """
-    mapped_records = []
     all_errors = []
-
+    
+    # Pre-compute mapping items ONCE (not N times in loop)
+    # Convert to tuple for faster iteration
+    mapping_items = tuple(config.mappings.items())
+    
+    # Fast path: no rules to apply (most common case)
+    if not config.rules:
+        # Use list comprehension - significantly faster than append loop
+        mapped_records = [
+            {output_col: record.get(input_field) 
+             for output_col, input_field in mapping_items}
+            for record in records
+        ]
+        return mapped_records, all_errors
+    
+    # Slow path: rules need to be applied per record
+    mapped_records = []
     for record in records:
-        mapped_record = {}
-        for output_col, input_field in config.mappings.items():
-            mapped_record[output_col] = record.get(input_field)
-
-        # Apply rules if any
-        if config.rules:
-            mapped_record, record_errors = apply_rules(mapped_record, config.rules)
-            all_errors.extend(record_errors)
-
+        # Use dict comprehension for mapping (faster than loop with assignment)
+        mapped_record = {output_col: record.get(input_field) 
+                        for output_col, input_field in mapping_items}
+        
+        # Apply rules
+        mapped_record, record_errors = apply_rules(mapped_record, config.rules)
+        all_errors.extend(record_errors)
         mapped_records.append(mapped_record)
 
     return mapped_records, all_errors

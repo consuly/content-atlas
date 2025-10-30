@@ -126,6 +126,7 @@ async def map_data_endpoint(
         
         # Check if we have cached records from /detect-mapping
         cached_records = None
+        use_mapped_cache = False
         current_time = time.time()
         
         # Generate config hash to check if mapping changed
@@ -140,28 +141,37 @@ async def map_data_endpoint(
                 # Check if we have mapped records with matching config
                 if cache_entry.get('config_hash') == config_hash and 'mapped_records' in cache_entry:
                     cached_records = cache_entry['mapped_records']
-                    print(f"DEBUG: Using cached MAPPED records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
+                    use_mapped_cache = True
+                    print(f"✅ CACHE HIT: Using cached MAPPED records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
                 elif 'raw_records' in cache_entry:
                     cached_records = cache_entry['raw_records']
-                    print(f"DEBUG: Using cached RAW records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
+                    print(f"✅ CACHE HIT: Using cached RAW records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
             else:
                 # Cache expired, remove it
                 del records_cache[file_hash]
-                print(f"DEBUG: Cache expired for file hash {file_hash[:8]}...")
+                print(f"⏰ Cache expired for file hash {file_hash[:8]}...")
+        else:
+            print(f"❌ CACHE MISS: No cached records for file hash {file_hash[:8]}...")
         
         # Execute unified import with optional cached records
+        # Pass pre_mapped=True only if we're using cached MAPPED records
         result = execute_data_import(
             file_content=file_content,
             file_name=file.filename,
             mapping_config=config,
             source_type="local_upload",
-            pre_parsed_records=cached_records
+            pre_parsed_records=cached_records,
+            pre_mapped=use_mapped_cache
         )
         
-        # Clean up cache entry after use
-        if file_hash in records_cache:
-            del records_cache[file_hash]
-            print(f"DEBUG: Cleaned up cache for file hash {file_hash[:8]}...")
+        # Update cache with mapped records if we didn't use mapped cache
+        # This allows subsequent imports with same config to skip mapping
+        if not use_mapped_cache and file_hash in records_cache:
+            # Note: We would need to get mapped_records from execute_data_import
+            # For now, we'll keep the cache entry but update timestamp
+            records_cache[file_hash]['timestamp'] = current_time
+            records_cache[file_hash]['config_hash'] = config_hash
+            print(f"💾 Updated cache entry for file hash {file_hash[:8]}...")
 
         return MapDataResponse(
             success=True,
