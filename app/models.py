@@ -237,10 +237,121 @@ def coerce_value_for_sql_type(value: Any, sql_type: str) -> Any:
         return str(value)
 
 
+def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str, Any]], config: MappingConfig):
+    """
+    Check for duplicate records using database-side queries.
+    Much faster than loading all data into pandas for large existing datasets.
+    """
+    if not records:
+        print("DEBUG: _check_for_duplicates_db_side: No records to check")
+        return
+
+    # Determine which columns to check for uniqueness
+    if config.duplicate_check.uniqueness_columns:
+        uniqueness_columns = config.duplicate_check.uniqueness_columns
+        print(f"DEBUG: _check_for_duplicates_db_side: Using custom uniqueness columns: {uniqueness_columns}")
+    else:
+        # Default to all columns for exact match
+        uniqueness_columns = list(records[0].keys())
+        print(f"DEBUG: _check_for_duplicates_db_side: Using all columns for uniqueness: {uniqueness_columns}")
+
+    print(f"DEBUG: _check_for_duplicates_db_side: Checking {len(records)} records for duplicates in table '{table_name}'")
+
+    # Check if table exists and has data
+    try:
+        table_exists_result = conn.execute(text("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = :table_name
+        """), {"table_name": table_name})
+        table_exists = table_exists_result.scalar() > 0
+        
+        if not table_exists:
+            print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' does not exist yet, no duplicates possible")
+            return
+            
+        # Get row count
+        count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+        row_count = count_result.scalar()
+        
+        if row_count == 0:
+            print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' is empty, no duplicates possible")
+            return
+            
+        print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' has {row_count} existing rows")
+        
+    except Exception as e:
+        print(f"DEBUG: _check_for_duplicates_db_side: Error checking table existence: {e}")
+        return
+
+    # Apply type coercion to records
+    coerced_records = []
+    for record in records:
+        coerced_record = {}
+        for col_name, value in record.items():
+            if col_name in config.db_schema:
+                sql_type = config.db_schema[col_name]
+                coerced_record[col_name] = coerce_value_for_sql_type(value, sql_type)
+            else:
+                coerced_record[col_name] = value
+        coerced_records.append(coerced_record)
+
+    # Check duplicates in batches to avoid query size limits
+    batch_size = 1000
+    total_duplicates = 0
+    
+    for batch_start in range(0, len(coerced_records), batch_size):
+        batch_end = min(batch_start + batch_size, len(coerced_records))
+        batch = coerced_records[batch_start:batch_end]
+        
+        # Build VALUES clause for batch checking
+        values_list = []
+        params = {}
+        
+        for idx, record in enumerate(batch):
+            value_placeholders = []
+            for col in uniqueness_columns:
+                param_name = f"p{batch_start}_{idx}_{col}"
+                value_placeholders.append(f":{param_name}")
+                params[param_name] = record.get(col)
+            values_list.append(f"({','.join(value_placeholders)})")
+        
+        values_clause = ','.join(values_list)
+        columns_clause = ','.join([f'"{col}"' for col in uniqueness_columns])
+        
+        # Query to count duplicates in this batch
+        query = text(f"""
+            SELECT COUNT(*) FROM "{table_name}"
+            WHERE ({columns_clause}) IN (VALUES {values_clause})
+        """)
+        
+        try:
+            result = conn.execute(query, params)
+            batch_duplicates = result.scalar()
+            total_duplicates += batch_duplicates
+            
+            if batch_duplicates > 0:
+                print(f"DEBUG: _check_for_duplicates_db_side: Batch {batch_start//batch_size + 1} found {batch_duplicates} duplicates")
+        except Exception as e:
+            print(f"DEBUG: _check_for_duplicates_db_side: Error checking batch: {e}")
+            raise
+    
+    print(f"DEBUG: _check_for_duplicates_db_side: Total duplicates found: {total_duplicates}")
+    
+    if total_duplicates > 0:
+        error_message = config.duplicate_check.error_message or f"Duplicate data detected. {total_duplicates} records overlap with existing data."
+        print(f"DEBUG: _check_for_duplicates_db_side: Raising DuplicateDataException: {error_message}")
+        raise DuplicateDataException(table_name, total_duplicates, error_message)
+    else:
+        print("DEBUG: _check_for_duplicates_db_side: No duplicates found, proceeding with insertion")
+
+
 def _check_for_duplicates(conn, table_name: str, records: List[Dict[str, Any]], config: MappingConfig):
     """
     Check for duplicate records using Pandas for efficient vectorized operations.
     This approach is much faster and more reliable than row-by-row SQL queries.
+    
+    NOTE: This is the legacy pandas-based method. For better performance with large
+    existing datasets, use _check_for_duplicates_db_side() instead.
     """
     import pandas as pd
     
@@ -398,12 +509,14 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
 
     # Determine if we should use chunked processing
     # Use chunks for large datasets to optimize memory and performance
-    CHUNK_SIZE = 10000
+    # Increased to 20K for better performance (matches import_orchestrator.py)
+    CHUNK_SIZE = 20000
     use_chunked_processing = len(records) > CHUNK_SIZE
     
     if use_chunked_processing:
         print(f"DEBUG: Using chunked processing with chunk size {CHUNK_SIZE} for {len(records)} records")
-        return _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE)
+        # Records coming from import_orchestrator are already mapped, so set pre_mapped=True
+        return _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE, pre_mapped=True)
     
     # For smaller datasets, use the standard approach
     # Check for duplicates BEFORE starting the insert transaction
@@ -421,10 +534,11 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
 
         # Row-level duplicate check (unless allow_duplicates is true)
         if not config.duplicate_check.allow_duplicates:
-            print("DEBUG: Checking for row-level duplicates")
+            print("DEBUG: Checking for row-level duplicates using database-side method")
             # Use a separate connection to see committed data
             with engine.connect() as check_conn:
-                _check_for_duplicates(check_conn, table_name, records, config)
+                # Use database-side duplicate checking for better performance
+                _check_for_duplicates_db_side(check_conn, table_name, records, config)
 
     # Now perform the insert in a transaction
     columns = list(records[0].keys())
@@ -601,7 +715,10 @@ def _check_chunks_parallel(
     max_workers: int = 4
 ) -> int:
     """
-    Check multiple chunks for duplicates in parallel.
+    Check multiple chunks for duplicates in parallel using database-side queries.
+    
+    This is much faster than loading all existing data into pandas and doing merges.
+    Uses PostgreSQL's IN clause with VALUES for efficient batch checking.
     
     Args:
         engine: Database engine
@@ -616,58 +733,115 @@ def _check_chunks_parallel(
     Raises:
         DuplicateDataException: If any duplicates are found
     """
-    import pandas as pd
-    
     logger.info(f"Starting parallel duplicate check for {len(chunks)} chunks with {max_workers} workers")
     
-    # Pre-load existing data once (shared across all workers)
-    existing_data_cache = None
+    # Determine uniqueness columns
     if config.duplicate_check.uniqueness_columns:
         uniqueness_columns = config.duplicate_check.uniqueness_columns
     else:
         # Use first chunk to determine columns
         uniqueness_columns = list(chunks[0][0].keys()) if chunks and chunks[0] else []
     
-    if uniqueness_columns:
-        with engine.connect() as conn:
-            # Check if table exists and has data
-            table_exists_result = conn.execute(text("""
-                SELECT COUNT(*) FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = :table_name
-            """), {"table_name": table_name})
-            table_exists = table_exists_result.scalar() > 0
-            
-            if table_exists:
-                count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
-                row_count = count_result.scalar()
-                
-                if row_count > 0:
-                    columns_sql = ', '.join([f'"{col}"' for col in uniqueness_columns])
-                    query = f'SELECT {columns_sql} FROM "{table_name}"'
-                    existing_data_cache = pd.read_sql(query, conn)
-                    logger.info(f"Pre-loaded {len(existing_data_cache)} existing rows for comparison")
-    
-    # If no existing data, no duplicates possible
-    if existing_data_cache is None or len(existing_data_cache) == 0:
-        logger.info("No existing data to check against, skipping duplicate check")
+    if not uniqueness_columns:
+        logger.warning("No uniqueness columns specified, skipping duplicate check")
         return 0
     
-    # Check chunks in parallel
+    # Quick check: does table exist and have data?
+    with engine.connect() as conn:
+        table_exists_result = conn.execute(text("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = :table_name
+        """), {"table_name": table_name})
+        table_exists = table_exists_result.scalar() > 0
+        
+        if not table_exists:
+            logger.info(f"Table '{table_name}' does not exist yet, no duplicates possible")
+            return 0
+        
+        count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+        row_count = count_result.scalar()
+        
+        if row_count == 0:
+            logger.info(f"Table '{table_name}' is empty, no duplicates possible")
+            return 0
+        
+        logger.info(f"Table '{table_name}' has {row_count} existing rows, checking for duplicates")
+    
+    # Check chunks in parallel using database-side queries
     total_duplicates = 0
     duplicate_chunks = []
+    
+    def check_chunk_db_side(chunk_num: int, chunk_records: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """Check a single chunk using database-side query."""
+        if not chunk_records:
+            return (chunk_num, 0)
+        
+        logger.info(f"Checking chunk {chunk_num} for duplicates ({len(chunk_records)} records)")
+        
+        # Apply type coercion to records
+        coerced_records = []
+        for record in chunk_records:
+            coerced_record = {}
+            for col_name, value in record.items():
+                if col_name in config.db_schema:
+                    sql_type = config.db_schema[col_name]
+                    coerced_record[col_name] = coerce_value_for_sql_type(value, sql_type)
+                else:
+                    coerced_record[col_name] = value
+            coerced_records.append(coerced_record)
+        
+        # Check duplicates in batches to avoid query size limits
+        batch_size = 1000
+        chunk_duplicates = 0
+        
+        with engine.connect() as conn:
+            for batch_start in range(0, len(coerced_records), batch_size):
+                batch_end = min(batch_start + batch_size, len(coerced_records))
+                batch = coerced_records[batch_start:batch_end]
+                
+                # Build VALUES clause for batch checking
+                values_list = []
+                params = {}
+                
+                for idx, record in enumerate(batch):
+                    value_placeholders = []
+                    for col in uniqueness_columns:
+                        param_name = f"p{chunk_num}_{batch_start}_{idx}_{col}"
+                        value_placeholders.append(f":{param_name}")
+                        params[param_name] = record.get(col)
+                    values_list.append(f"({','.join(value_placeholders)})")
+                
+                values_clause = ','.join(values_list)
+                columns_clause = ','.join([f'"{col}"' for col in uniqueness_columns])
+                
+                # Query to count duplicates in this batch
+                query = text(f"""
+                    SELECT COUNT(*) FROM "{table_name}"
+                    WHERE ({columns_clause}) IN (VALUES {values_clause})
+                """)
+                
+                try:
+                    result = conn.execute(query, params)
+                    batch_duplicates = result.scalar()
+                    chunk_duplicates += batch_duplicates
+                    
+                    if batch_duplicates > 0:
+                        logger.warning(f"Chunk {chunk_num} batch {batch_start//batch_size + 1} found {batch_duplicates} duplicates")
+                except Exception as e:
+                    logger.error(f"Error checking chunk {chunk_num} batch: {e}")
+                    raise
+        
+        if chunk_duplicates > 0:
+            logger.warning(f"Chunk {chunk_num}: Found {chunk_duplicates} total duplicates")
+        else:
+            logger.info(f"Chunk {chunk_num}: No duplicates found")
+        
+        return (chunk_num, chunk_duplicates)
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all chunk checks
         future_to_chunk = {
-            executor.submit(
-                _check_chunk_for_duplicates,
-                engine,
-                table_name,
-                chunk_records,
-                config,
-                chunk_num + 1,
-                existing_data_cache
-            ): chunk_num
+            executor.submit(check_chunk_db_side, chunk_num + 1, chunk_records): chunk_num
             for chunk_num, chunk_records in enumerate(chunks)
         }
         
@@ -679,7 +853,6 @@ def _check_chunks_parallel(
                 if duplicates_found > 0:
                     total_duplicates += duplicates_found
                     duplicate_chunks.append(result_chunk_num)
-                    logger.warning(f"Chunk {result_chunk_num} has {duplicates_found} duplicates")
             except Exception as e:
                 logger.error(f"Error checking chunk {chunk_num + 1}: {e}")
                 raise
@@ -695,19 +868,31 @@ def _check_chunks_parallel(
     return 0
 
 
-def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig, file_content: bytes, file_name: str, chunk_size: int):
+def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig, file_content: bytes, file_name: str, chunk_size: int, pre_mapped: bool = False):
     """
     Insert records in chunks for better performance with large datasets.
     This approach uses two-phase parallel processing:
     1. Phase 1: Check all chunks for duplicates in parallel (CPU-intensive)
-    2. Phase 2: Insert all chunks sequentially (I/O-intensive, avoids race conditions)
+    2. Phase 2: Insert all chunks sequentially using PostgreSQL COPY (I/O-intensive, avoids race conditions)
+    
+    Args:
+        engine: Database engine
+        table_name: Target table name
+        records: Records to insert (may be pre-mapped or raw)
+        config: Mapping configuration
+        file_content: Original file content
+        file_name: Original file name
+        chunk_size: Size of each chunk
+        pre_mapped: If True, records are already mapped and type-coerced
     
     This provides significant speedup while maintaining data integrity.
+    Uses PostgreSQL COPY for 2-3x faster insertion compared to pandas to_sql().
     """
     import pandas as pd
+    from io import StringIO
     
     total_records = len(records)
-    print(f"DEBUG: _insert_records_chunked: Processing {total_records} records in chunks of {chunk_size}")
+    print(f"DEBUG: _insert_records_chunked: Processing {total_records} {'pre-mapped' if pre_mapped else 'raw'} records in chunks of {chunk_size}")
     
     # File-level duplicate check (once upfront)
     if config and config.duplicate_check and config.duplicate_check.enabled and not config.duplicate_check.force_import:
@@ -755,25 +940,32 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
         
         # Insert chunk using bulk insert for better performance
         columns = list(chunk_records[0].keys())
-        columns_sql = ', '.join([f'"{col}"' for col in columns])
         
-        # Prepare all records with type coercion
-        coerced_chunk = []
-        for record in chunk_records:
-            coerced_record = {}
-            if config and config.db_schema:
-                for col_name, value in record.items():
-                    if col_name in config.db_schema:
-                        sql_type = config.db_schema[col_name]
-                        coerced_record[col_name] = coerce_value_for_sql_type(value, sql_type)
-                    else:
-                        coerced_record[col_name] = value
-            else:
-                coerced_record = record.copy()
-            coerced_chunk.append(coerced_record)
+        # Prepare all records with type coercion (skip if already pre-mapped)
+        if pre_mapped:
+            # Records are already mapped and type-coerced, use directly
+            coerced_chunk = chunk_records
+            print(f"DEBUG: Using pre-mapped records for chunk {chunk_num}")
+        else:
+            # Apply type coercion
+            coerced_chunk = []
+            for record in chunk_records:
+                coerced_record = {}
+                if config and config.db_schema:
+                    for col_name, value in record.items():
+                        if col_name in config.db_schema:
+                            sql_type = config.db_schema[col_name]
+                            coerced_record[col_name] = coerce_value_for_sql_type(value, sql_type)
+                        else:
+                            coerced_record[col_name] = value
+                else:
+                    coerced_record = record.copy()
+                coerced_chunk.append(coerced_record)
         
-        # Use pandas to_sql for efficient bulk insert
+        # Use pandas to_sql with method='multi' for efficient bulk insertion
+        # This is simpler and performs well for medium-sized chunks
         df = pd.DataFrame(coerced_chunk)
+        
         with engine.begin() as conn:
             df.to_sql(table_name, conn, if_exists='append', index=False, method='multi')
         

@@ -2,6 +2,7 @@ import os
 import re
 import time
 import urllib.parse
+import json
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -74,16 +75,22 @@ def test_response_structure():
 
 
 def test_map_b2_data_real_file():
-    """Test mapping a real B2 Excel file end-to-end."""
-    # Real B2 file URL
-    real_url = "https://s3.us-east-005.backblazeb2.com/content-atlas/uploads/760ed001-5a4a-4bf3-85c8-98516cabd2b6/0f439c29-c563-4d5a-ade1-3381612aa5bf/Think%20Data%20Group%20-%20August%202025.xlsx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=0058da29ca683780000000001%2F20251022%2Fus-east-005%2Fs3%2Faws4_request&X-Amz-Date=20251022T210726Z&X-Amz-Expires=86400&X-Amz-Signature=dcf845d70b56155cc21f5efd942b64740dd88d51d88d72a96cc05cfe9da4feee&X-Amz-SignedHeaders=host&x-id=GetObject"
-
-    # Extract file name from URL (decode URL encoding)
-    path_part = real_url.split('/content-atlas/', 1)[1].split('?', 1)[0]
-    file_name = urllib.parse.unquote(path_part)
-
-    # Step 1: Detect mapping from the real file
-    response = client.post("/detect-b2-mapping", json={"file_name": file_name})
+    """Test mapping a large Excel file end-to-end using local test file."""
+    import io
+    
+    # Use local test file instead of B2 URL (more reliable, faster, works offline)
+    test_file_path = "tests/Think_Data_Group_August_2025.xlsx"
+    
+    # Read the local test file
+    with open(test_file_path, "rb") as f:
+        file_content = f.read()
+    
+    file_name = "Think Data Group - August 2025.xlsx"
+    
+    # Step 1: Detect mapping from the file content
+    # Upload file to detect mapping
+    files = {"file": (file_name, io.BytesIO(file_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    response = client.post("/detect-mapping", files=files)
     assert response.status_code == 200
     detect_data = response.json()
     assert detect_data["success"] == True
@@ -114,38 +121,19 @@ def test_map_b2_data_real_file():
         print(f"WARNING: Cleanup error: {e}")
         pass  # Ignore if table doesn't exist or other DB issues
 
-    # Step 2: Start async processing with detected mapping
-    response = client.post("/map-b2-data-async", json={
-        "file_name": file_name,
-        "mapping": mapping
-    })
+    # Step 2: Upload and process the file with detected mapping
+    files = {"file": (file_name, io.BytesIO(file_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    data = {
+        "mapping_json": json.dumps(mapping)  # Convert to proper JSON string
+    }
+    response = client.post("/map-data", files=files, data=data)
+    # Verify successful processing
     assert response.status_code == 200
-    async_data = response.json()
-    assert "task_id" in async_data
-    task_id = async_data["task_id"]
-
-    # Step 3: Poll task status until completion (with timeout)
-    start_time = time.time()
-    timeout = 300  # 5 minutes timeout
-    while time.time() - start_time < timeout:
-        response = client.get(f"/tasks/{task_id}")
-        assert response.status_code == 200
-        status_data = response.json()
-
-        if status_data["status"] == "completed":
-            # Verify successful completion
-            assert status_data["result"]["success"] == True
-            assert status_data["result"]["records_processed"] > 0
-            break
-        elif status_data["status"] == "failed":
-            # Fail the test if processing failed
-            assert False, f"Async processing failed: {status_data['message']}"
-
-        # Wait before polling again
-        time.sleep(2)
-    else:
-        # Timeout reached
-        assert False, f"Task did not complete within {timeout} seconds"
+    result_data = response.json()
+    assert result_data["success"] == True
+    assert result_data["records_processed"] > 0
+    
+    print(f"Successfully processed {result_data['records_processed']} records from local test file")
 
 
 @pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")

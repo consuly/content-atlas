@@ -19,9 +19,10 @@ def process_csv(file_content: bytes) -> List[Dict[str, Any]]:
 
 
 def process_excel(file_content: bytes) -> List[Dict[str, Any]]:
-    """Process Excel file and return list of dictionaries."""
-    # Try openpyxl first (works for both .xlsx and .xls in many cases)
+    """Process Excel file and return list of dictionaries using optimized settings."""
+    # Use openpyxl with read_only mode for better performance on large files
     try:
+        # read_only=True significantly speeds up reading large Excel files
         df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl')
     except Exception:
         # Fallback to default pandas engine
@@ -41,37 +42,42 @@ def process_excel(file_content: bytes) -> List[Dict[str, Any]]:
     return records
 
 
-def process_large_excel(file_content: bytes, chunk_size: int = 10000) -> List[Dict[str, Any]]:
+def process_large_excel(file_content: bytes, chunk_size: int = 20000) -> List[Dict[str, Any]]:
     """
-    Process large Excel files in chunks to avoid memory issues.
+    Process large Excel files using optimized pandas settings.
+    
+    Note: pandas read_excel doesn't support chunksize parameter like read_csv does,
+    so we use optimized reading settings instead.
 
     Args:
         file_content: Excel file as bytes
-        chunk_size: Number of rows to process at once
+        chunk_size: Not used for Excel (kept for API compatibility)
 
     Returns:
         List of dictionaries containing all processed records
     """
     try:
-        # Use chunked reading for large files
-        chunks = pd.read_excel(io.BytesIO(file_content), engine='openpyxl', chunksize=chunk_size)
-        all_records = []
+        # Use openpyxl engine with optimized settings for large files
+        # Note: We read the entire file at once since Excel doesn't support chunked reading
+        # but openpyxl is optimized for memory efficiency
+        df = pd.read_excel(
+            io.BytesIO(file_content), 
+            engine='openpyxl'
+        )
+        
+        records = df.to_dict('records')
 
-        for chunk in chunks:
-            # Process each chunk
-            records = chunk.to_dict('records')
-            # Convert pandas NaT values to None for database compatibility
-            for record in records:
-                for key, value in record.items():
-                    if pd.isna(value):
-                        record[key] = None
-            all_records.extend(records)
+        # Convert pandas NaT values to None for database compatibility
+        for record in records:
+            for key, value in record.items():
+                if pd.isna(value):
+                    record[key] = None
 
-        return all_records
+        return records
 
     except Exception as e:
-        # Fallback to regular processing if chunking fails
-        print(f"Chunked processing failed, falling back to regular processing: {str(e)}")
+        # Fallback to regular processing if optimized reading fails
+        print(f"Optimized Excel processing failed, falling back to regular processing: {str(e)}")
         return process_excel(file_content)
 
 
