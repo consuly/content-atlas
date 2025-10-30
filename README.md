@@ -70,6 +70,7 @@ A Python FastAPI application that accepts documents (CSV, Excel, JSON, XML) with
 ### Operations
 - 🚀 [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
 - 💻 [Console Interface](docs/CONSOLE.md) - Natural language query console
+- 🔄 [Database Reset](docs/DATABASE_RESET.md) - Reset database for testing
 
 ## API Endpoints
 
@@ -160,6 +161,8 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for production deployment.
 
 ## Development
 
+### Running Tests
+
 ```bash
 # Run tests
 pytest
@@ -173,6 +176,28 @@ pytest tests/test_api.py -v
 # Start development server
 uvicorn app.main:app --reload
 ```
+
+### Database Reset (Development Only)
+
+Reset the database to a clean state while preserving user accounts:
+
+```bash
+# Interactive mode with confirmation
+python reset_dev_db.py
+
+# Auto-confirm (for automation)
+python reset_dev_db.py --yes
+```
+
+This will:
+- Drop all user-created data tables
+- Clear tracking tables (file_imports, table_metadata, import_history, uploaded_files)
+- Delete all files from B2 storage
+- **Preserve** user accounts
+
+⚠️ **Production Safety**: The script automatically detects and blocks production environments.
+
+See [Database Reset Guide](docs/DATABASE_RESET.md) for detailed documentation.
 
 ## Project Structure
 
@@ -195,6 +220,7 @@ content-atlas/
 │   ├── CONSOLE.md
 │   ├── DEPLOYMENT.md
 │   ├── ARCHITECTURE.md
+│   ├── DATABASE_RESET.md
 │   ├── DUPLICATE_DETECTION.md
 │   └── PARALLEL_PROCESSING.md
 ├── tests/                   # Test suite
