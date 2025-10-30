@@ -97,11 +97,14 @@ def _map_chunk(
     Returns:
         Tuple of (chunk_num, mapped_records, errors)
     """
+    chunk_start = time.time()
     logger.info(f"Mapping chunk {chunk_num} ({len(chunk_records)} records)")
     
     try:
         mapped_records, errors = map_data(chunk_records, config)
-        logger.info(f"Chunk {chunk_num}: Mapped {len(mapped_records)} records with {len(errors)} errors")
+        chunk_time = time.time() - chunk_start
+        records_per_sec = len(mapped_records) / chunk_time if chunk_time > 0 else 0
+        logger.info(f"⏱️  Chunk {chunk_num}: Mapped {len(mapped_records)} records in {chunk_time:.2f}s ({records_per_sec:.0f} rec/sec, {len(errors)} errors)")
         return (chunk_num, mapped_records, errors)
     except Exception as e:
         logger.error(f"Error mapping chunk {chunk_num}: {e}")
@@ -240,7 +243,8 @@ def execute_data_import(
     source_path: Optional[str] = None,
     import_strategy: Optional[str] = None,
     metadata_info: Optional[Dict[str, Any]] = None,
-    pre_parsed_records: Optional[List[Dict[str, Any]]] = None
+    pre_parsed_records: Optional[List[Dict[str, Any]]] = None,
+    pre_mapped: bool = False
 ) -> Dict[str, Any]:
     """
     Central function for all data imports.
@@ -317,32 +321,41 @@ def execute_data_import(
         # Start mapping status tracking
         update_mapping_status(import_id, 'in_progress')
         
-        # Map data - use parallel mapping for large datasets
-        map_start = time.time()
-        if total_rows > CHUNK_SIZE:
-            # Split into chunks for parallel mapping
-            chunks = []
-            for chunk_start in range(0, total_rows, CHUNK_SIZE):
-                chunk_end = min(chunk_start + CHUNK_SIZE, total_rows)
-                chunk_records = records[chunk_start:chunk_end]
-                chunks.append(chunk_records)
-            
-            total_chunks = len(chunks)
-            logger.info(f"Split {total_rows} records into {total_chunks} chunks for parallel mapping")
-            
-            # Determine number of workers
-            max_workers = min(4, os.cpu_count() or 2)
-            logger.info(f"Using {max_workers} parallel workers for mapping")
-            
-            # Map chunks in parallel
-            mapped_records, mapping_errors = _map_chunks_parallel(chunks, mapping_config, max_workers)
+        # Map data - skip if already pre-mapped
+        if pre_mapped:
+            # Records are already mapped, skip mapping phase
+            mapped_records = records
+            mapping_errors = []
+            map_time = 0.0
+            logger.info(f"Using {len(mapped_records)} pre-mapped records (skipped mapping)")
         else:
-            # Use sequential mapping for small datasets
-            logger.info(f"Using sequential mapping for {total_rows} records")
-            mapped_records, mapping_errors = map_data(records, mapping_config)
-        
-        map_time = time.time() - map_start
-        logger.info(f"Mapped {len(mapped_records)} records in {map_time:.2f}s")
+            # Map data - use parallel mapping for large datasets
+            map_start = time.time()
+            if total_rows > CHUNK_SIZE:
+                # Split into chunks for parallel mapping
+                chunks = []
+                for chunk_start in range(0, total_rows, CHUNK_SIZE):
+                    chunk_end = min(chunk_start + CHUNK_SIZE, total_rows)
+                    chunk_records = records[chunk_start:chunk_end]
+                    chunks.append(chunk_records)
+                
+                total_chunks = len(chunks)
+                logger.info(f"Split {total_rows} records into {total_chunks} chunks for parallel mapping")
+                
+                # Determine number of workers
+                max_workers = min(4, os.cpu_count() or 2)
+                logger.info(f"Using {max_workers} parallel workers for mapping")
+                
+                # Map chunks in parallel
+                mapped_records, mapping_errors = _map_chunks_parallel(chunks, mapping_config, max_workers)
+            else:
+                # Use sequential mapping for small datasets
+                logger.info(f"Using sequential mapping for {total_rows} records")
+                mapped_records, mapping_errors = map_data(records, mapping_config)
+            
+            map_time = time.time() - map_start
+            records_per_sec = len(mapped_records) / map_time if map_time > 0 else 0
+            logger.info(f"⏱️  TIMING: Mapping completed in {map_time:.2f}s ({len(mapped_records)} records, {records_per_sec:.0f} rec/sec)")
         
         # Cache mapped records for potential re-use (e.g., if user retries with same config)
         # This is done in main.py's records_cache, but we log it here for visibility

@@ -515,8 +515,9 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
     
     if use_chunked_processing:
         print(f"DEBUG: Using chunked processing with chunk size {CHUNK_SIZE} for {len(records)} records")
-        # Records coming from import_orchestrator are already mapped, so set pre_mapped=True
-        return _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE, pre_mapped=True)
+        # Records passed to insert_records are already mapped (from import_orchestrator)
+        # They just need type coercion during insertion
+        return _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE, pre_mapped=False)
     
     # For smaller datasets, use the standard approach
     # Check for duplicates BEFORE starting the insert transaction
