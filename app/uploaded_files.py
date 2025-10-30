@@ -20,6 +20,7 @@ def create_uploaded_files_table():
         b2_file_id VARCHAR(255) NOT NULL,
         b2_file_path VARCHAR(500) NOT NULL,
         file_size BIGINT NOT NULL,
+        file_hash VARCHAR(64),
         content_type VARCHAR(100),
         upload_date TIMESTAMP DEFAULT NOW(),
         status VARCHAR(50) DEFAULT 'uploaded',
@@ -34,6 +35,7 @@ def create_uploaded_files_table():
     
     CREATE INDEX IF NOT EXISTS idx_uploaded_files_status ON uploaded_files(status);
     CREATE INDEX IF NOT EXISTS idx_uploaded_files_file_name ON uploaded_files(file_name);
+    CREATE INDEX IF NOT EXISTS idx_uploaded_files_file_hash ON uploaded_files(file_hash);
     CREATE INDEX IF NOT EXISTS idx_uploaded_files_upload_date ON uploaded_files(upload_date DESC);
     """
     
@@ -48,7 +50,8 @@ def insert_uploaded_file(
     b2_file_path: str,
     file_size: int,
     content_type: str = None,
-    user_id: str = None
+    user_id: str = None,
+    file_hash: str = None
 ) -> Dict:
     """Insert a new uploaded file record."""
     engine = get_engine()
@@ -57,11 +60,11 @@ def insert_uploaded_file(
     insert_sql = """
     INSERT INTO uploaded_files (
         id, file_name, b2_file_id, b2_file_path, file_size, 
-        content_type, user_id, status
+        file_hash, content_type, user_id, status
     )
     VALUES (
         :id, :file_name, :b2_file_id, :b2_file_path, :file_size,
-        :content_type, :user_id, 'uploaded'
+        :file_hash, :content_type, :user_id, 'uploaded'
     )
     RETURNING id, file_name, b2_file_id, b2_file_path, file_size, 
               content_type, upload_date, status
@@ -74,6 +77,7 @@ def insert_uploaded_file(
             "b2_file_id": b2_file_id,
             "b2_file_path": b2_file_path,
             "file_size": file_size,
+            "file_hash": file_hash,
             "content_type": content_type,
             "user_id": user_id
         })
@@ -200,6 +204,39 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
     
     with engine.connect() as conn:
         result = conn.execute(text(query_sql), {"file_name": file_name})
+        row = result.fetchone()
+        
+        if not row:
+            return None
+        
+        return {
+            "id": str(row[0]),
+            "file_name": row[1],
+            "b2_file_id": row[2],
+            "b2_file_path": row[3],
+            "file_size": row[4],
+            "content_type": row[5],
+            "upload_date": row[6].isoformat() if row[6] else None,
+            "status": row[7]
+        }
+
+
+def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
+    """Check if a file with this hash already exists (duplicate detection)."""
+    engine = get_engine()
+    
+    query_sql = """
+    SELECT 
+        id, file_name, b2_file_id, b2_file_path, file_size,
+        content_type, upload_date, status
+    FROM uploaded_files
+    WHERE file_hash = :file_hash
+    ORDER BY upload_date DESC
+    LIMIT 1
+    """
+    
+    with engine.connect() as conn:
+        result = conn.execute(text(query_sql), {"file_hash": file_hash})
         row = result.fetchone()
         
         if not row:

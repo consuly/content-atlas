@@ -1,6 +1,7 @@
 import io
 from b2sdk.v2 import B2Api, InMemoryAccountInfo
 from .config import settings
+from typing import Dict, Any
 
 
 def get_b2_api():
@@ -125,3 +126,123 @@ def delete_file_from_b2(file_path: str) -> bool:
     except Exception as e:
         print(f"Error deleting file from B2: {e}")
         return False
+
+
+def generate_upload_authorization(file_name: str, folder: str = "uploads") -> Dict[str, Any]:
+    """
+    Generate upload authorization for direct browser-to-B2 uploads.
+    
+    This function provides the necessary credentials and URLs for the frontend
+    to upload files directly to B2, bypassing the backend server for better performance.
+    
+    Args:
+        file_name: The name of the file to upload
+        folder: The folder/prefix to store the file in (default: "uploads")
+    
+    Returns:
+        Dictionary containing:
+        - upload_url: The URL to upload to
+        - authorization_token: The auth token for the upload
+        - file_path: The full path where the file will be stored
+        - bucket_id: The B2 bucket ID
+    """
+    b2_api = get_b2_api()
+    bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
+    
+    # Get upload URL and authorization token
+    upload_url_response = bucket.get_upload_url()
+    
+    # Construct the full file path
+    file_path = f"{folder}/{file_name}"
+    
+    return {
+        "upload_url": upload_url_response.upload_url,
+        "authorization_token": upload_url_response.auth_token,
+        "file_path": file_path,
+        "bucket_id": bucket.id_,
+        "api_url": b2_api.account_info.get_api_url(),
+        "download_url": b2_api.account_info.get_download_url()
+    }
+
+
+def get_large_file_upload_part_url(file_id: str) -> Dict[str, Any]:
+    """
+    Get upload URL for a large file part.
+    
+    For files >100MB, B2 recommends using the Large File API which allows
+    uploading in parts (minimum 5MB per part, except the last part).
+    
+    Args:
+        file_id: The B2 large file ID
+    
+    Returns:
+        Dictionary containing upload URL and authorization token for the part
+    """
+    b2_api = get_b2_api()
+    
+    # Get upload part URL
+    response = b2_api.get_upload_part_url(file_id)
+    
+    return {
+        "upload_url": response.upload_url,
+        "authorization_token": response.auth_token
+    }
+
+
+def start_large_file_upload(file_name: str, folder: str = "uploads") -> Dict[str, Any]:
+    """
+    Start a large file upload session.
+    
+    This initializes a large file upload in B2, which is required for files >100MB
+    or when you want to use parallel part uploads for better performance.
+    
+    Args:
+        file_name: The name of the file to upload
+        folder: The folder/prefix to store the file in (default: "uploads")
+    
+    Returns:
+        Dictionary containing:
+        - file_id: The B2 large file ID
+        - file_path: The full path where the file will be stored
+    """
+    b2_api = get_b2_api()
+    bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
+    
+    # Construct the full file path
+    file_path = f"{folder}/{file_name}"
+    
+    # Start large file upload
+    large_file = bucket.start_large_file(
+        file_name=file_path,
+        content_type=None,  # Will be auto-detected
+        file_info={}
+    )
+    
+    return {
+        "file_id": large_file.file_id,
+        "file_path": file_path
+    }
+
+
+def finish_large_file_upload(file_id: str, part_sha1_array: list) -> Dict[str, Any]:
+    """
+    Finish a large file upload after all parts have been uploaded.
+    
+    Args:
+        file_id: The B2 large file ID
+        part_sha1_array: Array of SHA1 hashes for each part in order
+    
+    Returns:
+        Dictionary with file information
+    """
+    b2_api = get_b2_api()
+    
+    # Finish the large file upload
+    file_info = b2_api.finish_large_file(file_id, part_sha1_array)
+    
+    return {
+        "file_id": file_info.id_,
+        "file_name": file_info.file_name,
+        "size": file_info.size,
+        "content_type": file_info.content_type
+    }

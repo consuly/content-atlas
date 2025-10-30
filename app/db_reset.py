@@ -210,9 +210,22 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
             
-            # Truncate tracking tables (preserve structure, clear data)
-            tracking_tables = ['file_imports', 'table_metadata', 'import_history', 'uploaded_files']
-            for table_name in tracking_tables:
+            # Drop and recreate tracking tables (to ensure schema updates are applied)
+            # These tables will be recreated by the application on startup
+            tracking_tables_to_drop = ['uploaded_files']
+            for table_name in tracking_tables_to_drop:
+                try:
+                    conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+                    results['tables_dropped'].append(table_name)
+                    logger.info(f"Dropped tracking table: {table_name} (will be recreated on startup)")
+                except Exception as e:
+                    error_msg = f"Failed to drop table {table_name}: {e}"
+                    results['errors'].append(error_msg)
+                    logger.error(error_msg)
+            
+            # Truncate other tracking tables (preserve structure, clear data)
+            tracking_tables_to_truncate = ['file_imports', 'table_metadata', 'import_history']
+            for table_name in tracking_tables_to_truncate:
                 try:
                     # Check if table exists first
                     check_result = conn.execute(text("""

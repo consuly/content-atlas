@@ -405,3 +405,38 @@ class DeleteFileResponse(BaseModel):
     """Response from file deletion"""
     success: bool
     message: str
+
+
+# Optimized Upload Endpoints
+class CheckDuplicateRequest(BaseModel):
+    """Request to check if file is duplicate before upload"""
+    file_name: str
+    file_hash: str  # SHA-256 hash of file content
+    file_size: int
+
+
+class CheckDuplicateResponse(BaseModel):
+    """Response from duplicate check"""
+    success: bool
+    is_duplicate: bool
+    message: str
+    existing_file: Optional[UploadedFileInfo] = None
+    can_upload: bool = False
+    upload_authorization: Optional[Dict[str, Any]] = None  # B2 upload credentials
+
+
+class CompleteUploadRequest(BaseModel):
+    """Request to complete upload after direct B2 upload"""
+    file_name: str
+    file_hash: str
+    file_size: int
+    content_type: Optional[str] = None
+    b2_file_id: str
+    b2_file_path: str
+
+
+class CompleteUploadResponse(BaseModel):
+    """Response from upload completion"""
+    success: bool
+    message: str
+    file: UploadedFileInfo

@@ -14,7 +14,8 @@ from .schemas import (
     ColumnInfo, TableDataResponse, TableStatsResponse, MapB2DataAsyncRequest, 
     AsyncTaskStatus, QueryDatabaseRequest, QueryDatabaseResponse,
     AnalyzeFileRequest, AnalyzeB2FileRequest, AnalyzeFileResponse,
-    ExecuteRecommendedImportRequest, AnalysisMode, ConflictResolutionMode
+    ExecuteRecommendedImportRequest, AnalysisMode, ConflictResolutionMode,
+    CheckDuplicateRequest, CheckDuplicateResponse, CompleteUploadRequest, CompleteUploadResponse
 )
 from .processors.csv_processor import process_csv, process_excel, process_large_excel, extract_excel_sheets_to_csv
 from .processors.json_processor import process_json
@@ -1297,6 +1298,115 @@ async def update_file_status_endpoint(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Status update failed: {str(e)}")
+
+
+# ============================================================================
+# OPTIMIZED UPLOAD ENDPOINTS (Direct Browser-to-B2)
+# ============================================================================
+
+@app.post("/check-duplicate", response_model=CheckDuplicateResponse)
+async def check_duplicate_endpoint(
+    request: CheckDuplicateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Check if a file is a duplicate before uploading.
+    
+    This lightweight endpoint checks if a file with the same hash already exists
+    in the database. If not, it generates upload authorization for direct
+    browser-to-B2 upload.
+    
+    Parameters:
+    - file_name: Name of the file
+    - file_hash: SHA-256 hash of the file content
+    - file_size: Size of the file in bytes
+    
+    Returns:
+    - is_duplicate: Whether the file already exists
+    - can_upload: Whether the file can be uploaded
+    - upload_authorization: B2 credentials for direct upload (if can_upload=true)
+    """
+    from .uploaded_files import get_uploaded_file_by_hash
+    from .b2_utils import generate_upload_authorization
+    
+    try:
+        # Check if file with same hash exists
+        existing_file = get_uploaded_file_by_hash(request.file_hash)
+        
+        if existing_file:
+            # File is a duplicate
+            from .schemas import UploadedFileInfo
+            return CheckDuplicateResponse(
+                success=True,
+                is_duplicate=True,
+                message=f"File already exists: {existing_file['file_name']}",
+                existing_file=UploadedFileInfo(**existing_file),
+                can_upload=False
+            )
+        
+        # File is not a duplicate, generate upload authorization
+        upload_auth = generate_upload_authorization(
+            file_name=request.file_name,
+            folder="uploads"
+        )
+        
+        return CheckDuplicateResponse(
+            success=True,
+            is_duplicate=False,
+            message="File can be uploaded",
+            can_upload=True,
+            upload_authorization=upload_auth
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Duplicate check failed: {str(e)}")
+
+
+@app.post("/complete-upload", response_model=CompleteUploadResponse)
+async def complete_upload_endpoint(
+    request: CompleteUploadRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Complete the upload process after direct browser-to-B2 upload.
+    
+    This endpoint is called by the frontend after successfully uploading
+    a file directly to B2. It saves the file metadata in the database.
+    
+    Parameters:
+    - file_name: Name of the uploaded file
+    - file_hash: SHA-256 hash of the file content
+    - file_size: Size of the file in bytes
+    - content_type: MIME type of the file
+    - b2_file_id: B2 file ID returned from upload
+    - b2_file_path: Full path in B2 bucket
+    
+    Returns:
+    - File metadata record
+    """
+    from .uploaded_files import insert_uploaded_file
+    from .schemas import UploadedFileInfo
+    
+    try:
+        # Save file metadata to database
+        uploaded_file = insert_uploaded_file(
+            file_name=request.file_name,
+            b2_file_id=request.b2_file_id,
+            b2_file_path=request.b2_file_path,
+            file_size=request.file_size,
+            content_type=request.content_type,
+            user_id=None,  # TODO: Get from auth context
+            file_hash=request.file_hash
+        )
+        
+        return CompleteUploadResponse(
+            success=True,
+            message="Upload completed successfully",
+            file=UploadedFileInfo(**uploaded_file)
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload completion failed: {str(e)}")
 
 
 # ============================================================================
