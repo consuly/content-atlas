@@ -40,31 +40,50 @@ def test_llm_sequential_file_merge():
     try:
         engine = get_engine()
         with engine.begin() as conn:
-            # Clean up any tables that might have been created from these files
-            # Look for tables with names containing "client" or "contact"
+            # Get ALL tables from the database
             result = conn.execute(text("""
                 SELECT table_name 
                 FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND (table_name LIKE '%client%' OR table_name LIKE '%contact%')
+                WHERE table_schema = 'public'
             """))
             
-            existing_tables = [row[0] for row in result]
-            for table_name in existing_tables:
-                print(f"  Dropping existing table: {table_name}")
-                conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+            all_tables = [row[0] for row in result]
             
-            # Clean up file_imports records
-            conn.execute(text("DELETE FROM file_imports WHERE file_name LIKE '%client-list%'"))
-            print("  Cleaned up file_imports records")
+            # System tables that should NOT be dropped
+            system_tables = {
+                'file_imports', 
+                'table_metadata', 
+                'import_history', 
+                'mapping_errors'
+            }
             
-            # Clean up table_metadata records for client tables
-            conn.execute(text("DELETE FROM table_metadata WHERE table_name LIKE '%client%'"))
-            print("  Cleaned up table_metadata records")
+            # Filter to only user data tables (exclude system and test tables)
+            user_tables = [
+                t for t in all_tables
+                if t not in system_tables
+                and not t.startswith('test_')
+                and not t.startswith('uploads')
+            ]
             
-            # Clean up import_history records
-            conn.execute(text("DELETE FROM import_history WHERE file_name LIKE '%client-list%'"))
-            print("  Cleaned up import_history records")
+            # Drop all user data tables to ensure clean slate
+            if user_tables:
+                print(f"  Found {len(user_tables)} user data table(s) to clean up:")
+                for table_name in user_tables:
+                    print(f"    Dropping: {table_name}")
+                    conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+            else:
+                print("  No user data tables to clean up")
+            
+            # Clean up ALL import tracking records (not just client-list files)
+            # This ensures no orphaned records from previous test runs
+            conn.execute(text("DELETE FROM file_imports"))
+            print("  Cleaned up all file_imports records")
+            
+            conn.execute(text("DELETE FROM table_metadata"))
+            print("  Cleaned up all table_metadata records")
+            
+            conn.execute(text("DELETE FROM import_history"))
+            print("  Cleaned up all import_history records")
             
     except Exception as e:
         print(f"  Warning during cleanup: {e}")
