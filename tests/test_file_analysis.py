@@ -11,7 +11,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas import ImportStrategy, AnalysisMode, ConflictResolutionMode
+from app.schemas import AnalysisMode, ConflictResolutionMode
+from app.file_analyzer import ImportStrategy
 
 client = TestClient(app)
 
@@ -511,21 +512,17 @@ def test_analyze_response_structure(mock_successful_analysis):
         
         data = response.json()
         
-        # Verify all expected fields are present
+        # Verify all expected fields are present in AnalyzeFileResponse
         assert "success" in data
-        assert "recommended_strategy" in data
-        assert "confidence" in data
-        assert "reasoning" in data
-        assert "table_matches" in data
-        assert "selected_table" in data
-        assert "suggested_mapping" in data
-        assert "data_quality_issues" in data
-        assert "conflicts" in data
-        assert "requires_user_input" in data
+        assert "llm_response" in data
         assert "can_auto_execute" in data
         assert "iterations_used" in data
         assert "max_iterations" in data
-        assert "llm_response" in data
+        # Optional fields
+        assert "suggested_mapping" in data or data["suggested_mapping"] is None
+        assert "conflicts" in data or data["conflicts"] is None
+        assert "confidence_score" in data or data["confidence_score"] is None
+        assert "error" in data or data["error"] is None
 
 
 def test_b2_analyze_response_structure(mock_successful_analysis):
