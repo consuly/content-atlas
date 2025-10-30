@@ -36,6 +36,7 @@ def print_warning():
     print("\n⚠️  WARNING: This will reset the following:")
     print("   • All user-created data tables (contacts, products, etc.)")
     print("   • Tracking tables (file_imports, table_metadata, import_history, uploaded_files)")
+    print("     - These will be dropped and recreated with the latest schema on startup")
     print("   • All files in B2 storage (uploads folder)")
     print("\n✓  The following will be PRESERVED:")
     print("   • Users table (your login accounts)")
@@ -128,14 +129,14 @@ Examples:
         print("-" * 80)
         
         if results['tables_dropped']:
-            print(f"\n📋 Dropped {len(results['tables_dropped'])} user tables:")
+            print(f"\n📋 Dropped {len(results['tables_dropped'])} tables:")
             for table in results['tables_dropped']:
                 print(f"   • {table}")
         else:
-            print("\n📋 No user tables to drop")
+            print("\n📋 No tables to drop")
         
         if results['tables_truncated']:
-            print(f"\n🗑️  Truncated {len(results['tables_truncated'])} tracking tables:")
+            print(f"\n⚠️  Note: {len(results['tables_truncated'])} tables were truncated (legacy):")
             for table in results['tables_truncated']:
                 print(f"   • {table}")
         

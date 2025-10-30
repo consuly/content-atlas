@@ -4,7 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import json
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any, Tuple
 from contextlib import asynccontextmanager
 from .database import get_db, get_engine
 from .schemas import (
@@ -81,6 +81,10 @@ app.add_middleware(
 # Global task storage (in production, use Redis or database)
 task_storage: Dict[str, AsyncTaskStatus] = {}
 analysis_storage: Dict[str, AnalyzeFileResponse] = {}
+# Cache for parsed file records to avoid double processing
+# Key: file_hash, Value: dict with 'raw_records', 'mapped_records', 'config_hash', 'timestamp'
+records_cache: Dict[str, Dict[str, Any]] = {}
+CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 def detect_file_type(filename: str) -> str:
@@ -105,6 +109,7 @@ async def map_data_endpoint(
 ):
     from .import_orchestrator import execute_data_import
     from .models import FileAlreadyImportedException, DuplicateDataException
+    import hashlib
     
     try:
         # Parse mapping config
@@ -116,13 +121,47 @@ async def map_data_endpoint(
         # Read file content
         file_content = await file.read()
         
-        # Execute unified import
+        # Calculate file hash to check cache
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        
+        # Check if we have cached records from /detect-mapping
+        cached_records = None
+        current_time = time.time()
+        
+        # Generate config hash to check if mapping changed
+        config_hash = hashlib.sha256(mapping_json.encode()).hexdigest()
+        
+        if file_hash in records_cache:
+            cache_entry = records_cache[file_hash]
+            timestamp = cache_entry.get('timestamp', 0)
+            
+            # Check if cache is still valid (within TTL)
+            if current_time - timestamp <= CACHE_TTL_SECONDS:
+                # Check if we have mapped records with matching config
+                if cache_entry.get('config_hash') == config_hash and 'mapped_records' in cache_entry:
+                    cached_records = cache_entry['mapped_records']
+                    print(f"DEBUG: Using cached MAPPED records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
+                elif 'raw_records' in cache_entry:
+                    cached_records = cache_entry['raw_records']
+                    print(f"DEBUG: Using cached RAW records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
+            else:
+                # Cache expired, remove it
+                del records_cache[file_hash]
+                print(f"DEBUG: Cache expired for file hash {file_hash[:8]}...")
+        
+        # Execute unified import with optional cached records
         result = execute_data_import(
             file_content=file_content,
             file_name=file.filename,
             mapping_config=config,
-            source_type="local_upload"
+            source_type="local_upload",
+            pre_parsed_records=cached_records
         )
+        
+        # Clean up cache entry after use
+        if file_hash in records_cache:
+            del records_cache[file_hash]
+            print(f"DEBUG: Cleaned up cache for file hash {file_hash[:8]}...")
 
         return MapDataResponse(
             success=True,
@@ -187,6 +226,70 @@ async def extract_b2_excel_csv_endpoint(request: ExtractB2ExcelRequest):
         return ExtractExcelCsvResponse(
             success=True,
             sheets=sheets_csv
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/detect-mapping", response_model=DetectB2MappingResponse)
+async def detect_mapping_endpoint(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Detect mapping configuration from an uploaded file.
+    
+    This endpoint analyzes the structure of an uploaded file and automatically
+    detects column names, data types, and suggests a mapping configuration.
+    It also caches the parsed records to avoid re-parsing in /map-data.
+    
+    Parameters:
+    - file: The file to analyze (CSV, Excel, JSON, or XML)
+    
+    Returns:
+    - Detected file type
+    - Suggested mapping configuration
+    - List of columns found
+    - Number of rows sampled
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Calculate file hash for caching
+        import hashlib
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        
+        # Detect mapping from file AND get parsed records
+        file_type, detected_mapping, columns_found, rows_sampled, records = detect_mapping_from_file(
+            file_content, file.filename, return_records=True
+        )
+        
+        # Cache the parsed records for 5 minutes (to be used by /map-data)
+        current_time = time.time()
+        
+        # Store in enhanced cache structure
+        records_cache[file_hash] = {
+            'raw_records': records,
+            'timestamp': current_time,
+            'file_name': file.filename
+        }
+        
+        # Clean up old cache entries (older than TTL)
+        expired_keys = [k for k, v in records_cache.items() 
+                       if current_time - v.get('timestamp', 0) > CACHE_TTL_SECONDS]
+        for key in expired_keys:
+            del records_cache[key]
+        
+        print(f"DEBUG: Cached {len(records)} RAW records for file hash {file_hash[:8]}...")
+
+        return DetectB2MappingResponse(
+            success=True,
+            file_type=file_type,
+            detected_mapping=detected_mapping,
+            columns_found=columns_found,
+            rows_sampled=rows_sampled
         )
 
     except Exception as e:

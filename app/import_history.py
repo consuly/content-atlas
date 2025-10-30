@@ -19,14 +19,15 @@ logger = logging.getLogger(__name__)
 
 def create_import_history_table():
     """
-    Create the import_history table if it doesn't exist.
+    Create the import_history and mapping_errors tables if they don't exist.
     
-    This table stores comprehensive metadata about every import operation,
+    These tables store comprehensive metadata about every import operation,
     enabling full traceability and auditing.
     """
     engine = get_engine()
     
-    create_sql = """
+    # Enhanced import_history table with mapping tracking
+    create_import_history_sql = """
     CREATE TABLE IF NOT EXISTS import_history (
         import_id UUID PRIMARY KEY,
         import_timestamp TIMESTAMP DEFAULT NOW(),
@@ -56,13 +57,20 @@ def create_import_history_table():
         error_message TEXT,
         warnings TEXT[],
         
+        -- Mapping Status (NEW)
+        mapping_status VARCHAR(50) DEFAULT 'not_started',  -- 'not_started', 'in_progress', 'completed', 'completed_with_errors', 'failed'
+        mapping_started_at TIMESTAMP,
+        mapping_completed_at TIMESTAMP,
+        mapping_duration_seconds DECIMAL(10, 3),
+        mapping_errors_count INTEGER DEFAULT 0,
+        
         -- Statistics
         total_rows_in_file INTEGER,
         rows_processed INTEGER,
         rows_inserted INTEGER,
         rows_skipped INTEGER,
         duplicates_found INTEGER,
-        validation_errors INTEGER,
+        data_validation_errors INTEGER,  -- Renamed from validation_errors for clarity
         
         -- Performance Metrics
         duration_seconds DECIMAL(10, 3),
@@ -84,16 +92,45 @@ def create_import_history_table():
     CREATE INDEX IF NOT EXISTS idx_import_history_timestamp ON import_history(import_timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_import_history_table ON import_history(table_name);
     CREATE INDEX IF NOT EXISTS idx_import_history_status ON import_history(status);
+    CREATE INDEX IF NOT EXISTS idx_import_history_mapping_status ON import_history(mapping_status);
     CREATE INDEX IF NOT EXISTS idx_import_history_user ON import_history(user_id);
     CREATE INDEX IF NOT EXISTS idx_import_history_file_hash ON import_history(file_hash);
     """
     
+    # New mapping_errors table for detailed error tracking
+    create_mapping_errors_sql = """
+    CREATE TABLE IF NOT EXISTS mapping_errors (
+        id SERIAL PRIMARY KEY,
+        import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
+        
+        -- Error Context
+        record_number INTEGER,  -- Which record in the file (1-indexed)
+        source_field VARCHAR(255),  -- Which source field caused the error
+        target_field VARCHAR(255),  -- Target database column
+        
+        -- Error Details
+        error_type VARCHAR(100),  -- 'datetime_conversion', 'type_mismatch', 'missing_required', 'mapping_error', etc.
+        error_message TEXT NOT NULL,  -- Full error message
+        source_value TEXT,  -- The problematic value (truncated if too long)
+        
+        -- Metadata
+        occurred_at TIMESTAMP DEFAULT NOW(),
+        chunk_number INTEGER  -- For parallel processing tracking
+    );
+    
+    -- Indexes for efficient querying
+    CREATE INDEX IF NOT EXISTS idx_mapping_errors_import ON mapping_errors(import_id);
+    CREATE INDEX IF NOT EXISTS idx_mapping_errors_type ON mapping_errors(error_type);
+    CREATE INDEX IF NOT EXISTS idx_mapping_errors_field ON mapping_errors(source_field);
+    """
+    
     try:
         with engine.begin() as conn:
-            conn.execute(text(create_sql))
-        logger.info("import_history table created/verified successfully")
+            conn.execute(text(create_import_history_sql))
+            conn.execute(text(create_mapping_errors_sql))
+        logger.info("import_history and mapping_errors tables created/verified successfully")
     except Exception as e:
-        logger.error(f"Error creating import_history table: {str(e)}")
+        logger.error(f"Error creating tables: {str(e)}")
         raise
 
 
@@ -188,6 +225,194 @@ def start_import_tracking(
         raise
 
 
+def update_mapping_status(
+    import_id: str,
+    status: str,
+    errors_count: int = 0,
+    duration_seconds: Optional[float] = None
+):
+    """
+    Update mapping status for an import.
+    
+    Args:
+        import_id: UUID of the import
+        status: Mapping status ('in_progress', 'completed', 'completed_with_errors', 'failed')
+        errors_count: Number of mapping errors encountered
+        duration_seconds: Time spent on mapping
+    """
+    engine = get_engine()
+    
+    try:
+        with engine.begin() as conn:
+            # If starting, set started_at
+            if status == 'in_progress':
+                update_sql = """
+                UPDATE import_history SET
+                    mapping_status = :status,
+                    mapping_started_at = NOW(),
+                    updated_at = NOW()
+                WHERE import_id = :import_id
+                """
+                conn.execute(text(update_sql), {
+                    "import_id": import_id,
+                    "status": status
+                })
+            else:
+                # If completing, set completed_at and duration
+                update_sql = """
+                UPDATE import_history SET
+                    mapping_status = :status,
+                    mapping_completed_at = NOW(),
+                    mapping_duration_seconds = :duration_seconds,
+                    mapping_errors_count = :errors_count,
+                    updated_at = NOW()
+                WHERE import_id = :import_id
+                """
+                conn.execute(text(update_sql), {
+                    "import_id": import_id,
+                    "status": status,
+                    "duration_seconds": duration_seconds,
+                    "errors_count": errors_count
+                })
+        
+        logger.info(f"Updated mapping status to '{status}' for import {import_id}")
+        
+    except Exception as e:
+        logger.error(f"Error updating mapping status: {str(e)}")
+        raise
+
+
+def record_mapping_errors_batch(
+    import_id: str,
+    errors: List[Dict[str, Any]]
+):
+    """
+    Batch insert mapping errors for efficiency.
+    
+    Args:
+        import_id: UUID of the import
+        errors: List of error dictionaries with keys:
+            - record_number: int (optional)
+            - error_type: str (optional, defaults to 'mapping_error')
+            - error_message: str (required)
+            - source_field: str (optional)
+            - target_field: str (optional)
+            - source_value: str (optional)
+            - chunk_number: int (optional)
+    """
+    if not errors:
+        return
+    
+    engine = get_engine()
+    
+    try:
+        with engine.begin() as conn:
+            insert_sql = """
+            INSERT INTO mapping_errors (
+                import_id, record_number, error_type, error_message,
+                source_field, target_field, source_value, chunk_number
+            ) VALUES (
+                :import_id, :record_number, :error_type, :error_message,
+                :source_field, :target_field, :source_value, :chunk_number
+            )
+            """
+            
+            # Prepare batch insert data
+            batch_data = []
+            for error in errors:
+                # Truncate source_value if too long (keep first 500 chars)
+                source_value = error.get("source_value")
+                if source_value and len(str(source_value)) > 500:
+                    source_value = str(source_value)[:497] + "..."
+                
+                batch_data.append({
+                    "import_id": import_id,
+                    "record_number": error.get("record_number"),
+                    "error_type": error.get("error_type", "mapping_error"),
+                    "error_message": error.get("error_message"),
+                    "source_field": error.get("source_field"),
+                    "target_field": error.get("target_field"),
+                    "source_value": source_value,
+                    "chunk_number": error.get("chunk_number")
+                })
+            
+            # Execute batch insert
+            for data in batch_data:
+                conn.execute(text(insert_sql), data)
+        
+        logger.info(f"Recorded {len(errors)} mapping errors for import {import_id}")
+        
+    except Exception as e:
+        logger.error(f"Error recording mapping errors: {str(e)}")
+        raise
+
+
+def get_mapping_errors(
+    import_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    error_type: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve mapping errors for an import.
+    
+    Args:
+        import_id: UUID of the import
+        limit: Maximum number of errors to return
+        offset: Number of errors to skip
+        error_type: Optional filter by error type
+        
+    Returns:
+        List of mapping error records
+    """
+    engine = get_engine()
+    
+    try:
+        with engine.connect() as conn:
+            where_clauses = ["import_id = :import_id"]
+            params = {
+                "import_id": import_id,
+                "limit": limit,
+                "offset": offset
+            }
+            
+            if error_type:
+                where_clauses.append("error_type = :error_type")
+                params["error_type"] = error_type
+            
+            where_sql = " AND ".join(where_clauses)
+            
+            query = f"""
+            SELECT * FROM mapping_errors
+            WHERE {where_sql}
+            ORDER BY record_number, id
+            LIMIT :limit OFFSET :offset
+            """
+            
+            result = conn.execute(text(query), params)
+            
+            errors = []
+            for row in result:
+                errors.append({
+                    "id": row[0],
+                    "import_id": str(row[1]),
+                    "record_number": row[2],
+                    "source_field": row[3],
+                    "target_field": row[4],
+                    "error_type": row[5],
+                    "error_message": row[6],
+                    "source_value": row[7],
+                    "occurred_at": row[8].isoformat() if row[8] else None,
+                    "chunk_number": row[9]
+                })
+            
+            return errors
+            
+    except Exception as e:
+        logger.error(f"Error retrieving mapping errors: {str(e)}")
+        raise
+
+
 def complete_import_tracking(
     import_id: str,
     status: str,
@@ -237,7 +462,7 @@ def complete_import_tracking(
                 rows_inserted = :rows_inserted,
                 rows_skipped = :rows_skipped,
                 duplicates_found = :duplicates_found,
-                validation_errors = :validation_errors,
+                data_validation_errors = :validation_errors,
                 duration_seconds = :duration_seconds,
                 parsing_time_seconds = :parsing_time_seconds,
                 duplicate_check_time_seconds = :duplicate_check_time_seconds,
@@ -348,21 +573,26 @@ def get_import_history(
                     "status": row[14],
                     "error_message": row[15],
                     "warnings": row[16],
-                    "total_rows_in_file": row[17],
-                    "rows_processed": row[18],
-                    "rows_inserted": row[19],
-                    "rows_skipped": row[20],
-                    "duplicates_found": row[21],
-                    "validation_errors": row[22],
-                    "duration_seconds": float(row[23]) if row[23] else None,
-                    "parsing_time_seconds": float(row[24]) if row[24] else None,
-                    "duplicate_check_time_seconds": float(row[25]) if row[25] else None,
-                    "insert_time_seconds": float(row[26]) if row[26] else None,
-                    "analysis_id": str(row[27]) if row[27] else None,
-                    "task_id": str(row[28]) if row[28] else None,
-                    "metadata": row[29],
-                    "created_at": row[30].isoformat() if row[30] else None,
-                    "updated_at": row[31].isoformat() if row[31] else None
+                    "mapping_status": row[17],
+                    "mapping_started_at": row[18].isoformat() if row[18] else None,
+                    "mapping_completed_at": row[19].isoformat() if row[19] else None,
+                    "mapping_duration_seconds": float(row[20]) if row[20] else None,
+                    "mapping_errors_count": row[21],
+                    "total_rows_in_file": row[22],
+                    "rows_processed": row[23],
+                    "rows_inserted": row[24],
+                    "rows_skipped": row[25],
+                    "duplicates_found": row[26],
+                    "data_validation_errors": row[27],
+                    "duration_seconds": float(row[28]) if row[28] else None,
+                    "parsing_time_seconds": float(row[29]) if row[29] else None,
+                    "duplicate_check_time_seconds": float(row[30]) if row[30] else None,
+                    "insert_time_seconds": float(row[31]) if row[31] else None,
+                    "analysis_id": str(row[32]) if row[32] else None,
+                    "task_id": str(row[33]) if row[33] else None,
+                    "metadata": row[34],
+                    "created_at": row[35].isoformat() if row[35] else None,
+                    "updated_at": row[36].isoformat() if row[36] else None
                 })
             
             return records

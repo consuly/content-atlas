@@ -33,9 +33,67 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     return mapped_records, all_errors
 
 
+def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Apply transformation rules to the DataFrame using vectorized operations.
+    Much faster than row-by-row processing.
+
+    Returns:
+        Tuple of (transformed_dataframe, list_of_errors)
+    """
+    errors = []
+    transformations = rules.get('transformations', [])
+    datetime_transformations = rules.get('datetime_transformations', [])
+
+    # Apply general transformations (vectorized)
+    for transformation in transformations:
+        if transformation.get('type') == 'uppercase':
+            field = transformation.get('field')
+            if field in df.columns:
+                # Vectorized uppercase operation
+                df[field] = df[field].astype(str).str.upper()
+
+    # Apply datetime transformations (vectorized)
+    for dt_transformation in datetime_transformations:
+        field = dt_transformation.get('field')
+        source_format = dt_transformation.get('source_format')
+        
+        if field in df.columns:
+            # Vectorized datetime conversion
+            if source_format and source_format != "auto":
+                # Try explicit format first
+                converted = pd.to_datetime(df[field], format=source_format, errors='coerce')
+                # If many failed, try auto-detection as fallback
+                if converted.isna().sum() > len(df) * 0.5:  # If >50% failed
+                    converted = pd.to_datetime(df[field], errors='coerce')
+            else:
+                # Auto-detect format
+                converted = pd.to_datetime(df[field], errors='coerce')
+            
+            # Count conversion failures for non-empty values
+            original_non_empty = df[field].notna() & (df[field].astype(str).str.strip() != '')
+            conversion_failed = original_non_empty & converted.isna()
+            failed_count = conversion_failed.sum()
+            
+            if failed_count > 0:
+                error_msg = f"Failed to convert {failed_count} datetime values in field '{field}'"
+                errors.append(error_msg)
+                logger.warning(error_msg)
+            
+            # Format to ISO 8601
+            # For date-only values, use date format; for datetime, use full ISO format
+            df[field] = converted.apply(lambda x: 
+                x.strftime('%Y-%m-%d') if pd.notna(x) and x.time() == datetime.min.time()
+                else x.isoformat() if pd.notna(x)
+                else None
+            )
+
+    return df, errors
+
+
 def apply_rules(record: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     """
-    Apply transformation rules to the record.
+    Apply transformation rules to the record (legacy row-by-row version).
 
     Returns:
         Tuple of (transformed_record, list_of_errors)
@@ -175,12 +233,18 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
     return "TEXT"
 
 
-def detect_mapping_from_file(file_content: bytes, file_name: str) -> tuple[str, MappingConfig, List[str], int]:
+def detect_mapping_from_file(file_content: bytes, file_name: str, return_records: bool = False) -> tuple[str, MappingConfig, List[str], int, Optional[List[Dict[str, Any]]]]:
     """
     Detect mapping configuration from CSV or Excel file content.
-
+    
+    Args:
+        file_content: Raw file content
+        file_name: Name of the file
+        return_records: If True, also return the parsed records to avoid re-parsing
+    
     Returns:
-        tuple: (file_type, mapping_config, columns_found, rows_sampled)
+        tuple: (file_type, mapping_config, columns_found, rows_sampled, records)
+        Note: records will be None if return_records=False
     """
     # Detect file type
     if file_name.endswith('.csv'):
@@ -236,9 +300,19 @@ def detect_mapping_from_file(file_content: bytes, file_name: str) -> tuple[str, 
         db_schema[clean_col] = detect_column_type(df[col], has_datetime_transformations)
         mappings[clean_col] = col  # Map clean name to original name
 
+    # Convert DataFrame to records if requested (to avoid re-parsing later)
+    records = None
+    if return_records:
+        records = df.to_dict('records')
+        # Convert pandas NaT values to None for database compatibility
+        for record in records:
+            for key, value in record.items():
+                if pd.isna(value):
+                    record[key] = None
+    
     return file_type, MappingConfig(
         table_name=table_name,
         db_schema=db_schema,
         mappings=mappings,
         rules={}
-    ), columns_found, rows_sampled
+    ), columns_found, rows_sampled, records

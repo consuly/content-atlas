@@ -120,13 +120,13 @@ def test_llm_sequential_file_merge():
     for table in tables_data_1['tables']:
         print(f"    - {table['table_name']}: {table['row_count']} rows")
     
-    # Filter to only user data tables (exclude system and test tables)
-    user_tables_1 = [
-        t for t in tables_data_1['tables'] 
-        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history'] 
-        and not t['table_name'].startswith('test_')
-        and not t['table_name'].startswith('uploads')
-    ]
+        # Filter to only user data tables (exclude system and test tables)
+        user_tables_1 = [
+            t for t in tables_data_1['tables']
+            if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors']
+            and not t['table_name'].startswith('test_')
+            and not t['table_name'].startswith('uploads')
+        ]
     
     print(f"\n  User data tables after first file: {len(user_tables_1)}")
     for table in user_tables_1:
@@ -203,7 +203,7 @@ def test_llm_sequential_file_merge():
     # Filter to only user data tables (exclude system and test tables)
     user_tables_2 = [
         t for t in tables_data_2['tables'] 
-        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history'] 
+        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors'] 
         and not t['table_name'].startswith('test_')
         and not t['table_name'].startswith('uploads')
     ]
