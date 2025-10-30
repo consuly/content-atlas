@@ -20,7 +20,7 @@ import { App as AntdApp } from "antd";
 import { BrowserRouter, Outlet, Route, Routes } from "react-router";
 import { authProvider } from "./authProvider";
 import { dataProvider } from "./dataProvider";
-import { Header } from "./components/header";
+import { Header, ErrorBoundary } from "./components";
 import { Title } from "./components/title";
 import { ColorModeContextProvider } from "./contexts/color-mode";
 import { ForgotPassword } from "./pages/forgotPassword";
@@ -90,7 +90,11 @@ function App() {
                       <Route index element={<ImportPage />} />
                     </Route>
                     <Route path="/query">
-                      <Route index element={<QueryPage />} />
+                      <Route index element={
+                        <ErrorBoundary>
+                          <QueryPage />
+                        </ErrorBoundary>
+                      } />
                     </Route>
                     <Route path="*" element={<ErrorComponent />} />
                   </Route>

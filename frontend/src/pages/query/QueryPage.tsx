@@ -121,16 +121,32 @@ export const QueryPage: React.FC = () => {
 
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred';
+      // Extract error message with fallback
+      let errorMessage = 'An unexpected error occurred while processing your query.';
+      let errorDetails = '';
+
+      if (err instanceof Error) {
+        errorMessage = err.message;
+        // Check if error message contains details separator
+        if (errorMessage.includes('\n\nDetails: ')) {
+          const parts = errorMessage.split('\n\nDetails: ');
+          errorMessage = parts[0];
+          errorDetails = parts[1] || '';
+        }
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+
+      // Set error in state for the alert banner
       setError(errorMessage);
 
-      // Add error message to conversation
+      // Add error message to conversation with more helpful content
       const errorAssistantMessage: QueryMessage = {
         id: generateUuid(),
         type: 'assistant',
-        content: 'I encountered an error processing your request.',
+        content: `I encountered an error while processing your query. ${errorMessage.includes('Network error') ? 'This appears to be a connectivity issue.' : 'Please try rephrasing your question or check the error details below.'}`,
         timestamp: new Date(),
-        error: errorMessage,
+        error: errorDetails ? `${errorMessage}\n\nDetails: ${errorDetails}` : errorMessage,
       };
 
       setMessages((prev) => [...prev, errorAssistantMessage]);
