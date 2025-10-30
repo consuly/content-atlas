@@ -59,15 +59,52 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
         {/* Error message */}
         {message.error && (
           <div style={{ marginBottom: 16 }}>
-            <Badge status="error" text="Error" />
+            <Badge status="error" text={<Text strong>Query Failed</Text>} />
             <div style={{ 
               marginTop: 8, 
-              padding: 12, 
+              padding: 16, 
               backgroundColor: '#fff2f0', 
-              borderRadius: 4,
+              borderRadius: 8,
               border: '1px solid #ffccc7'
             }}>
-              <Text type="danger">{message.error}</Text>
+              <div style={{ marginBottom: 8 }}>
+                <Text strong type="danger">Error Details:</Text>
+              </div>
+              <Text type="danger" style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
+                {message.error}
+              </Text>
+              {message.error.includes('Network error') && (
+                <div style={{ 
+                  marginTop: 12, 
+                  padding: 12, 
+                  backgroundColor: '#fffbe6',
+                  borderRadius: 4,
+                  border: '1px solid #ffe58f'
+                }}>
+                  <Text strong style={{ display: 'block', marginBottom: 4 }}>
+                    💡 Troubleshooting Tips:
+                  </Text>
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    <li>Check if the API server is running</li>
+                    <li>Verify your internet connection</li>
+                    <li>Ensure the API URL is correctly configured</li>
+                    <li>Check browser console for additional details</li>
+                  </ul>
+                </div>
+              )}
+              {message.error.includes('Authentication failed') && (
+                <div style={{ 
+                  marginTop: 12, 
+                  padding: 12, 
+                  backgroundColor: '#fffbe6',
+                  borderRadius: 4,
+                  border: '1px solid #ffe58f'
+                }}>
+                  <Text>
+                    💡 Please try logging out and logging back in to refresh your session.
+                  </Text>
+                </div>
+              )}
             </div>
           </div>
         )}
