@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 
 
@@ -174,6 +174,8 @@ class SchemaConflictInfo(BaseModel):
 
 class AnalyzeFileRequest(BaseModel):
     """Request to analyze a file for import strategy"""
+    model_config = ConfigDict(use_enum_values=True)
+    
     sample_size: Optional[int] = Field(
         default=None,
         description="Number of rows to sample. If None, auto-calculated based on file size"
@@ -202,6 +204,8 @@ class AnalyzeFileRequest(BaseModel):
 
 class AnalyzeB2FileRequest(BaseModel):
     """Request to analyze a B2 file for import strategy"""
+    model_config = ConfigDict(use_enum_values=True)
+    
     file_name: str = Field(..., description="B2 file name/key")
     sample_size: Optional[int] = Field(
         default=None,
@@ -231,6 +235,8 @@ class AnalyzeB2FileRequest(BaseModel):
 
 class AnalyzeFileResponse(BaseModel):
     """Response from file analysis"""
+    model_config = ConfigDict(use_enum_values=True)
+    
     success: bool
     recommended_strategy: Optional[ImportStrategy] = None
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence score from 0.0 to 1.0")
