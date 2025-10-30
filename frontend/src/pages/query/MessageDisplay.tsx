@@ -186,9 +186,9 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
         )}
 
         {/* Metadata */}
-        {(message.rowsReturned !== undefined || message.executionTime !== undefined) && (
+        {(typeof message.rowsReturned === 'number' || typeof message.executionTime === 'number') && (
           <Space size="large" style={{ marginTop: 8 }}>
-            {message.rowsReturned !== undefined && (
+            {typeof message.rowsReturned === 'number' && (
               <Space size="small">
                 <DatabaseOutlined style={{ color: '#1890ff' }} />
                 <Text type="secondary">
@@ -196,7 +196,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
                 </Text>
               </Space>
             )}
-            {message.executionTime !== undefined && (
+            {typeof message.executionTime === 'number' && (
               <Space size="small">
                 <ClockCircleOutlined style={{ color: '#52c41a' }} />
                 <Text type="secondary">{message.executionTime.toFixed(2)}s</Text>

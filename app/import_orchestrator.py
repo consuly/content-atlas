@@ -175,7 +175,7 @@ def handle_schema_transformation(
         strategy: Import strategy (MERGE_EXACT, EXTEND_TABLE, ADAPT_DATA, etc.)
         
     Returns:
-        Transformed records
+        Transformed records with proper column mapping
     """
     if not mapped_records:
         return mapped_records
@@ -186,6 +186,8 @@ def handle_schema_transformation(
     
     # Only transform for merge strategies on existing tables
     if strategy in ["MERGE_EXACT", "EXTEND_TABLE", "ADAPT_DATA"] and table_exists:
+        logger.info(f"Applying schema transformation for strategy '{strategy}' on table '{target_table}'")
+        
         # Get existing table schema
         with engine.connect() as conn:
             result = conn.execute(text("""
@@ -198,40 +200,66 @@ def handle_schema_transformation(
             
             existing_columns = [row[0] for row in result]
         
+        logger.info(f"Existing table columns ({len(existing_columns)}): {existing_columns[:5]}{'...' if len(existing_columns) > 5 else ''}")
+        
         # Get source columns from mapped records
         source_columns = list(mapped_records[0].keys())
+        logger.info(f"Source columns ({len(source_columns)}): {source_columns[:5]}{'...' if len(source_columns) > 5 else ''}")
         
         # Analyze schema compatibility and get column mapping
-        logger.info(f"Analyzing schema compatibility between source ({len(source_columns)} cols) and target ({len(existing_columns)} cols)")
+        logger.info(f"Analyzing schema compatibility between source and target...")
         compatibility = analyze_schema_compatibility(source_columns, existing_columns)
         
-        logger.info(f"Schema compatibility: {compatibility['match_percentage']:.1f}% matched, "
-                   f"{compatibility['new_count']} new columns")
+        logger.info(f"Schema compatibility analysis:")
+        logger.info(f"  - Match percentage: {compatibility['match_percentage']:.1f}%")
+        logger.info(f"  - Matched columns: {compatibility['matched_count']}")
+        logger.info(f"  - New columns: {compatibility['new_count']}")
+        logger.info(f"  - Compatibility score: {compatibility['compatibility_score']:.2f}")
         
-        # Transform records to match target schema
+        # Log column mapping details
         column_mapping = compatibility['column_mapping']
+        mapped_count = sum(1 for v in column_mapping.values() if v is not None)
+        logger.info(f"Column mapping: {mapped_count}/{len(source_columns)} source columns mapped")
+        
+        # Log a few example mappings
+        example_mappings = list(column_mapping.items())[:5]
+        for src, tgt in example_mappings:
+            if tgt:
+                logger.info(f"  '{src}' -> '{tgt}'")
+            else:
+                logger.info(f"  '{src}' -> (new column)")
+        
+        # Get target schema with data types
         target_schema = {col: 'TEXT' for col in existing_columns}  # Simplified schema
         
+        # Transform records to match target schema
+        logger.info(f"Transforming {len(mapped_records)} records...")
         transformed_records = []
-        for record in mapped_records:
+        for i, record in enumerate(mapped_records):
             transformed = transform_record(record, column_mapping, target_schema)
             transformed_records.append(transformed)
+            
+            # Log first transformed record for debugging
+            if i == 0:
+                logger.info(f"First transformed record has {len(transformed)} columns: {list(transformed.keys())[:5]}{'...' if len(transformed) > 5 else ''}")
         
         # If there are new columns, extend the table
         new_columns = compatibility['new_columns']
         if new_columns:
-            logger.info(f"Adding {len(new_columns)} new columns to table '{target_table}': {new_columns}")
+            logger.info(f"Extending table with {len(new_columns)} new columns: {new_columns}")
             with engine.begin() as conn:
                 for col_name in new_columns:
                     try:
                         # Add column as TEXT (can be refined later)
                         conn.execute(text(f'ALTER TABLE "{target_table}" ADD COLUMN IF NOT EXISTS "{col_name}" TEXT'))
-                        logger.info(f"Added column '{col_name}' to table '{target_table}'")
+                        logger.info(f"  Added column '{col_name}' to table '{target_table}'")
                     except Exception as e:
-                        logger.warning(f"Could not add column '{col_name}': {e}")
+                        logger.warning(f"  Could not add column '{col_name}': {e}")
         
+        logger.info(f"Schema transformation complete: {len(transformed_records)} records ready for insertion")
         return transformed_records
     
+    logger.info(f"No schema transformation needed (strategy: {strategy}, table_exists: {table_exists})")
     return mapped_records
 
 

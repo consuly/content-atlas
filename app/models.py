@@ -283,6 +283,21 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
         print(f"DEBUG: _check_for_duplicates_db_side: Error checking table existence: {e}")
         return
 
+    # Get actual table column types for proper casting
+    try:
+        schema_result = conn.execute(text("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = :table_name
+            AND column_name = ANY(:columns)
+        """), {"table_name": table_name, "columns": uniqueness_columns})
+        
+        table_column_types = {row[0]: row[1] for row in schema_result}
+        print(f"DEBUG: _check_for_duplicates_db_side: Table column types: {table_column_types}")
+    except Exception as e:
+        print(f"DEBUG: _check_for_duplicates_db_side: Could not get table column types: {e}")
+        table_column_types = {}
+
     # Apply type coercion to records
     coerced_records = []
     for record in records:
@@ -303,7 +318,7 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
         batch_end = min(batch_start + batch_size, len(coerced_records))
         batch = coerced_records[batch_start:batch_end]
         
-        # Build VALUES clause for batch checking
+        # Build VALUES clause for batch checking with proper type casting
         values_list = []
         params = {}
         
@@ -311,12 +326,38 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
             value_placeholders = []
             for col in uniqueness_columns:
                 param_name = f"p{batch_start}_{idx}_{col}"
-                value_placeholders.append(f":{param_name}")
-                params[param_name] = record.get(col)
+                value = record.get(col)
+                
+                # Cast the placeholder to match table column type if available
+                if col in table_column_types:
+                    table_type = table_column_types[col].upper()
+                    if 'TEXT' in table_type or 'CHAR' in table_type:
+                        # Cast value to TEXT for comparison
+                        value_placeholders.append(f"CAST(:{param_name} AS TEXT)")
+                    else:
+                        value_placeholders.append(f":{param_name}")
+                else:
+                    value_placeholders.append(f":{param_name}")
+                
+                params[param_name] = value
             values_list.append(f"({','.join(value_placeholders)})")
         
         values_clause = ','.join(values_list)
-        columns_clause = ','.join([f'"{col}"' for col in uniqueness_columns])
+        
+        # Build columns clause with proper casting to match value types
+        columns_parts = []
+        for col in uniqueness_columns:
+            if col in table_column_types:
+                table_type = table_column_types[col].upper()
+                if 'TEXT' in table_type or 'CHAR' in table_type:
+                    # Cast column to TEXT for comparison
+                    columns_parts.append(f'CAST("{col}" AS TEXT)')
+                else:
+                    columns_parts.append(f'"{col}"')
+            else:
+                columns_parts.append(f'"{col}"')
+        
+        columns_clause = ','.join(columns_parts)
         
         # Query to count duplicates in this batch
         query = text(f"""

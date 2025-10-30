@@ -20,6 +20,17 @@ from .db_context import get_database_schema, format_schema_for_prompt, get_relat
 from .config import settings
 
 
+# System tables that should not be accessible via natural language queries
+PROTECTED_SYSTEM_TABLES = {
+    'import_history',
+    'mapping_errors',
+    'table_metadata',
+    'uploaded_files',
+    'users',
+    'file_imports'
+}
+
+
 # Custom AgentState using TypedDict (v1.0 requirement)
 class DatabaseQueryState(AgentState):
     """Custom state for database query agent."""
@@ -99,6 +110,22 @@ def execute_sql_query(sql_query: str) -> str:
         # Security validation
         if not sql_query.strip().upper().startswith('SELECT'):
             return "ERROR: Only SELECT queries are allowed for security reasons."
+
+        # Check for protected system tables
+        sql_upper = sql_query.upper()
+        for table in PROTECTED_SYSTEM_TABLES:
+            # Check for table references in various SQL contexts
+            # Patterns: FROM table, JOIN table, "table", 'table'
+            table_patterns = [
+                rf'\bFROM\s+["\']?{table.upper()}["\']?\b',
+                rf'\bJOIN\s+["\']?{table.upper()}["\']?\b',
+                rf'\bFROM\s+PUBLIC\.{table.upper()}\b',
+                rf'\bJOIN\s+PUBLIC\.{table.upper()}\b'
+            ]
+            
+            for pattern in table_patterns:
+                if re.search(pattern, sql_upper):
+                    return f"ERROR: Access to system table '{table}' is not allowed. This table contains operational data and is protected for security reasons."
 
         # Remove any dangerous keywords
         dangerous_patterns = [
