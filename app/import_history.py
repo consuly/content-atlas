@@ -178,8 +178,7 @@ def start_import_tracking(
     duplicate_check_enabled = True
     if mapping_config:
         mapping_json = mapping_config.model_dump()
-        if mapping_config.duplicate_check:
-            duplicate_check_enabled = mapping_config.duplicate_check.enabled
+        duplicate_check_enabled = mapping_config.check_duplicates
     
     try:
         with engine.begin() as conn:

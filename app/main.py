@@ -13,9 +13,10 @@ from .schemas import (
     DetectB2MappingResponse, TablesListResponse, TableInfo, TableSchemaResponse, 
     ColumnInfo, TableDataResponse, TableStatsResponse, MapB2DataAsyncRequest, 
     AsyncTaskStatus, QueryDatabaseRequest, QueryDatabaseResponse,
-    AnalyzeFileRequest, AnalyzeB2FileRequest, AnalyzeFileResponse,
+    AnalyzeFileResponse, AnalyzeB2FileRequest,
     ExecuteRecommendedImportRequest, AnalysisMode, ConflictResolutionMode,
-    CheckDuplicateRequest, CheckDuplicateResponse, CompleteUploadRequest, CompleteUploadResponse
+    CheckDuplicateRequest, CheckDuplicateResponse, CompleteUploadRequest, CompleteUploadResponse,
+    AnalyzeFileInteractiveRequest, AnalyzeFileInteractiveResponse, ExecuteInteractiveImportRequest
 )
 from .processors.csv_processor import process_csv, process_excel, process_large_excel, extract_excel_sheets_to_csv
 from .processors.json_processor import process_json
@@ -1611,3 +1612,251 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     Requires: Bearer token in Authorization header
     """
     return UserResponse.from_orm(current_user)
+
+
+# ============================================================================
+# INTERACTIVE FILE ANALYSIS ENDPOINTS
+# ============================================================================
+
+@app.post("/analyze-file-interactive")
+async def analyze_file_interactive_endpoint(
+    request: "AnalyzeFileInteractiveRequest",
+    db: Session = Depends(get_db)
+):
+    """
+    Interactive file analysis with conversation support.
+    
+    This endpoint enables a conversational workflow where the LLM can ask
+    questions and wait for user responses before making final decisions.
+    
+    First call (no user_message):
+    - Analyzes the file
+    - Either asks a question OR makes a decision
+    
+    Subsequent calls (with user_message):
+    - Continues conversation with user's answer
+    - May ask more questions or make final decision
+    
+    Parameters:
+    - file_id: UUID of uploaded file
+    - user_message: User's response to previous question (optional on first call)
+    - thread_id: Conversation thread ID (auto-generated if not provided)
+    - max_iterations: Maximum LLM iterations
+    """
+    from .uploaded_files import get_uploaded_file_by_id
+    from .b2_utils import download_file_from_b2
+    from .schemas import AnalyzeFileInteractiveResponse
+    
+    try:
+        # Get uploaded file
+        file_record = get_uploaded_file_by_id(request.file_id)
+        if not file_record:
+            raise HTTPException(status_code=404, detail=f"File {request.file_id} not found")
+        
+        # Download file from B2
+        file_content = download_file_from_b2(file_record["b2_file_path"])
+        
+        # Detect and process file
+        file_type = detect_file_type(file_record["file_name"])
+        if file_type == 'csv':
+            records = process_csv(file_content)
+        elif file_type == 'excel':
+            records = process_excel(file_content)
+        elif file_type == 'json':
+            records = process_json(file_content)
+        elif file_type == 'xml':
+            records = process_xml(file_content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Smart sampling
+        sample, total_rows = sample_file_data(records, None)
+        
+        # Prepare metadata
+        file_metadata = {
+            "name": file_record["file_name"],
+            "total_rows": total_rows,
+            "file_type": file_type
+        }
+        
+        # Generate or use provided thread_id
+        thread_id = request.thread_id or str(uuid.uuid4())
+        
+        # Build prompt based on whether this is first call or continuation
+        if request.user_message:
+            # Continuation - user is responding to a question
+            prompt = request.user_message
+        else:
+            # First call - start analysis
+            prompt = f"""Analyze this file for database import:
+
+File: {file_metadata.get('name', 'unknown')}
+Total Rows: {file_metadata.get('total_rows', 'unknown')}
+Sample Size: {len(sample)}
+
+You are in INTERACTIVE mode. You can ask the user questions to clarify the best import strategy.
+
+Please analyze the file structure, compare it with existing tables, and either:
+1. Ask a clarifying question if you need more information
+2. Make a final import recommendation if you have enough information
+
+If you ask a question, use the ask_followup_question tool with clear options for the user to choose from."""
+        
+        # Run AI analysis with conversation memory
+        analysis_result = analyze_file_for_import(
+            file_sample=sample,
+            file_metadata=file_metadata,
+            analysis_mode=AnalysisMode.MANUAL,  # Always manual for interactive
+            conflict_mode=ConflictResolutionMode.ASK_USER,
+            user_id=None,
+            max_iterations=request.max_iterations,
+            thread_id=thread_id
+        )
+        
+        if not analysis_result["success"]:
+            return AnalyzeFileInteractiveResponse(
+                success=False,
+                thread_id=thread_id,
+                llm_message=analysis_result.get("response", "Analysis failed"),
+                needs_user_input=False,
+                can_execute=False,
+                iterations_used=analysis_result.get("iterations_used", 0),
+                max_iterations=request.max_iterations,
+                error=analysis_result.get("error")
+            )
+        
+        # Check if LLM made a decision
+        llm_decision = analysis_result.get("llm_decision")
+        
+        # Parse response to determine if LLM is asking a question or making decision
+        llm_response = analysis_result["response"]
+        
+        # Simple heuristic: if response ends with "?" it's likely a question
+        # In production, you'd parse the LLM's tool calls to detect ask_followup_question
+        is_question = "?" in llm_response[-100:] if len(llm_response) > 0 else False
+        
+        return AnalyzeFileInteractiveResponse(
+            success=True,
+            thread_id=thread_id,
+            llm_message=llm_response,
+            needs_user_input=is_question and not llm_decision,
+            question=llm_response if is_question and not llm_decision else None,
+            can_execute=llm_decision is not None,
+            llm_decision=llm_decision,
+            iterations_used=analysis_result["iterations_used"],
+            max_iterations=request.max_iterations
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Interactive analysis failed: {str(e)}")
+
+
+@app.post("/execute-interactive-import")
+async def execute_interactive_import_endpoint(
+    request: "ExecuteInteractiveImportRequest",
+    db: Session = Depends(get_db)
+):
+    """
+    Execute import from an interactive analysis session.
+    
+    This endpoint executes the import decision made during an interactive
+    conversation with the LLM.
+    
+    Parameters:
+    - file_id: UUID of uploaded file
+    - thread_id: Conversation thread ID from interactive session
+    """
+    from .uploaded_files import get_uploaded_file_by_id, update_file_status
+    from .b2_utils import download_file_from_b2
+    
+    try:
+        # Get uploaded file
+        file_record = get_uploaded_file_by_id(request.file_id)
+        if not file_record:
+            raise HTTPException(status_code=404, detail=f"File {request.file_id} not found")
+        
+        # Download file from B2
+        file_content = download_file_from_b2(file_record["b2_file_path"])
+        
+        # Process file to get all records
+        file_type = detect_file_type(file_record["file_name"])
+        if file_type == 'csv':
+            records = process_csv(file_content)
+        elif file_type == 'excel':
+            records = process_excel(file_content)
+        elif file_type == 'json':
+            records = process_json(file_content)
+        elif file_type == 'xml':
+            records = process_xml(file_content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Get the LLM decision from the conversation
+        # Note: In a real implementation, you'd retrieve this from the conversation state
+        # For now, we'll need to re-run the analysis to get the decision
+        sample, total_rows = sample_file_data(records, None)
+        file_metadata = {
+            "name": file_record["file_name"],
+            "total_rows": total_rows,
+            "file_type": file_type
+        }
+        
+        # Re-run analysis with the thread_id to get the final decision
+        analysis_result = analyze_file_for_import(
+            file_sample=sample,
+            file_metadata=file_metadata,
+            analysis_mode=AnalysisMode.MANUAL,
+            conflict_mode=ConflictResolutionMode.LLM_DECIDE,
+            user_id=None,
+            max_iterations=5,
+            thread_id=request.thread_id
+        )
+        
+        llm_decision = analysis_result.get("llm_decision")
+        if not llm_decision:
+            raise HTTPException(
+                status_code=400,
+                detail="No import decision found in conversation. Please complete the interactive analysis first."
+            )
+        
+        # Update file status to 'mapping'
+        update_file_status(request.file_id, "mapping")
+        
+        # Execute the import
+        execution_result = execute_llm_import_decision(
+            file_content=file_content,
+            file_name=file_record["file_name"],
+            all_records=records,
+            llm_decision=llm_decision
+        )
+        
+        if execution_result["success"]:
+            # Update file status to 'mapped'
+            update_file_status(
+                request.file_id,
+                "mapped",
+                mapped_table_name=execution_result["table_name"],
+                mapped_rows=execution_result["records_processed"]
+            )
+            
+            return MapDataResponse(
+                success=True,
+                message="Import executed successfully",
+                records_processed=execution_result["records_processed"],
+                table_name=execution_result["table_name"]
+            )
+        else:
+            # Update file status to 'failed'
+            update_file_status(request.file_id, "failed")
+            
+            raise HTTPException(
+                status_code=500,
+                detail=f"Import execution failed: {execution_result.get('error', 'Unknown error')}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import execution failed: {str(e)}")
