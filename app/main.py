@@ -192,6 +192,7 @@ async def map_data_endpoint(
             success=True,
             message="Data mapped and inserted successfully",
             records_processed=result["records_processed"],
+            duplicates_skipped=result.get("duplicates_skipped", 0),
             table_name=result["table_name"]
         )
 
@@ -419,7 +420,7 @@ async def query_table(
             # Get paginated data (excluding metadata columns)
             data_result = conn.execute(text(f"""
                 SELECT {columns_sql} FROM \"{table_name}\"
-                ORDER BY id
+                ORDER BY _row_id
                 LIMIT :limit OFFSET :offset
             """), {"limit": limit, "offset": offset})
 
@@ -724,8 +725,20 @@ async def analyze_file_endpoint(
         
         # Detect and process file
         file_type = detect_file_type(file_name)
+        
+        # For CSV files, extract raw rows for LLM analysis WITHOUT parsing
+        raw_csv_rows = None
+        records = []
+        
         if file_type == 'csv':
-            records = process_csv(file_content)
+            from .processors.csv_processor import extract_raw_csv_rows
+            raw_csv_rows = extract_raw_csv_rows(file_content, num_rows=20)
+            
+            # IMPORTANT: Do NOT parse the CSV file yet!
+            # The LLM needs to analyze the raw structure first to determine if it has headers
+            # We'll parse it later in auto_import.py with the correct has_header value
+            # For now, just use auto-detection to get a sample for the LLM
+            records = process_csv(file_content, has_header=None)
         elif file_type == 'excel':
             records = process_excel(file_content)
         elif file_type == 'json':
@@ -744,6 +757,10 @@ async def analyze_file_endpoint(
             "total_rows": total_rows,
             "file_type": file_type
         }
+        
+        # Add raw CSV rows to metadata for LLM analysis
+        if raw_csv_rows:
+            file_metadata["raw_csv_rows"] = raw_csv_rows
         
         # Run AI analysis
         analysis_result = analyze_file_for_import(

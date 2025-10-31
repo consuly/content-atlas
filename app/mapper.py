@@ -4,6 +4,7 @@ import io
 import logging
 from datetime import datetime
 from .schemas import MappingConfig
+from .date_utils import parse_flexible_date, detect_date_column
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     - Pre-computes mapping items once (not per record)
     - Uses list comprehension for fast path (no rules)
     - Minimizes dictionary operations
+    - Automatically converts date columns based on schema type
 
     Returns:
         Tuple of (mapped_records, list_of_all_errors)
@@ -26,8 +28,19 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     # Convert to tuple for faster iteration
     mapping_items = tuple(config.mappings.items())
     
-    # Fast path: no rules to apply (most common case)
-    if not config.rules:
+    # Identify date/timestamp columns from schema for automatic conversion
+    date_columns = set()
+    if config.db_schema:
+        for col_name, col_type in config.db_schema.items():
+            if col_type and ('TIMESTAMP' in col_type.upper() or 'DATE' in col_type.upper()):
+                date_columns.add(col_name)
+    
+    # Check if we need to apply rules or date conversions
+    has_rules = bool(config.rules)
+    has_date_columns = bool(date_columns)
+    
+    # Fast path: no rules and no date columns to convert
+    if not has_rules and not has_date_columns:
         # Use list comprehension - significantly faster than append loop
         mapped_records = [
             {output_col: record.get(input_field) 
@@ -36,16 +49,48 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
         ]
         return mapped_records, all_errors
     
-    # Slow path: rules need to be applied per record
+    # Process records with rules and/or date conversion
     mapped_records = []
     for record in records:
         # Use dict comprehension for mapping (faster than loop with assignment)
         mapped_record = {output_col: record.get(input_field) 
                         for output_col, input_field in mapping_items}
         
-        # Apply rules
-        mapped_record, record_errors = apply_rules(mapped_record, config.rules)
-        all_errors.extend(record_errors)
+        # Apply automatic date conversion for TIMESTAMP/DATE columns
+        if has_date_columns:
+            for col_name in date_columns:
+                if col_name in mapped_record:
+                    original_value = mapped_record[col_name]
+                    if original_value is not None:
+                        # Defensive check: skip obviously non-date values
+                        value_str = str(original_value).strip()
+                        
+                        # Skip if value contains email pattern
+                        if '@' in value_str:
+                            logger.info(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be an email")
+                            mapped_record[col_name] = original_value
+                            continue
+                        
+                        # Skip if value looks like a name (single word with capital letter, no numbers)
+                        if value_str and value_str[0].isupper() and value_str.isalpha() and len(value_str) < 30:
+                            logger.info(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be a name")
+                            mapped_record[col_name] = original_value
+                            continue
+                        
+                        # Try to convert the date
+                        converted_value = parse_flexible_date(original_value)
+                        if converted_value is None and value_str:
+                            # Conversion failed for non-empty value
+                            error_msg = f"Failed to convert datetime field '{col_name}' with value '{original_value}'"
+                            all_errors.append(error_msg)
+                            logger.warning(error_msg)
+                        mapped_record[col_name] = converted_value
+        
+        # Apply rules if present
+        if has_rules:
+            mapped_record, record_errors = apply_rules(mapped_record, config.rules)
+            all_errors.extend(record_errors)
+        
         mapped_records.append(mapped_record)
 
     return mapped_records, all_errors
@@ -152,54 +197,19 @@ def apply_rules(record: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[Dict[str
 
 def standardize_datetime(value: Any, source_format: Optional[str] = None) -> Optional[str]:
     """
-    Standardize datetime values to ISO 8601 format.
+    Standardize datetime values to ISO 8601 format using flexible date parsing.
 
     Args:
         value: The datetime value to standardize
         source_format: Optional strftime format string (e.g., '%m/%d/%Y %I:%M %p')
-                      If None, pandas will attempt to infer the format
+                      If None, will attempt to infer the format
 
     Returns:
-        ISO 8601 formatted string or None if conversion fails or value is empty
+        ISO 8601 formatted string (YYYY-MM-DDTHH:MM:SSZ) or None if conversion fails or value is empty
     """
-    # Handle NULL, empty, or whitespace-only values
-    if value is None or (isinstance(value, str) and value.strip() == ""):
-        return None
-
-    try:
-        # Convert to string if not already
-        if not isinstance(value, str):
-            value = str(value)
-
-        # Parse datetime using specified format or auto-detection
-        if source_format and source_format != "auto":
-            # Try explicit format first
-            dt = pd.to_datetime(value, format=source_format, errors='coerce')
-            # If explicit format fails, try auto-detection as fallback
-            if pd.isna(dt):
-                dt = pd.to_datetime(value, errors='coerce')
-        else:
-            # Auto-detect format
-            dt = pd.to_datetime(value, errors='coerce')
-
-        # Check if parsing was successful
-        if pd.isna(dt):
-            logger.warning(f"Failed to parse datetime value: '{value}'")
-            return None
-
-        # Convert to ISO 8601 format
-        # For date-only values, return just the date part
-        # For datetime values, return full ISO format
-        if dt.time() == datetime.min.time():
-            # Date only (no time component)
-            return dt.strftime('%Y-%m-%d')
-        else:
-            # Date and time
-            return dt.isoformat()
-
-    except Exception as e:
-        logger.warning(f"Error standardizing datetime '{value}': {str(e)}")
-        return None
+    # Use the new flexible date parser which handles multiple formats
+    # and always returns ISO 8601 with timezone
+    return parse_flexible_date(value)
 
 
 def detect_column_type(series: pd.Series, has_datetime_transformation: bool = False) -> str:
@@ -224,25 +234,24 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
     except (ValueError, TypeError):
         pass
 
-    # Check if they look like dates - use TEXT for flexibility in date formats
+    # Check if they look like dates
     try:
         pd.to_datetime(sample_values, errors='raise', format='mixed')
 
-        # If datetime transformation rules exist, test if conversion works
-        if has_datetime_transformation:
-            # Test conversion on sample values
-            conversion_success = True
-            for val in sample_values.head(10):  # Test first 10 values
-                if standardize_datetime(val) is None and pd.notna(val):
-                    conversion_success = False
-                    break
+        # Test if our flexible date parser can handle these values
+        conversion_success = True
+        for val in sample_values.head(10):  # Test first 10 values
+            if parse_flexible_date(val) is None and pd.notna(val):
+                conversion_success = False
+                break
 
-            if conversion_success:
-                return "TIMESTAMP"
-            else:
-                return "TEXT"  # Fallback when conversion uncertain
+        if conversion_success:
+            # Our date parser can handle these values, use TIMESTAMP
+            # This enables automatic date conversion during mapping
+            return "TIMESTAMP"
         else:
-            return "TEXT"  # Use TEXT instead of TIMESTAMP for format flexibility
+            # Date parsing uncertain, use TEXT for safety
+            return "TEXT"
 
     except (ValueError, TypeError):
         pass
@@ -251,7 +260,7 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
     return "TEXT"
 
 
-def detect_mapping_from_file(file_content: bytes, file_name: str, return_records: bool = False) -> tuple[str, MappingConfig, List[str], int, Optional[List[Dict[str, Any]]]]:
+def detect_mapping_from_file(file_content: bytes, file_name: str, return_records: bool = False, has_header: Optional[bool] = None) -> tuple[str, MappingConfig, List[str], int, Optional[List[Dict[str, Any]]]]:
     """
     Detect mapping configuration from CSV or Excel file content.
     
@@ -259,6 +268,7 @@ def detect_mapping_from_file(file_content: bytes, file_name: str, return_records
         file_content: Raw file content
         file_name: Name of the file
         return_records: If True, also return the parsed records to avoid re-parsing
+        has_header: For CSV files, explicitly specify if file has headers (None = auto-detect)
     
     Returns:
         tuple: (file_type, mapping_config, columns_found, rows_sampled, records)
@@ -267,7 +277,15 @@ def detect_mapping_from_file(file_content: bytes, file_name: str, return_records
     # Detect file type
     if file_name.endswith('.csv'):
         file_type = 'csv'
-        df = pd.read_csv(io.BytesIO(file_content))
+        # Use has_header parameter if provided, otherwise pandas will auto-detect
+        if has_header is None:
+            df = pd.read_csv(io.BytesIO(file_content))
+        elif has_header:
+            df = pd.read_csv(io.BytesIO(file_content), header=0)
+        else:
+            # No header - read without header and generate column names
+            df = pd.read_csv(io.BytesIO(file_content), header=None)
+            df.columns = [f'col_{i}' for i in range(len(df.columns))]
     elif file_name.endswith(('.xlsx', '.xls')):
         file_type = 'excel'
         # Try openpyxl first (works for both .xlsx and .xls in many cases)

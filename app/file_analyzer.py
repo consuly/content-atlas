@@ -344,6 +344,463 @@ def resolve_conflict(
 
 
 @tool
+def analyze_raw_csv_structure(
+    runtime: ToolRuntime[AnalysisContext]
+) -> Dict[str, Any]:
+    """
+    Analyze raw CSV structure to determine if it has headers and infer column meanings.
+    
+    This is the PRIMARY tool for CSV analysis. It examines the raw CSV rows to:
+    1. Determine if row 1 is a header or data
+    2. Infer semantic column names (for headerless files)
+    3. Identify data types and patterns
+    4. Detect needed transformations (date formats, string cleaning, etc.)
+    
+    Use this tool FIRST when analyzing CSV files, before any other structural analysis.
+    
+    Returns:
+        Comprehensive analysis of CSV structure with recommendations
+    """
+    from .date_utils import detect_date_column, infer_date_format
+    import re
+    
+    context = runtime.context
+    
+    # Check if we have raw CSV rows in metadata
+    raw_rows = context.file_metadata.get('raw_csv_rows')
+    
+    if not raw_rows:
+        # Fallback to analyzing processed sample data
+        return infer_schema_from_headerless_data(runtime)
+    
+    if len(raw_rows) < 2:
+        return {
+            "error": "Need at least 2 rows to analyze CSV structure",
+            "rows_available": len(raw_rows)
+        }
+    
+    first_row = raw_rows[0]
+    second_row = raw_rows[1] if len(raw_rows) > 1 else []
+    
+    # Analyze first row to determine if it's a header
+    has_header = _analyze_if_header_row(first_row, second_row)
+    
+    result = {
+        "has_header": has_header,
+        "num_columns": len(first_row),
+        "sample_rows": raw_rows[:5]  # First 5 rows for context
+    }
+    
+    if has_header:
+        # First row is header - use those names
+        result["column_names"] = first_row
+        result["reasoning"] = "First row contains header-like strings (column names)"
+        result["data_starts_at_row"] = 1  # Data starts at row index 1 (0-indexed)
+        
+        # Analyze data types from subsequent rows
+        data_rows = raw_rows[1:]
+        result["inferred_types"] = _infer_column_types_from_rows(first_row, data_rows)
+        
+    else:
+        # First row is data - need to infer column meanings
+        result["reasoning"] = "First row contains data values, not headers"
+        result["data_starts_at_row"] = 0  # Data starts at row index 0
+        
+        # Infer semantic column names from data patterns
+        inferred_schema = _infer_schema_from_data_rows(raw_rows)
+        result["inferred_columns"] = inferred_schema["columns"]
+        result["overall_confidence"] = inferred_schema["confidence"]
+        result["transformations_needed"] = inferred_schema["transformations"]
+    
+    return result
+
+
+def _analyze_if_header_row(first_row: List[str], second_row: List[str]) -> bool:
+    """
+    Determine if the first row is a header or data.
+    
+    Heuristics:
+    - Headers contain descriptive words (name, email, date, id, etc.)
+    - Headers don't contain timestamps, emails, or typical data patterns
+    - Headers are usually shorter and more uniform
+    """
+    import re
+    
+    # Common header keywords
+    header_keywords = [
+        'id', 'name', 'email', 'date', 'time', 'first', 'last', 'phone',
+        'address', 'city', 'state', 'zip', 'country', 'age', 'gender',
+        'status', 'type', 'category', 'description', 'notes', 'created',
+        'updated', 'modified', 'user', 'customer', 'client', 'product'
+    ]
+    
+    # Check for data patterns that indicate NOT a header
+    for value in first_row:
+        value_lower = value.lower().strip()
+        
+        # ISO timestamp pattern
+        if re.match(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', value):
+            return False
+        
+        # Email pattern
+        if '@' in value and '.' in value.split('@')[-1]:
+            return False
+        
+        # Pure numbers (IDs in data, not headers)
+        if value.replace('.', '').replace('-', '').isdigit() and len(value) > 4:
+            return False
+    
+    # Check if first row contains header-like keywords
+    header_score = 0
+    for value in first_row:
+        value_lower = value.lower().strip()
+        if any(keyword in value_lower for keyword in header_keywords):
+            header_score += 1
+        
+        # Short, descriptive words are header-like
+        if len(value) < 20 and value.replace('_', '').replace('-', '').isalpha():
+            header_score += 0.5
+    
+    # If more than 50% of columns look like headers, it's probably a header
+    return header_score / len(first_row) > 0.5
+
+
+def _infer_column_types_from_rows(
+    column_names: List[str],
+    data_rows: List[List[str]]
+) -> Dict[str, Dict[str, Any]]:
+    """Infer data types for each column from data rows."""
+    from .date_utils import detect_date_column
+    
+    column_types = {}
+    
+    for col_idx, col_name in enumerate(column_names):
+        # Extract values for this column
+        values = [row[col_idx] if col_idx < len(row) else None for row in data_rows]
+        values = [v for v in values if v]  # Remove empty
+        
+        if not values:
+            column_types[col_name] = {
+                "data_type": "TEXT",
+                "confidence": 0.0,
+                "reasoning": "No data values to analyze"
+            }
+            continue
+        
+        # Check for date patterns
+        if detect_date_column(values[:20]):
+            column_types[col_name] = {
+                "data_type": "TIMESTAMP",
+                "confidence": 0.95,
+                "reasoning": "Contains date/timestamp values"
+            }
+        # Check for email
+        elif any('@' in str(v) for v in values[:10]):
+            column_types[col_name] = {
+                "data_type": "VARCHAR(255)",
+                "confidence": 0.90,
+                "reasoning": "Contains email addresses"
+            }
+        # Check for numeric
+        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in values[:20]):
+            column_types[col_name] = {
+                "data_type": "DECIMAL",
+                "confidence": 0.85,
+                "reasoning": "Contains numeric values"
+            }
+        else:
+            column_types[col_name] = {
+                "data_type": "TEXT",
+                "confidence": 0.70,
+                "reasoning": "Text/string values"
+            }
+    
+    return column_types
+
+
+def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
+    """Infer semantic column names and types from data rows (headerless file)."""
+    from .date_utils import detect_date_column, infer_date_format
+    import re
+    
+    if not data_rows or not data_rows[0]:
+        return {
+            "columns": {},
+            "confidence": 0.0,
+            "transformations": []
+        }
+    
+    num_columns = len(data_rows[0])
+    inferred_columns = {}
+    transformations = []
+    
+    for col_idx in range(num_columns):
+        # Extract values for this column
+        values = [row[col_idx] if col_idx < len(row) else None for row in data_rows]
+        values = [v for v in values if v]  # Remove empty
+        
+        if not values:
+            inferred_columns[f"col_{col_idx}"] = {
+                "semantic_name": "unknown",
+                "data_type": "TEXT",
+                "confidence": 0.0,
+                "reasoning": "No values to analyze"
+            }
+            continue
+        
+        # Analyze patterns
+        sample_values = values[:20]
+        
+        # Check for date patterns
+        if detect_date_column(sample_values):
+            date_format = infer_date_format(sample_values)
+            inferred_columns[f"col_{col_idx}"] = {
+                "semantic_name": "date",
+                "data_type": "TIMESTAMP",
+                "confidence": 0.95,
+                "reasoning": f"Contains date values in {date_format} format"
+            }
+            transformations.append({
+                "column": f"col_{col_idx}",
+                "type": "date_standardization",
+                "from_format": date_format,
+                "to_format": "ISO 8601"
+            })
+        
+        # Check for email
+        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+            email_count = sum(1 for v in sample_values if '@' in str(v))
+            inferred_columns[f"col_{col_idx}"] = {
+                "semantic_name": "email",
+                "data_type": "VARCHAR(255)",
+                "confidence": 0.98,
+                "reasoning": f"{email_count}/{len(sample_values)} values contain @ symbol"
+            }
+        
+        # Check for numeric
+        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in sample_values):
+            if all(str(v).isdigit() for v in sample_values):
+                inferred_columns[f"col_{col_idx}"] = {
+                    "semantic_name": "id" if col_idx == 0 else "number",
+                    "data_type": "INTEGER",
+                    "confidence": 0.85,
+                    "reasoning": "All values are integers"
+                }
+            else:
+                inferred_columns[f"col_{col_idx}"] = {
+                    "semantic_name": "decimal_value",
+                    "data_type": "DECIMAL(10,2)",
+                    "confidence": 0.85,
+                    "reasoning": "Values contain decimal numbers"
+                }
+        
+        # Check for proper names
+        elif all(isinstance(v, str) for v in sample_values):
+            proper_case_count = sum(1 for v in sample_values if v and v[0].isupper())
+            
+            if proper_case_count / len(sample_values) > 0.7:
+                avg_length = sum(len(str(v)) for v in sample_values) / len(sample_values)
+                
+                if avg_length < 15:
+                    if col_idx == 1:
+                        semantic_name = "first_name"
+                    elif col_idx == 2:
+                        semantic_name = "last_name"
+                    else:
+                        semantic_name = "name"
+                    
+                    inferred_columns[f"col_{col_idx}"] = {
+                        "semantic_name": semantic_name,
+                        "data_type": "VARCHAR(255)",
+                        "confidence": 0.75,
+                        "reasoning": "Proper case strings, short length"
+                    }
+                else:
+                    inferred_columns[f"col_{col_idx}"] = {
+                        "semantic_name": "text_field",
+                        "data_type": "TEXT",
+                        "confidence": 0.60,
+                        "reasoning": "Text values, longer strings"
+                    }
+            else:
+                inferred_columns[f"col_{col_idx}"] = {
+                    "semantic_name": "text_field",
+                    "data_type": "TEXT",
+                    "confidence": 0.50,
+                    "reasoning": "String values without clear pattern"
+                }
+        
+        else:
+            inferred_columns[f"col_{col_idx}"] = {
+                "semantic_name": "mixed_field",
+                "data_type": "TEXT",
+                "confidence": 0.40,
+                "reasoning": "Mixed data types"
+            }
+    
+    # Calculate overall confidence
+    confidences = [col["confidence"] for col in inferred_columns.values()]
+    overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    
+    return {
+        "columns": inferred_columns,
+        "confidence": overall_confidence,
+        "transformations": transformations
+    }
+
+
+@tool
+def infer_schema_from_headerless_data(
+    runtime: ToolRuntime[AnalysisContext]
+) -> Dict[str, Any]:
+    """
+    DEPRECATED: Use analyze_raw_csv_structure instead.
+    
+    This tool is kept for backward compatibility but analyze_raw_csv_structure
+    provides more comprehensive analysis.
+    """
+    from .date_utils import detect_date_column, infer_date_format
+    import re
+    
+    context = runtime.context
+    sample_data = context.file_sample
+    
+    if not sample_data:
+        return {"error": "No sample data provided"}
+    
+    columns = list(sample_data[0].keys())
+    
+    # Check if this is actually a headerless file (columns named col_N)
+    is_headerless = all(col.startswith('col_') for col in columns)
+    
+    if not is_headerless:
+        return {
+            "error": "This file appears to have headers. Schema inference is only for headerless files.",
+            "columns": columns
+        }
+    
+    # Analyze each column
+    inferred_columns = {}
+    
+    for col in columns:
+        # Extract values for this column
+        values = [row.get(col) for row in sample_data if row.get(col) is not None]
+        
+        if not values:
+            inferred_columns[col] = {
+                "semantic_name": "unknown",
+                "data_type": "TEXT",
+                "confidence": 0.0,
+                "reasoning": "No non-null values to analyze"
+            }
+            continue
+        
+        # Sample first few values for pattern analysis
+        sample_values = values[:20]
+        
+        # Detect data type and semantic meaning
+        confidence = 0.0
+        semantic_name = "unknown"
+        data_type = "TEXT"
+        reasoning = ""
+        
+        # Check for date patterns
+        if detect_date_column(sample_values):
+            semantic_name = "date"
+            data_type = "TIMESTAMP"
+            confidence = 0.95
+            date_format = infer_date_format(sample_values)
+            reasoning = f"Column contains date values in {date_format} format"
+        
+        # Check for email patterns
+        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+            email_count = sum(1 for v in sample_values if '@' in str(v))
+            if email_count / len(sample_values) > 0.7:
+                semantic_name = "email"
+                data_type = "VARCHAR(255)"
+                confidence = 0.98
+                reasoning = f"{email_count}/{len(sample_values)} values contain @ symbol"
+        
+        # Check for numeric patterns
+        elif all(isinstance(v, (int, float)) or (isinstance(v, str) and v.replace('.', '').replace('-', '').isdigit()) 
+                for v in sample_values):
+            # Check if integers
+            if all(isinstance(v, int) or (isinstance(v, str) and v.isdigit()) for v in sample_values):
+                semantic_name = "id" if col == "col_0" else "number"
+                data_type = "INTEGER"
+                confidence = 0.85
+                reasoning = "All values are integers"
+            else:
+                semantic_name = "decimal_value"
+                data_type = "DECIMAL(10,2)"
+                confidence = 0.85
+                reasoning = "Values contain decimal numbers"
+        
+        # Check for name patterns (proper case strings)
+        elif all(isinstance(v, str) for v in sample_values):
+            # Check if values are proper case (first letter uppercase)
+            proper_case_count = sum(1 for v in sample_values if isinstance(v, str) and v and v[0].isupper())
+            
+            if proper_case_count / len(sample_values) > 0.7:
+                # Heuristic: shorter strings are likely first/last names
+                avg_length = sum(len(str(v)) for v in sample_values) / len(sample_values)
+                
+                if avg_length < 15:
+                    # Could be first_name or last_name
+                    # Use position as hint: col_1 often first_name, col_2 often last_name
+                    col_num = int(col.split('_')[1])
+                    if col_num == 1:
+                        semantic_name = "first_name"
+                        confidence = 0.75
+                        reasoning = "Proper case strings, short length, position suggests first name"
+                    elif col_num == 2:
+                        semantic_name = "last_name"
+                        confidence = 0.75
+                        reasoning = "Proper case strings, short length, position suggests last name"
+                    else:
+                        semantic_name = "name"
+                        confidence = 0.70
+                        reasoning = "Proper case strings, short length"
+                else:
+                    semantic_name = "text_field"
+                    confidence = 0.60
+                    reasoning = "Text values, longer strings"
+                
+                data_type = "VARCHAR(255)"
+            else:
+                semantic_name = "text_field"
+                data_type = "TEXT"
+                confidence = 0.50
+                reasoning = "String values without clear pattern"
+        
+        else:
+            semantic_name = "mixed_field"
+            data_type = "TEXT"
+            confidence = 0.40
+            reasoning = "Mixed data types, defaulting to TEXT"
+        
+        inferred_columns[col] = {
+            "semantic_name": semantic_name,
+            "data_type": data_type,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "sample_values": [str(v)[:50] for v in sample_values[:3]]  # First 3 values, truncated
+        }
+    
+    # Calculate overall confidence
+    confidences = [col_info["confidence"] for col_info in inferred_columns.values()]
+    overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    
+    return {
+        "is_headerless": True,
+        "inferred_columns": inferred_columns,
+        "overall_confidence": overall_confidence,
+        "column_count": len(columns),
+        "recommendation": "Use inferred semantic names for mapping to existing tables"
+    }
+
+
+@tool
 def describe_file_purpose(
     runtime: ToolRuntime[AnalysisContext]
 ) -> Dict[str, Any]:
@@ -357,6 +814,9 @@ def describe_file_purpose(
     - What domain/category does it belong to? (e.g., "contacts", "sales", "inventory")
     - What are the key entities? (e.g., ["customer", "contact", "lead"])
     
+    For headerless files (columns named col_0, col_1, etc.), this tool will automatically
+    trigger schema inference to understand the data structure first.
+    
     Returns:
         Analysis of file's semantic purpose for matching with existing tables
     """
@@ -369,18 +829,38 @@ def describe_file_purpose(
     # Extract column names
     columns = list(sample_data[0].keys())
     
+    # Check if this is a headerless file
+    is_headerless = all(col.startswith('col_') for col in columns)
+    
     # Get a few sample records for context
     sample_records = sample_data[:5]
     
-    return {
+    result = {
         "columns": columns,
         "sample_records": sample_records,
-        "instruction": "Based on these columns and sample data, determine:\n"
-                      "1. Business purpose (what is this data used for?)\n"
-                      "2. Data domain (contacts, products, sales, etc.)\n"
-                      "3. Key entities (customer, product, transaction, etc.)\n"
-                      "Provide your analysis in your response."
+        "is_headerless": is_headerless
     }
+    
+    if is_headerless:
+        result["instruction"] = (
+            "HEADERLESS FILE DETECTED (columns named col_0, col_1, etc.)\n\n"
+            "You MUST call infer_schema_from_headerless_data tool first to understand "
+            "the semantic meaning of each column before proceeding with business purpose analysis.\n\n"
+            "After schema inference, analyze:\n"
+            "1. Business purpose (what is this data used for?)\n"
+            "2. Data domain (contacts, products, sales, etc.)\n"
+            "3. Key entities (customer, product, transaction, etc.)"
+        )
+    else:
+        result["instruction"] = (
+            "Based on these columns and sample data, determine:\n"
+            "1. Business purpose (what is this data used for?)\n"
+            "2. Data domain (contacts, products, sales, etc.)\n"
+            "3. Key entities (customer, product, transaction, etc.)\n"
+            "Provide your analysis in your response."
+        )
+    
+    return result
 
 
 @tool
@@ -389,6 +869,9 @@ def make_import_decision(
     target_table: str,
     reasoning: str,
     purpose_short: str,
+    column_mapping: Dict[str, str],
+    unique_columns: Optional[List[str]] = None,
+    has_header: Optional[bool] = None,
     data_domain: Optional[str] = None,
     key_entities: Optional[List[str]] = None,
     runtime: ToolRuntime[AnalysisContext] = None
@@ -405,6 +888,9 @@ def make_import_decision(
                      for merge strategies, this is the existing table to merge into)
         reasoning: Clear explanation of why this strategy was chosen
         purpose_short: Brief description of what this data is for (e.g., "Customer contact list")
+        column_mapping: Map from source columns to target columns (e.g., {"col_0": "date", "col_1": "first_name"})
+        unique_columns: List of columns to use for duplicate detection (e.g., ["email", "first_name", "last_name"])
+        has_header: For CSV files, whether the file has a header row (True/False). Required for CSV files.
         data_domain: Category/domain (e.g., "contacts", "sales") - optional
         key_entities: List of key entity types (e.g., ["customer", "contact"]) - optional
         
@@ -420,12 +906,28 @@ def make_import_decision(
             "error": f"Invalid strategy '{strategy}'. Must be one of: {', '.join(valid_strategies)}"
         }
     
+    # Validate column_mapping is provided
+    if not column_mapping:
+        return {
+            "error": "column_mapping is required. Provide a mapping from source columns to target columns."
+        }
+    
+    # For CSV files, has_header should be specified
+    file_type = context.file_metadata.get("file_type", "")
+    if file_type == "csv" and has_header is None:
+        return {
+            "error": "has_header is required for CSV files. Specify True if file has headers, False if headerless."
+        }
+    
     # Store decision in context (will be retrieved by caller)
     context.file_metadata["llm_decision"] = {
         "strategy": strategy,
         "target_table": target_table,
         "reasoning": reasoning,
         "purpose_short": purpose_short,
+        "column_mapping": column_mapping,
+        "unique_columns": unique_columns or [],
+        "has_header": has_header,
         "data_domain": data_domain,
         "key_entities": key_entities or []
     }
@@ -435,7 +937,9 @@ def make_import_decision(
         "message": f"Decision recorded: {strategy} into table '{target_table}'",
         "strategy": strategy,
         "target_table": target_table,
-        "purpose": purpose_short
+        "purpose": purpose_short,
+        "column_mapping": column_mapping,
+        "has_header": has_header
     }
 
 
@@ -500,6 +1004,8 @@ def create_file_analyzer_agent(max_iterations: int = 5):
     
     tools = [
         describe_file_purpose,
+        analyze_raw_csv_structure,
+        infer_schema_from_headerless_data,
         analyze_file_structure,
         get_existing_database_schema,
         compare_file_with_tables,
@@ -562,6 +1068,21 @@ Be efficient and strategic with your tool usage.
 **MANDATORY FINAL STEP:**
 You MUST call the make_import_decision tool before providing your final response. This tool records your decision for execution. Do NOT end your analysis without calling this tool. Your response should come AFTER calling make_import_decision, not instead of it.
 
+**CRITICAL: When calling make_import_decision, you MUST provide:**
+1. **column_mapping**: A dictionary mapping source columns to target columns
+   - For headerless CSV: Map col_0, col_1, etc. to semantic names (e.g., {{"col_0": "date", "col_1": "first_name"}})
+   - For files with headers: Map source headers to target table columns (e.g., {{"customer_name": "name", "email_address": "email"}})
+   - This mapping is CRITICAL for proper data insertion and duplicate detection
+
+2. **unique_columns**: List of columns to use for duplicate detection
+   - Example: ["email", "first_name", "last_name"]
+   - These should be the TARGET column names (after mapping)
+   - Choose columns that uniquely identify a record
+
+3. **has_header** (CSV files only): True if file has headers, False if headerless
+   - This tells the system how to parse the CSV file
+   - Use analyze_raw_csv_structure tool to determine this
+
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:
 - Recommended strategy (NEW_TABLE, MERGE_EXACT, EXTEND_TABLE, or ADAPT_DATA)
@@ -569,7 +1090,8 @@ After calling make_import_decision, provide a structured recommendation includin
 - Clear reasoning emphasizing SEMANTIC match
 - Business purpose of the data
 - If merging/extending: which table to use and why purposes align
-- Suggested column mappings
+- Column mappings (source → target)
+- Unique columns for duplicate detection
 - Any data quality issues or conflicts found
 """
     

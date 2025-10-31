@@ -176,7 +176,7 @@ def transform_record(
         target_schema: Target table schema (column_name -> data_type)
         
     Returns:
-        Transformed record with target column names
+        Transformed record with target column names ONLY (no source columns)
     """
     transformed = {}
     
@@ -184,13 +184,18 @@ def transform_record(
         target_col = column_mapping.get(source_col)
         
         if target_col:
-            # Map to existing column
-            transformed[target_col] = value
-        else:
-            # New column - keep original name
-            transformed[source_col] = value
+            # Map to target column - only include if mapped
+            # Avoid duplicates by checking if already set
+            if target_col not in transformed:
+                transformed[target_col] = value
+            else:
+                # Multiple source columns map to same target - keep first non-null value
+                if transformed[target_col] is None and value is not None:
+                    transformed[target_col] = value
+        # Note: Unmapped source columns are intentionally ignored
+        # They should not appear in the final record
     
-    # Fill in missing required columns with None
+    # Fill in missing target columns with None
     for target_col in target_schema.keys():
         if target_col not in transformed:
             transformed[target_col] = None
