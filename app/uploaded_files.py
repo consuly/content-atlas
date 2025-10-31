@@ -50,7 +50,7 @@ def create_uploaded_files_table():
         # Then create the table
         conn.execute(text(create_table_sql))
         conn.commit()
-        print("✓ uploaded_files table created successfully")
+        print("[OK] uploaded_files table created successfully")
 
 
 def insert_uploaded_file(

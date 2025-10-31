@@ -32,42 +32,143 @@ def execute_llm_import_decision(
         file_content: Raw file content
         file_name: Name of the file
         all_records: All records from the file (not just sample)
-        llm_decision: LLM's decision with strategy and target_table
+        llm_decision: LLM's decision with strategy, target_table, column_mapping, etc.
         
     Returns:
         Execution result with success status and details
     """
     from .import_orchestrator import execute_data_import
+    from .processors.csv_processor import process_csv
     
     try:
         strategy = llm_decision["strategy"]
         target_table = llm_decision["target_table"]
+        column_mapping = llm_decision.get("column_mapping", {})
+        unique_columns = llm_decision.get("unique_columns", [])
+        has_header = llm_decision.get("has_header")
         
         logger.info(f"="*80)
         logger.info(f"AUTO-IMPORT: Executing LLM decision")
         logger.info(f"  Strategy: {strategy}")
         logger.info(f"  Target Table: {target_table}")
         logger.info(f"  File: {file_name}")
-        logger.info(f"  Records to import: {len(all_records)}")
+        logger.info(f"  Has Header: {has_header}")
+        logger.info(f"  Column Mapping: {column_mapping}")
+        logger.info(f"  Unique Columns: {unique_columns}")
         logger.info(f"="*80)
         
-        # Use existing detection logic to generate MappingConfig
-        # Note: detect_mapping_from_file returns (file_type, mapping, columns, rows_sampled, records)
-        # We don't need the records since we already have all_records
-        logger.info(f"AUTO-IMPORT: Detecting mapping from file...")
-        _, detected_mapping, columns_found, rows_sampled, _ = detect_mapping_from_file(
-            file_content, file_name, return_records=False
-        )
+        # Detect file type
+        file_type = "csv" if file_name.endswith('.csv') else \
+                   "excel" if file_name.endswith(('.xlsx', '.xls')) else \
+                   "json" if file_name.endswith('.json') else \
+                   "xml" if file_name.endswith('.xml') else "unknown"
         
-        logger.info(f"AUTO-IMPORT: Detected mapping:")
-        logger.info(f"  Original table name: {detected_mapping.table_name}")
-        logger.info(f"  Columns found: {columns_found}")
-        logger.info(f"  DB Schema: {detected_mapping.db_schema}")
-        logger.info(f"  Mappings: {detected_mapping.mappings}")
+        # Parse file according to LLM's instructions
+        if file_type == "csv" and has_header is not None:
+            logger.info(f"AUTO-IMPORT: Parsing CSV with has_header={has_header}")
+            records = process_csv(file_content, has_header=has_header)
+        else:
+            # For non-CSV or when has_header not specified, use all_records
+            logger.info(f"AUTO-IMPORT: Using pre-parsed records ({len(all_records)} records)")
+            records = all_records
         
-        # Override table name with LLM's decision
-        detected_mapping.table_name = target_table
-        logger.info(f"AUTO-IMPORT: Overriding table name to: {target_table}")
+        logger.info(f"AUTO-IMPORT: Parsed {len(records)} records")
+        
+        # Build MappingConfig using LLM's column mapping
+        # IMPORTANT: LLM provides {source_col: target_col} but mapper.py expects {target_col: source_col}
+        # We need to INVERT the mapping for mapper.py to work correctly
+        
+        # Invert the column_mapping: {source: target} -> {target: source}
+        inverted_mapping = {target_col: source_col for source_col, target_col in column_mapping.items()}
+        
+        logger.info(f"AUTO-IMPORT: LLM column_mapping (source->target): {column_mapping}")
+        logger.info(f"AUTO-IMPORT: Inverted mapping (target->source): {inverted_mapping}")
+        
+        # Get target columns (keys in inverted_mapping, which were values in original column_mapping)
+        target_columns = list(inverted_mapping.keys())
+        
+        # Build db_schema - infer types from data
+        # IMPORTANT: Be conservative with type detection to avoid false positives
+        # Only use TIMESTAMP if LLM explicitly indicates it's a date column
+        db_schema = {}
+        for target_col in target_columns:
+            # Find source column that maps to this target
+            source_col = next((k for k, v in column_mapping.items() if v == target_col), None)
+            if source_col and records:
+                # Sample values from source column
+                sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
+                
+                # Infer type (conservative approach)
+                if any('@' in str(v) for v in sample_values[:10]):
+                    # Likely email addresses
+                    db_schema[target_col] = "VARCHAR(255)"
+                elif all(isinstance(v, (int, float)) for v in sample_values[:20] if v is not None):
+                    # Numeric data
+                    db_schema[target_col] = "DECIMAL"
+                else:
+                    # Default to TEXT for safety
+                    # Do NOT auto-detect dates here - too risky and causes false positives
+                    # The LLM should explicitly specify date columns in the decision
+                    db_schema[target_col] = "TEXT"
+            else:
+                db_schema[target_col] = "TEXT"  # Default
+        
+        logger.info(f"AUTO-IMPORT: Inferred schema: {db_schema}")
+        
+        # IMPORTANT: For merging into existing tables, we need to check if table exists
+        # and use its schema instead of creating a new one
+        engine = get_engine()
+        table_exists = False
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = :table_name
+                )
+            """), {"table_name": target_table})
+            table_exists = result.scalar()
+        
+        if table_exists and strategy in ["MERGE_EXACT", "ADAPT_DATA"]:
+            logger.info(f"AUTO-IMPORT: Table '{target_table}' exists, will merge into it")
+            # For merging, we only need the mappings, not the schema
+            # The existing table schema will be used
+            from .schemas import DuplicateCheckConfig
+            mapping_config = MappingConfig(
+                table_name=target_table,
+                db_schema={},  # Empty - will use existing table schema
+                mappings=inverted_mapping,  # Use inverted mapping (target->source)
+                rules={},
+                unique_columns=unique_columns,  # For duplicate detection (legacy)
+                duplicate_check=DuplicateCheckConfig(
+                    enabled=True,
+                    check_file_level=True,
+                    allow_duplicates=False,
+                    uniqueness_columns=unique_columns  # This is what duplicate checking actually uses
+                )
+            )
+        else:
+            # For new tables, use the inferred schema
+            logger.info(f"AUTO-IMPORT: Creating new table '{target_table}' with inferred schema")
+            from .schemas import DuplicateCheckConfig
+            mapping_config = MappingConfig(
+                table_name=target_table,
+                db_schema=db_schema,
+                mappings=inverted_mapping,  # Use inverted mapping (target->source)
+                rules={},
+                unique_columns=unique_columns,  # For duplicate detection (legacy)
+                duplicate_check=DuplicateCheckConfig(
+                    enabled=True,
+                    check_file_level=True,
+                    allow_duplicates=False,
+                    uniqueness_columns=unique_columns  # This is what duplicate checking actually uses
+                )
+            )
+        
+        logger.info(f"AUTO-IMPORT: Created MappingConfig:")
+        logger.info(f"  Table: {mapping_config.table_name}")
+        logger.info(f"  Mappings: {mapping_config.mappings}")
+        logger.info(f"  Unique Columns: {mapping_config.unique_columns}")
         
         # Prepare metadata info
         metadata_info = {
@@ -78,14 +179,16 @@ def execute_llm_import_decision(
         
         logger.info(f"AUTO-IMPORT: Calling execute_data_import with strategy: {strategy}")
         
-        # Execute unified import
+        # Execute unified import with pre-parsed records
         result = execute_data_import(
             file_content=file_content,
             file_name=file_name,
-            mapping_config=detected_mapping,
+            mapping_config=mapping_config,
             source_type="local_upload",
             import_strategy=strategy,
-            metadata_info=metadata_info
+            metadata_info=metadata_info,
+            pre_parsed_records=records,  # Use records parsed according to LLM instructions
+            pre_mapped=False  # Records need to be mapped using column_mapping
         )
         
         logger.info(f"AUTO-IMPORT: Import completed successfully")

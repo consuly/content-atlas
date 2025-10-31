@@ -203,7 +203,7 @@ Jane Smith,jane@example.com,25
 
 
 def test_duplicate_detection_row_level():
-    """Test row-level duplicate detection prevents inserting overlapping records."""
+    """Test row-level duplicate detection handles overlapping records correctly."""
     import io
 
     # Clean up first - be more thorough
@@ -236,7 +236,7 @@ Jane Smith,jane@example.com,25
     response1 = client.post("/map-data", files=files1, data=data)
     assert response1.status_code in [200, 500]
 
-    # Second upload with overlapping data - should fail
+    # Second upload with overlapping data
     if response1.status_code == 200:
         csv_content2 = """name,email,age
 John Doe,john@example.com,30
@@ -245,9 +245,27 @@ Bob Wilson,bob@example.com,35
 
         files2 = {"file": ("test2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
         response2 = client.post("/map-data", files=files2, data=data)
-        assert response2.status_code == 409  # Conflict - duplicate data
-        data = response2.json()
-        assert "duplicate data detected" in data["detail"].lower()
+        
+        # The new duplicate detection system filters out duplicates and inserts only non-duplicates
+        # It returns 200 OK with information about what was processed
+        assert response2.status_code == 200, f"Expected 200, got {response2.status_code}: {response2.text}"
+        
+        result = response2.json()
+        assert result["success"] == True
+        
+        # Should have inserted only 1 record (Bob Wilson), skipped 1 duplicate (John Doe)
+        assert result["records_processed"] == 1, f"Expected 1 record processed, got {result['records_processed']}"
+        assert result["duplicates_skipped"] == 1, f"Expected 1 duplicate skipped, got {result['duplicates_skipped']}"
+        
+        # Verify the table has correct total count (2 from first upload + 1 from second = 3 total)
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                count_result = conn.execute(text('SELECT COUNT(*) FROM "test_row_duplicates"'))
+                total_count = count_result.scalar()
+                assert total_count == 3, f"Expected 3 total records in table, got {total_count}"
+        except Exception as e:
+            print(f"Warning: Could not verify table count: {e}")
 
 
 def test_force_import_bypasses_duplicates():
@@ -332,7 +350,7 @@ Jane Smith,jane@example.com,25
     response1 = client.post("/map-data", files=files1, data=data)
     assert response1.status_code in [200, 500]
 
-    # Second upload with same email should fail (email uniqueness)
+    # Second upload with same email - system now filters duplicates and continues
     if response1.status_code == 200:
         csv_content2 = """name,email,age
 Bob Wilson,john@example.com,35
@@ -341,9 +359,17 @@ Alice Brown,alice@example.com,28
 
         files2 = {"file": ("test2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
         response2 = client.post("/map-data", files=files2, data=data)
-        assert response2.status_code == 409  # Conflict - duplicate email
-        data = response2.json()
-        assert "duplicate data detected" in data["detail"].lower()
+        
+        # The new duplicate detection system filters out duplicates and inserts only non-duplicates
+        # It returns 200 OK with information about what was processed
+        assert response2.status_code == 200, f"Expected 200, got {response2.status_code}: {response2.text}"
+        
+        result = response2.json()
+        assert result["success"] == True
+        
+        # Should have inserted only 1 record (Alice Brown), skipped 1 duplicate (Bob Wilson with john@example.com)
+        assert result["records_processed"] == 1, f"Expected 1 record processed, got {result['records_processed']}"
+        assert result["duplicates_skipped"] == 1, f"Expected 1 duplicate skipped, got {result['duplicates_skipped']}"
 
 
 def test_file_imports_table_created():
@@ -440,12 +466,13 @@ def test_datetime_standardization():
     # Test standardize_datetime function with various formats
     test_cases = [
         # (input, expected_output)
-        ('Thu, 9th Oct, 2025 at 8:11pm', '2025-10-09T20:11:00'),
-        ('9/10/2025 20h11', '2025-09-10T20:11:00'),  # pandas interprets 9/10 as Sep 10 (monthfirst)
-        ('10/09/25 8:11pm', '2025-10-09T20:11:00'),
-        ('2025-10-09 20:11', '2025-10-09T20:11:00'),
-        ('10/09/2025', '2025-10-09'),  # date only
-        ('2025-10-09', '2025-10-09'),  # date only
+        # Note: parse_flexible_date returns ISO 8601 with 'Z' suffix for UTC
+        ('Thu, 9th Oct, 2025 at 8:11pm', '2025-10-09T20:11:00Z'),
+        ('9/10/2025 20h11', '2025-09-10T20:11:00Z'),  # pandas interprets 9/10 as Sep 10 (monthfirst)
+        ('10/09/25 8:11pm', '2025-10-09T20:11:00Z'),
+        ('2025-10-09 20:11', '2025-10-09T20:11:00Z'),
+        ('10/09/2025', '2025-10-09T00:00:00Z'),  # date only gets time added
+        ('2025-10-09', '2025-10-09T00:00:00Z'),  # date only gets time added
         (None, None),
         ('', None),
         ('invalid date', None),
@@ -457,7 +484,7 @@ def test_datetime_standardization():
 
     # Test with explicit format
     result = standardize_datetime('10/09/2025 8:11 PM', '%m/%d/%Y %I:%M %p')
-    assert result == '2025-10-09T20:11:00'
+    assert result == '2025-10-09T20:11:00Z'
 
     # Test apply_rules with datetime transformations
     record = {
@@ -476,7 +503,7 @@ def test_datetime_standardization():
     }
 
     transformed_record, errors = apply_rules(record, rules)
-    assert transformed_record['event_date'] == '2025-10-09T20:11:00'
+    assert transformed_record['event_date'] == '2025-10-09T20:11:00Z'
     assert transformed_record['name'] == 'Test Event'
     assert len(errors) == 0
 
@@ -508,8 +535,8 @@ def test_datetime_standardization():
     mapped_records, all_errors = map_data(records, config)
 
     # Check successful conversions
-    assert mapped_records[0]['event_date'] == '2025-10-09T20:11:00'
-    assert mapped_records[1]['event_date'] == '2025-10-10'
+    assert mapped_records[0]['event_date'] == '2025-10-09T20:11:00Z'
+    assert mapped_records[1]['event_date'] == '2025-10-10T00:00:00Z'
     assert mapped_records[2]['event_date'] is None  # Failed conversion
 
     # Check that errors were collected

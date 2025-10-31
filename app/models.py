@@ -11,6 +11,15 @@ from .schemas import MappingConfig
 
 logger = logging.getLogger(__name__)
 
+# System column names that are reserved and cannot be used by user data
+SYSTEM_COLUMNS = {
+    '_row_id',
+    '_import_id',
+    '_imported_at',
+    '_source_row_number',
+    '_corrections_applied'
+}
+
 
 class DuplicateDataException(Exception):
     """Exception raised when duplicate data is detected during upload."""
@@ -30,6 +39,34 @@ class FileAlreadyImportedException(Exception):
         self.table_name = table_name
         self.message = message or f"File has already been imported to table '{table_name}'."
         super().__init__(self.message)
+
+
+def sanitize_column_names(db_schema: Dict[str, str]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    Sanitize user column names to avoid conflicts with system columns.
+    
+    Args:
+        db_schema: Dictionary mapping column names to SQL types
+        
+    Returns:
+        Tuple of (sanitized_schema, rename_mapping)
+        - sanitized_schema: New schema with renamed columns
+        - rename_mapping: Dict mapping original names to new names
+    """
+    sanitized_schema = {}
+    rename_mapping = {}
+    
+    for col_name, col_type in db_schema.items():
+        if col_name in SYSTEM_COLUMNS:
+            # Remove leading underscore and add "source_" prefix
+            new_name = f"source_{col_name.lstrip('_')}"
+            sanitized_schema[new_name] = col_type
+            rename_mapping[col_name] = new_name
+            logger.warning(f"Column '{col_name}' conflicts with system column, renamed to '{new_name}'")
+        else:
+            sanitized_schema[col_name] = col_type
+    
+    return sanitized_schema, rename_mapping
 
 
 def create_file_imports_table_if_not_exists(engine: Engine):
@@ -103,9 +140,16 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
 
         if not table_exists:
             print(f"DEBUG: create_table_if_not_exists: Creating new table '{table_name}'")
+            
+            # Sanitize column names to avoid conflicts with system columns
+            sanitized_schema, rename_mapping = sanitize_column_names(config.db_schema)
+            
+            if rename_mapping:
+                print(f"DEBUG: create_table_if_not_exists: Renamed columns to avoid conflicts: {rename_mapping}")
+            
             # Create table with correct schema
             columns = []
-            for col_name, col_type in config.db_schema.items():
+            for col_name, col_type in sanitized_schema.items():
                 columns.append(f'"{col_name}" {col_type}')
 
             columns_sql = ', '.join(columns)
@@ -114,7 +158,7 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
             # These columns enable undo/rollback and change review functionality
             create_sql = f"""
             CREATE TABLE "{table_name}" (
-                id SERIAL PRIMARY KEY,
+                _row_id SERIAL PRIMARY KEY,
                 {columns_sql},
                 _import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
                 _imported_at TIMESTAMP DEFAULT NOW(),
@@ -248,14 +292,19 @@ def coerce_value_for_sql_type(value: Any, sql_type: str) -> Any:
         return str(value)
 
 
-def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str, Any]], config: MappingConfig):
+def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List[int], int]:
     """
-    Check for duplicate records using database-side queries.
+    Check for duplicate records using database-side queries and return indices of duplicates.
     Much faster than loading all data into pandas for large existing datasets.
+    
+    Returns:
+        Tuple of (duplicate_indices, total_duplicates_count)
+        - duplicate_indices: List of indices in the records list that are duplicates
+        - total_duplicates_count: Total number of duplicates found
     """
     if not records:
         print("DEBUG: _check_for_duplicates_db_side: No records to check")
-        return
+        return [], 0
 
     # Determine which columns to check for uniqueness
     if config.duplicate_check.uniqueness_columns:
@@ -278,7 +327,7 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
         
         if not table_exists:
             print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' does not exist yet, no duplicates possible")
-            return
+            return [], 0
             
         # Get row count
         count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
@@ -286,13 +335,13 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
         
         if row_count == 0:
             print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' is empty, no duplicates possible")
-            return
+            return [], 0
             
         print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' has {row_count} existing rows")
         
     except Exception as e:
         print(f"DEBUG: _check_for_duplicates_db_side: Error checking table existence: {e}")
-        return
+        return [], 0
 
     # Get actual table column types for proper casting
     try:
@@ -321,80 +370,62 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
                 coerced_record[col_name] = value
         coerced_records.append(coerced_record)
 
-    # Check duplicates in batches to avoid query size limits
+    # Check duplicates in batches and track which records are duplicates
     batch_size = 1000
-    total_duplicates = 0
+    duplicate_indices = []
     
     for batch_start in range(0, len(coerced_records), batch_size):
         batch_end = min(batch_start + batch_size, len(coerced_records))
         batch = coerced_records[batch_start:batch_end]
         
         # Build VALUES clause for batch checking with proper type casting
-        values_list = []
-        params = {}
-        
+        # We need to check each record individually to know which ones are duplicates
         for idx, record in enumerate(batch):
-            value_placeholders = []
+            global_idx = batch_start + idx
+            
+            # Build condition for this specific record
+            conditions = []
+            params = {}
             for col in uniqueness_columns:
-                param_name = f"p{batch_start}_{idx}_{col}"
+                param_name = f"p{global_idx}_{col}"
                 value = record.get(col)
                 
-                # Cast the placeholder to match table column type if available
+                # Cast the column to match table column type if available
                 if col in table_column_types:
                     table_type = table_column_types[col].upper()
                     if 'TEXT' in table_type or 'CHAR' in table_type:
-                        # Cast value to TEXT for comparison
-                        value_placeholders.append(f"CAST(:{param_name} AS TEXT)")
+                        conditions.append(f'CAST("{col}" AS TEXT) = CAST(:{param_name} AS TEXT)')
                     else:
-                        value_placeholders.append(f":{param_name}")
+                        conditions.append(f'"{col}" = :{param_name}')
                 else:
-                    value_placeholders.append(f":{param_name}")
+                    conditions.append(f'"{col}" = :{param_name}')
                 
                 params[param_name] = value
-            values_list.append(f"({','.join(value_placeholders)})")
-        
-        values_clause = ','.join(values_list)
-        
-        # Build columns clause with proper casting to match value types
-        columns_parts = []
-        for col in uniqueness_columns:
-            if col in table_column_types:
-                table_type = table_column_types[col].upper()
-                if 'TEXT' in table_type or 'CHAR' in table_type:
-                    # Cast column to TEXT for comparison
-                    columns_parts.append(f'CAST("{col}" AS TEXT)')
-                else:
-                    columns_parts.append(f'"{col}"')
-            else:
-                columns_parts.append(f'"{col}"')
-        
-        columns_clause = ','.join(columns_parts)
-        
-        # Query to count duplicates in this batch
-        query = text(f"""
-            SELECT COUNT(*) FROM "{table_name}"
-            WHERE ({columns_clause}) IN (VALUES {values_clause})
-        """)
-        
-        try:
-            result = conn.execute(query, params)
-            batch_duplicates = result.scalar()
-            total_duplicates += batch_duplicates
             
-            if batch_duplicates > 0:
-                print(f"DEBUG: _check_for_duplicates_db_side: Batch {batch_start//batch_size + 1} found {batch_duplicates} duplicates")
-        except Exception as e:
-            print(f"DEBUG: _check_for_duplicates_db_side: Error checking batch: {e}")
-            raise
+            where_clause = ' AND '.join(conditions)
+            
+            # Query to check if this specific record exists
+            query = text(f"""
+                SELECT COUNT(*) FROM "{table_name}"
+                WHERE {where_clause}
+            """)
+            
+            try:
+                result = conn.execute(query, params)
+                count = result.scalar()
+                
+                if count > 0:
+                    duplicate_indices.append(global_idx)
+                    
+            except Exception as e:
+                print(f"DEBUG: _check_for_duplicates_db_side: Error checking record {global_idx}: {e}")
+                # Continue checking other records
     
+    total_duplicates = len(duplicate_indices)
     print(f"DEBUG: _check_for_duplicates_db_side: Total duplicates found: {total_duplicates}")
+    print(f"DEBUG: _check_for_duplicates_db_side: Duplicate indices: {duplicate_indices[:10]}{'...' if len(duplicate_indices) > 10 else ''}")
     
-    if total_duplicates > 0:
-        error_message = config.duplicate_check.error_message or f"Duplicate data detected. {total_duplicates} records overlap with existing data."
-        print(f"DEBUG: _check_for_duplicates_db_side: Raising DuplicateDataException: {error_message}")
-        raise DuplicateDataException(table_name, total_duplicates, error_message)
-    else:
-        print("DEBUG: _check_for_duplicates_db_side: No duplicates found, proceeding with insertion")
+    return duplicate_indices, total_duplicates
 
 
 def _check_for_duplicates(conn, table_name: str, records: List[Dict[str, Any]], config: MappingConfig):
@@ -534,15 +565,21 @@ def _check_for_duplicates(conn, table_name: str, records: List[Dict[str, Any]], 
         print("DEBUG: _check_for_duplicates: No duplicates found, proceeding with insertion")
 
 
-def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig = None, file_content: bytes = None, file_name: str = None):
+def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig = None, file_content: bytes = None, file_name: str = None) -> Tuple[int, int]:
     """
     Insert records into the table with enhanced duplicate checking.
     
     For large datasets (>10,000 records), uses chunked processing to optimize memory usage
     and improve performance for duplicate checking and insertion.
+    
+    Returns:
+        Tuple of (records_inserted, duplicates_skipped)
     """
     if not records:
-        return 0
+        return 0, 0
+
+    # Initialize duplicates_found to ensure it's always defined
+    duplicates_found = 0
 
     # Create file_imports table if it doesn't exist
     create_file_imports_table_if_not_exists(engine)
@@ -569,7 +606,8 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
         print(f"DEBUG: Using chunked processing with chunk size {CHUNK_SIZE} for {len(records)} records")
         # Records passed to insert_records are already mapped (from import_orchestrator)
         # They just need type coercion during insertion
-        return _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE, pre_mapped=False)
+        inserted, duplicates = _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE, pre_mapped=False)
+        return inserted, duplicates
     
     # For smaller datasets, use the standard approach
     # Check for duplicates BEFORE starting the insert transaction
@@ -586,12 +624,24 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                 raise FileAlreadyImportedException(file_hash, table_name)
 
         # Row-level duplicate check (unless allow_duplicates is true)
+        duplicate_indices = []
         if not config.duplicate_check.allow_duplicates:
             print("DEBUG: Checking for row-level duplicates using database-side method")
             # Use a separate connection to see committed data
             with engine.connect() as check_conn:
                 # Use database-side duplicate checking for better performance
-                _check_for_duplicates_db_side(check_conn, table_name, records, config)
+                duplicate_indices, duplicates_found = _check_for_duplicates_db_side(check_conn, table_name, records, config)
+                
+                if duplicates_found > 0:
+                    print(f"DEBUG: Found {duplicates_found} duplicates, will skip them and insert only non-duplicates")
+                    # Filter out duplicate records
+                    records = [rec for idx, rec in enumerate(records) if idx not in duplicate_indices]
+                    print(f"DEBUG: After filtering: {len(records)} non-duplicate records remaining")
+        
+        # If no records left after filtering, return early
+        if not records:
+            print(f"DEBUG: All {duplicates_found} records were duplicates, nothing to insert")
+            return 0, duplicates_found
 
     # Get import_id from import_history (should be set by import_orchestrator)
     # For now, we'll need to get it from the context or create a temporary one
@@ -616,8 +666,10 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
         print(f"WARNING: No active import found, using temporary import_id: {import_id}")
 
     # Now perform the insert in a transaction
-    columns = list(records[0].keys())
-    # Add metadata columns
+    # Get columns from first record, EXCLUDING any metadata that might already exist
+    METADATA_COLS = {'_import_id', '_source_row_number', '_corrections_applied', '_imported_at', '_row_id'}
+    columns = [col for col in records[0].keys() if col not in METADATA_COLS]
+    # Add metadata columns (safe - no duplicates possible)
     columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
     placeholders = ', '.join([f':{col}' for col in columns])
     columns_sql = ', '.join([f'"{col}"' for col in columns])
@@ -674,7 +726,7 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                 "record_count": len(records)
             })
 
-    return len(records)
+    return len(records), duplicates_found
 
 
 def _check_chunk_for_duplicates(
@@ -1048,8 +1100,10 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
     if not records:
         return 0
     
-    columns = list(records[0].keys())
-    # Add metadata columns
+    # Get columns from first record, EXCLUDING any metadata that might already exist
+    METADATA_COLS = {'_import_id', '_source_row_number', '_corrections_applied', '_imported_at', '_row_id'}
+    columns = [col for col in records[0].keys() if col not in METADATA_COLS]
+    # Add metadata columns (safe - no duplicates possible)
     columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
     placeholders = ', '.join([f':{col}' for col in columns])
     columns_sql = ', '.join([f'"{col}"' for col in columns])
@@ -1113,4 +1167,4 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
             })
     
     print(f"DEBUG: _insert_records_chunked: Completed - {total_inserted} records inserted")
-    return total_inserted
+    return total_inserted, 0  # Return tuple: (records_inserted, duplicates_skipped)

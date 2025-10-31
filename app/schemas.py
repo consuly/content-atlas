@@ -32,6 +32,7 @@ class MapDataResponse(BaseModel):
     success: bool
     message: str
     records_processed: int
+    duplicates_skipped: int = 0
     table_name: str
 
 

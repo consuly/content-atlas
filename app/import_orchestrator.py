@@ -188,13 +188,14 @@ def handle_schema_transformation(
     if strategy in ["MERGE_EXACT", "EXTEND_TABLE", "ADAPT_DATA"] and table_exists:
         logger.info(f"Applying schema transformation for strategy '{strategy}' on table '{target_table}'")
         
-        # Get existing table schema
+        # Get existing table schema (excluding metadata columns)
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT column_name, data_type
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
                 AND column_name != 'id'
+                AND column_name NOT LIKE '\\_%'
                 ORDER BY ordinal_position
             """), {"table_name": target_table})
             
@@ -448,7 +449,7 @@ def execute_data_import(
         
         # Insert records
         insert_start = time.time()
-        records_processed = insert_records(
+        records_inserted, duplicates_skipped = insert_records(
             engine,
             mapping_config.table_name,
             mapped_records,
@@ -458,7 +459,7 @@ def execute_data_import(
         )
         insert_time = time.time() - insert_start
         
-        logger.info(f"Inserted {records_processed} records in {insert_time:.2f}s")
+        logger.info(f"Inserted {records_inserted} records in {insert_time:.2f}s (skipped {duplicates_skipped} duplicates)")
         
         # Manage table metadata
         if metadata_info:
@@ -486,8 +487,10 @@ def execute_data_import(
             import_id=import_id,
             status="success",
             total_rows_in_file=total_rows,
-            rows_processed=records_processed,
-            rows_inserted=records_processed,
+            rows_processed=len(mapped_records),
+            rows_inserted=records_inserted,
+            rows_skipped=duplicates_skipped,
+            duplicates_found=duplicates_skipped,
             duration_seconds=duration,
             parsing_time_seconds=parse_time,
             insert_time_seconds=insert_time
@@ -497,7 +500,8 @@ def execute_data_import(
         
         return {
             "success": True,
-            "records_processed": records_processed,
+            "records_processed": records_inserted,
+            "duplicates_skipped": duplicates_skipped,
             "table_name": mapping_config.table_name,
             "mapping_errors": mapping_errors if mapping_errors else [],
             "duration_seconds": duration
