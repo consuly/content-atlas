@@ -47,13 +47,27 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize database tables
     try:
         from .uploaded_files import create_uploaded_files_table
+        
+        print("Initializing database tables...")
         create_table_metadata_table()
+        print("✓ table_metadata table ready")
+        
         create_import_history_table()
+        print("✓ import_history table ready")
+        
         create_uploaded_files_table()
+        # Success message printed inside function
+        
         init_auth_tables()
-        print("✓ Database tables initialized successfully")
+        print("✓ auth tables ready")
+        
+        print("✓ All database tables initialized successfully")
     except Exception as e:
-        print(f"Warning: Could not initialize tables: {e}")
+        print(f"ERROR: Failed to initialize database tables: {e}")
+        print("The application cannot start without proper database setup.")
+        import traceback
+        traceback.print_exc()
+        raise  # Re-raise to prevent app from starting with broken database
     
     yield  # Application runs here
     
@@ -390,9 +404,21 @@ async def query_table(
             count_result = conn.execute(text(f"SELECT COUNT(*) FROM \"{table_name}\""))
             total_rows = count_result.scalar()
 
-            # Get paginated data
+            # Get column names excluding metadata columns (those starting with _)
+            columns_result = conn.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table_name
+                AND column_name NOT LIKE '\\_%'
+                ORDER BY ordinal_position
+            """), {"table_name": table_name})
+            
+            user_columns = [row[0] for row in columns_result]
+            columns_sql = ', '.join([f'"{col}"' for col in user_columns])
+
+            # Get paginated data (excluding metadata columns)
             data_result = conn.execute(text(f"""
-                SELECT * FROM \"{table_name}\"
+                SELECT {columns_sql} FROM \"{table_name}\"
                 ORDER BY id
                 LIMIT :limit OFFSET :offset
             """), {"limit": limit, "offset": offset})
@@ -644,7 +670,8 @@ async def query_database_endpoint(request: QueryDatabaseRequest):
 
 @app.post("/analyze-file", response_model=AnalyzeFileResponse)
 async def analyze_file_endpoint(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_id: Optional[str] = Form(None),
     sample_size: Optional[int] = Form(None),
     analysis_mode: AnalysisMode = Form(AnalysisMode.MANUAL),
     conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.ASK_USER),
@@ -659,19 +686,44 @@ async def analyze_file_endpoint(
     compare it with existing database tables, and recommend the best import strategy.
     
     Parameters:
-    - file: The file to analyze (CSV, Excel, JSON, or XML)
+    - file: The file to analyze (CSV, Excel, JSON, or XML) - optional if file_id provided
+    - file_id: UUID of previously uploaded file - optional if file provided
     - sample_size: Number of rows to sample (auto-calculated if not provided)
     - analysis_mode: MANUAL (user approval), AUTO_HIGH_CONFIDENCE, or AUTO_ALWAYS
     - conflict_resolution: ASK_USER, LLM_DECIDE, or PREFER_FLEXIBLE
     - auto_execute_confidence_threshold: Minimum confidence for auto-execution (0.0-1.0)
     - max_iterations: Maximum LLM iterations (1-10)
     """
+    from .uploaded_files import get_uploaded_file_by_id, update_file_status
+    from .b2_utils import download_file_from_b2
+    
     try:
-        # Read file content
-        file_content = await file.read()
+        # Validate input: must provide either file or file_id
+        if not file and not file_id:
+            raise HTTPException(status_code=400, detail="Must provide either 'file' or 'file_id'")
+        
+        if file and file_id:
+            raise HTTPException(status_code=400, detail="Cannot provide both 'file' and 'file_id'")
+        
+        # Get file content and name
+        if file_id:
+            # Fetch from uploaded_files and download from B2
+            file_record = get_uploaded_file_by_id(file_id)
+            if not file_record:
+                raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+            
+            # Update status to 'mapping'
+            update_file_status(file_id, "mapping")
+            
+            file_content = download_file_from_b2(file_record["b2_file_path"])
+            file_name = file_record["file_name"]
+        else:
+            # Read uploaded file
+            file_content = await file.read()
+            file_name = file.filename
         
         # Detect and process file
-        file_type = detect_file_type(file.filename)
+        file_type = detect_file_type(file_name)
         if file_type == 'csv':
             records = process_csv(file_content)
         elif file_type == 'excel':
@@ -688,7 +740,7 @@ async def analyze_file_endpoint(
         
         # Prepare metadata
         file_metadata = {
-            "name": file.filename,
+            "name": file_name,
             "total_rows": total_rows,
             "file_type": file_type
         }
@@ -743,12 +795,21 @@ async def analyze_file_endpoint(
             try:
                 execution_result = execute_llm_import_decision(
                     file_content=file_content,
-                    file_name=file.filename,
+                    file_name=file_name,
                     all_records=records,  # Use all records, not just sample
                     llm_decision=llm_decision
                 )
                 
                 if execution_result["success"]:
+                    # Update file status to 'mapped' if file_id was provided
+                    if file_id:
+                        update_file_status(
+                            file_id,
+                            "mapped",
+                            mapped_table_name=execution_result["table_name"],
+                            mapped_rows=execution_result["records_processed"]
+                        )
+                    
                     # Update response with execution results
                     response.can_auto_execute = True
                     # Add execution info to response (note: this extends the schema)
@@ -757,10 +818,18 @@ async def analyze_file_endpoint(
                     response.llm_response += f"- Table: {execution_result['table_name']}\n"
                     response.llm_response += f"- Records Processed: {execution_result['records_processed']}\n"
                 else:
+                    # Update file status to 'failed' if file_id was provided
+                    if file_id:
+                        update_file_status(file_id, "failed")
+                    
                     response.llm_response += f"\n\n❌ AUTO-EXECUTION FAILED:\n"
                     response.llm_response += f"- Error: {execution_result.get('error', 'Unknown error')}\n"
                     
             except Exception as e:
+                # Update file status to 'failed' if file_id was provided
+                if file_id:
+                    update_file_status(file_id, "failed")
+                
                 response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {str(e)}\n"
         
         
