@@ -13,6 +13,11 @@ def create_uploaded_files_table():
     """Create the uploaded_files table if it doesn't exist."""
     engine = get_engine()
     
+    # Enable pgcrypto extension for gen_random_uuid()
+    enable_extension_sql = """
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    """
+    
     create_table_sql = """
     CREATE TABLE IF NOT EXISTS uploaded_files (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -40,8 +45,12 @@ def create_uploaded_files_table():
     """
     
     with engine.connect() as conn:
+        # First enable the extension
+        conn.execute(text(enable_extension_sql))
+        # Then create the table
         conn.execute(text(create_table_sql))
         conn.commit()
+        print("✓ uploaded_files table created successfully")
 
 
 def insert_uploaded_file(

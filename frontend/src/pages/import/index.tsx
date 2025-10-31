@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router';
 import { Card, Table, Tabs, Badge, Button, Space, Popconfirm, message } from 'antd';
 import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -23,6 +24,7 @@ interface UploadedFile {
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const ImportPage: React.FC = () => {
+  const navigate = useNavigate();
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('all');
@@ -91,13 +93,11 @@ export const ImportPage: React.FC = () => {
   };
 
   const handleMapNow = (file: UploadedFile) => {
-    // TODO: Open mapping configuration modal
-    message.info(`Mapping configuration for ${file.file_name} - Coming soon!`);
+    navigate(`/import/${file.id}`);
   };
 
   const handleView = (file: UploadedFile) => {
-    // TODO: Open file details view
-    message.info(`View details for ${file.file_name} - Coming soon!`);
+    navigate(`/import/${file.id}`);
   };
 
   const formatBytes = (bytes: number): string => {

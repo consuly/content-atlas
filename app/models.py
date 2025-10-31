@@ -1,4 +1,5 @@
 import hashlib
+import json
 from sqlalchemy import text, MetaData
 from sqlalchemy.engine import Engine
 from typing import List, Dict, Any, Tuple
@@ -64,12 +65,13 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
         print(f"DEBUG: create_table_if_not_exists: Table '{table_name}' exists: {table_exists}")
 
         if table_exists:
-            # Get current column types
+            # Get current column types (excluding metadata columns for comparison)
             current_columns_result = conn.execute(text("""
                 SELECT column_name, data_type
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
                 AND column_name != 'id'
+                AND column_name NOT LIKE '\\_%'
                 ORDER BY column_name
             """), {"table_name": table_name})
 
@@ -108,15 +110,24 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
 
             columns_sql = ', '.join(columns)
 
+            # Add metadata columns for import tracking
+            # These columns enable undo/rollback and change review functionality
             create_sql = f"""
             CREATE TABLE "{table_name}" (
                 id SERIAL PRIMARY KEY,
-                {columns_sql}
+                {columns_sql},
+                _import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
+                _imported_at TIMESTAMP DEFAULT NOW(),
+                _source_row_number INTEGER,
+                _corrections_applied JSONB
             );
+            
+            -- Create index on import_id for efficient queries
+            CREATE INDEX idx_{table_name}_import_id ON "{table_name}"(_import_id);
             """
 
             conn.execute(text(create_sql))
-            print(f"DEBUG: create_table_if_not_exists: Table '{table_name}' created successfully")
+            print(f"DEBUG: create_table_if_not_exists: Table '{table_name}' created successfully with metadata columns")
 
 
 def calculate_file_hash(file_content: bytes) -> str:
@@ -582,8 +593,32 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                 # Use database-side duplicate checking for better performance
                 _check_for_duplicates_db_side(check_conn, table_name, records, config)
 
+    # Get import_id from import_history (should be set by import_orchestrator)
+    # For now, we'll need to get it from the context or create a temporary one
+    import_id = None
+    with engine.connect() as conn:
+        # Try to get the most recent import_id for this table
+        result = conn.execute(text("""
+            SELECT import_id FROM import_history 
+            WHERE table_name = :table_name 
+            AND status = 'in_progress'
+            ORDER BY import_timestamp DESC 
+            LIMIT 1
+        """), {"table_name": table_name})
+        row = result.fetchone()
+        if row:
+            import_id = str(row[0])
+    
+    if not import_id:
+        # Fallback: create a temporary import_id (shouldn't happen in normal flow)
+        import uuid
+        import_id = str(uuid.uuid4())
+        print(f"WARNING: No active import found, using temporary import_id: {import_id}")
+
     # Now perform the insert in a transaction
     columns = list(records[0].keys())
+    # Add metadata columns
+    columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
     placeholders = ', '.join([f':{col}' for col in columns])
     columns_sql = ', '.join([f'"{col}"' for col in columns])
 
@@ -593,9 +628,11 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
     """
 
     with engine.begin() as conn:
-        for record in records:
+        for row_num, record in enumerate(records, start=1):
             # Apply type coercion based on schema if config is provided
             coerced_record = record.copy()
+            corrections = {}
+            
             if config and config.db_schema:
                 for col_name, value in record.items():
                     if col_name in config.db_schema:
@@ -603,9 +640,21 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                         original_value = value
                         coerced_value = coerce_value_for_sql_type(value, sql_type)
                         coerced_record[col_name] = coerced_value
-                        # Debug logging for type coercion
+                        
+                        # Track corrections
                         if str(original_value) != str(coerced_value):
+                            corrections[col_name] = {
+                                "before": str(original_value),
+                                "after": coerced_value,
+                                "correction_type": "type_coercion",
+                                "target_type": sql_type
+                            }
                             print(f"DEBUG: Coerced column '{col_name}' from {repr(original_value)} ({type(original_value).__name__}) to {repr(coerced_value)} ({type(coerced_value).__name__}) for type {sql_type}")
+
+            # Add metadata
+            coerced_record['_import_id'] = import_id
+            coerced_record['_source_row_number'] = row_num
+            coerced_record['_corrections_applied'] = json.dumps(corrections) if corrections else None
 
             print(f"DEBUG: Inserting record: {coerced_record}")
             # Insert the coerced record
@@ -915,7 +964,7 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
     Insert records in chunks for better performance with large datasets.
     This approach uses two-phase parallel processing:
     1. Phase 1: Check all chunks for duplicates in parallel (CPU-intensive)
-    2. Phase 2: Insert all chunks sequentially using PostgreSQL COPY (I/O-intensive, avoids race conditions)
+    2. Phase 2: Insert all chunks sequentially using SQL INSERT (I/O-intensive, avoids race conditions)
     
     Args:
         engine: Database engine
@@ -928,10 +977,8 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
         pre_mapped: If True, records are already mapped and type-coerced
     
     This provides significant speedup while maintaining data integrity.
-    Uses PostgreSQL COPY for 2-3x faster insertion compared to pandas to_sql().
     """
-    import pandas as pd
-    from io import StringIO
+    import uuid
     
     total_records = len(records)
     print(f"DEBUG: _insert_records_chunked: Processing {total_records} {'pre-mapped' if pre_mapped else 'raw'} records in chunks of {chunk_size}")
@@ -946,6 +993,26 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
             if already_imported:
                 print("DEBUG: Raising FileAlreadyImportedException")
                 raise FileAlreadyImportedException(file_hash, table_name)
+    
+    # Get import_id from import_history (should be set by import_orchestrator)
+    import_id = None
+    with engine.connect() as conn:
+        # Try to get the most recent import_id for this table
+        result = conn.execute(text("""
+            SELECT import_id FROM import_history 
+            WHERE table_name = :table_name 
+            AND status = 'in_progress'
+            ORDER BY import_timestamp DESC 
+            LIMIT 1
+        """), {"table_name": table_name})
+        row = result.fetchone()
+        if row:
+            import_id = str(row[0])
+    
+    if not import_id:
+        # Fallback: create a temporary import_id (shouldn't happen in normal flow)
+        import_id = str(uuid.uuid4())
+        print(f"WARNING: No active import found, using temporary import_id: {import_id}")
     
     # Split records into chunks
     chunks = []
@@ -977,21 +1044,34 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
     logger.info("Phase 2: Starting sequential chunk insertion")
     total_inserted = 0
     
+    # Get column names from first record
+    if not records:
+        return 0
+    
+    columns = list(records[0].keys())
+    # Add metadata columns
+    columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
+    placeholders = ', '.join([f':{col}' for col in columns])
+    columns_sql = ', '.join([f'"{col}"' for col in columns])
+    
+    insert_sql = f"""
+    INSERT INTO "{table_name}" ({columns_sql})
+    VALUES ({placeholders});
+    """
+    
     for chunk_num, chunk_records in enumerate(chunks, start=1):
         print(f"DEBUG: Inserting chunk {chunk_num}/{total_chunks} ({len(chunk_records)} records)")
         
-        # Insert chunk using bulk insert for better performance
-        columns = list(chunk_records[0].keys())
+        # Prepare all records with type coercion and metadata
+        coerced_chunk = []
+        chunk_start_row = (chunk_num - 1) * chunk_size + 1
         
-        # Prepare all records with type coercion (skip if already pre-mapped)
-        if pre_mapped:
-            # Records are already mapped and type-coerced, use directly
-            coerced_chunk = chunk_records
-            print(f"DEBUG: Using pre-mapped records for chunk {chunk_num}")
-        else:
-            # Apply type coercion
-            coerced_chunk = []
-            for record in chunk_records:
+        for idx, record in enumerate(chunk_records):
+            if pre_mapped:
+                # Records are already mapped and type-coerced
+                coerced_record = record.copy()
+            else:
+                # Apply type coercion
                 coerced_record = {}
                 if config and config.db_schema:
                     for col_name, value in record.items():
@@ -1002,14 +1082,17 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
                             coerced_record[col_name] = value
                 else:
                     coerced_record = record.copy()
-                coerced_chunk.append(coerced_record)
+            
+            # Add metadata
+            coerced_record['_import_id'] = import_id
+            coerced_record['_source_row_number'] = chunk_start_row + idx
+            coerced_record['_corrections_applied'] = None  # TODO: Track corrections in chunked mode
+            
+            coerced_chunk.append(coerced_record)
         
-        # Use pandas to_sql with method='multi' for efficient bulk insertion
-        # This is simpler and performs well for medium-sized chunks
-        df = pd.DataFrame(coerced_chunk)
-        
+        # Bulk insert the chunk
         with engine.begin() as conn:
-            df.to_sql(table_name, conn, if_exists='append', index=False, method='multi')
+            conn.execute(text(insert_sql), coerced_chunk)
         
         total_inserted += len(chunk_records)
         print(f"DEBUG: Inserted chunk {chunk_num}/{total_chunks} - Total inserted: {total_inserted}/{total_records}")

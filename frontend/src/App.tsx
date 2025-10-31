@@ -27,6 +27,7 @@ import { ForgotPassword } from "./pages/forgotPassword";
 import { Login } from "./pages/login";
 import { Register } from "./pages/register";
 import { ImportPage } from "./pages/import";
+import { ImportMappingPage } from "./pages/import/[id]";
 import { QueryPage } from "./pages/query";
 
 function App() {
@@ -88,6 +89,7 @@ function App() {
                     />
                     <Route path="/import">
                       <Route index element={<ImportPage />} />
+                      <Route path=":id" element={<ImportMappingPage />} />
                     </Route>
                     <Route path="/query">
                       <Route index element={
