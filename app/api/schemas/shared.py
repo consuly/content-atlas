@@ -34,6 +34,11 @@ class MapDataResponse(BaseModel):
     records_processed: int
     duplicates_skipped: int = 0
     table_name: str
+    llm_followup: Optional[str] = None
+    needs_user_input: Optional[bool] = None
+    can_execute: Optional[bool] = None
+    llm_decision: Optional[Dict[str, Any]] = None
+    thread_id: Optional[str] = None
 
 
 class MapB2DataRequest(BaseModel):

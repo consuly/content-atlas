@@ -34,6 +34,22 @@ export const MappingModal: React.FC<MappingModalProps> = ({
   const [conversation, setConversation] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
   const [userInput, setUserInput] = useState('');
   const [canExecute, setCanExecute] = useState(false);
+  const [needsUserInput, setNeedsUserInput] = useState(true);
+  const quickActions = [
+    { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
+    {
+      label: 'Request New Table',
+      prompt: 'Could we import this file into a brand new table instead? Outline the new schema you recommend.',
+    },
+    {
+      label: 'Adjust Column Mapping',
+      prompt: 'Let us revisit the column mapping. Suggest column renames and ask me to confirm.',
+    },
+    {
+      label: 'Review Duplicates',
+      prompt: 'Explain the duplicate detection strategy and offer alternatives if they seem safer.',
+    },
+  ];
 
   const handleAutoProcess = async () => {
     setLoading(true);
@@ -78,6 +94,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     setLoading(true);
     setError(null);
     setConversation([]);
+    setNeedsUserInput(true);
 
     try {
       const token = localStorage.getItem('refine-auth');
@@ -101,6 +118,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           { role: 'assistant', content: response.data.llm_message },
         ]);
         setCanExecute(response.data.can_execute);
+        setNeedsUserInput(response.data.needs_user_input ?? true);
       } else {
         setError(response.data.error || 'Analysis failed');
       }
@@ -114,15 +132,15 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     }
   };
 
-  const handleInteractiveSend = async () => {
-    if (!userInput.trim() || !threadId) return;
+  const sendInteractiveMessage = async (messageToSend: string) => {
+    if (!threadId) return;
+    const trimmed = messageToSend.trim();
+    if (!trimmed) return;
 
     setLoading(true);
     setError(null);
 
-    // Add user message to conversation
-    const newConversation = [...conversation, { role: 'user' as const, content: userInput }];
-    setConversation(newConversation);
+    setConversation((prev) => [...prev, { role: 'user', content: trimmed }]);
     setUserInput('');
 
     try {
@@ -131,7 +149,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
         `${API_URL}/analyze-file-interactive`,
         {
           file_id: fileId,
-          user_message: userInput,
+          user_message: trimmed,
           thread_id: threadId,
           max_iterations: 5,
         },
@@ -144,13 +162,16 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       );
 
       if (response.data.success) {
-        setConversation([
-          ...newConversation,
+        setConversation((prev) => [
+          ...prev,
           { role: 'assistant', content: response.data.llm_message },
         ]);
         setCanExecute(response.data.can_execute);
+        setNeedsUserInput(response.data.needs_user_input ?? true);
       } else {
-        setError(response.data.error || 'Analysis failed');
+        const fallback = response.data.error || 'Analysis failed';
+        setError(fallback);
+        message.error(fallback);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
@@ -160,6 +181,16 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleInteractiveSend = async () => {
+    if (!userInput.trim()) return;
+    await sendInteractiveMessage(userInput);
+  };
+
+  const handleQuickAction = async (prompt: string) => {
+    if (loading) return;
+    await sendInteractiveMessage(prompt);
   };
 
   const handleInteractiveExecute = async () => {
@@ -187,6 +218,9 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       if (response.data.success) {
         message.success('Import executed successfully!');
         onSuccess();
+        setThreadId(null);
+        setCanExecute(false);
+        setNeedsUserInput(false);
         onClose();
         // Small delay to ensure backend has updated file status
         setTimeout(() => {
@@ -194,7 +228,24 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           window.location.reload();
         }, 500);
       } else {
-        setError('Import execution failed');
+        const failureMessage = response.data.message || 'Import execution failed';
+        setConversation((prev) => {
+          const next = [
+            ...prev,
+            { role: 'assistant', content: `⚠️ ${failureMessage}` },
+          ];
+          if (response.data.llm_followup) {
+            next.push({ role: 'assistant', content: response.data.llm_followup });
+          }
+          return next;
+        });
+        setCanExecute(response.data.can_execute ?? false);
+        setNeedsUserInput(response.data.needs_user_input ?? true);
+        if (response.data.thread_id) {
+          setThreadId(response.data.thread_id);
+        }
+        setError(failureMessage);
+        message.error(failureMessage);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
@@ -215,6 +266,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     setConversation([]);
     setUserInput('');
     setCanExecute(false);
+    setNeedsUserInput(true);
     onClose();
   };
 
@@ -344,50 +396,79 @@ export const MappingModal: React.FC<MappingModalProps> = ({
             )}
           </div>
 
-          {/* Input area or execute button */}
-          {canExecute ? (
-            <Button
-              type="primary"
-              size="large"
-              icon={<CheckCircleOutlined />}
-              onClick={handleInteractiveExecute}
-              loading={loading}
-              block
-            >
-              {loading ? 'Executing...' : 'Execute Import'}
-            </Button>
-          ) : (
-            <Space.Compact style={{ width: '100%' }}>
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter' && !loading) {
-                    handleInteractiveSend();
-                  }
-                }}
-                placeholder="Type your response..."
-                disabled={loading}
-                style={{
-                  flex: 1,
-                  padding: '8px 12px',
-                  border: '1px solid #d9d9d9',
-                  borderRadius: '4px 0 0 4px',
-                  fontSize: 14,
-                }}
-              />
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Alert
+              type={canExecute ? 'success' : 'info'}
+              message={
+                canExecute
+                  ? 'Mapping confirmed. Execute the import or ask for more refinements below.'
+                  : needsUserInput
+                    ? 'The assistant is waiting for your guidance. Ask for adjustments or confirm when ready.'
+                    : 'Processing your last request...'
+              }
+              showIcon
+            />
+
+            {canExecute && (
               <Button
                 type="primary"
-                onClick={handleInteractiveSend}
+                size="large"
+                icon={<CheckCircleOutlined />}
+                onClick={handleInteractiveExecute}
                 loading={loading}
-                disabled={!userInput.trim()}
-                style={{ borderRadius: '0 4px 4px 0' }}
+                block
               >
-                Send
+                {loading ? 'Executing...' : 'Execute Import'}
               </Button>
-            </Space.Compact>
-          )}
+            )}
+
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Space.Compact style={{ width: '100%' }}>
+                <input
+                  type="text"
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && !loading) {
+                      handleInteractiveSend();
+                    }
+                  }}
+                  placeholder="Ask for changes, confirmations, or new options..."
+                  disabled={loading || !threadId}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: '4px 0 0 4px',
+                    fontSize: 14,
+                  }}
+                />
+                <Button
+                  type="primary"
+                  onClick={handleInteractiveSend}
+                  loading={loading}
+                  disabled={!userInput.trim() || loading || !threadId}
+                  style={{ borderRadius: '0 4px 4px 0' }}
+                >
+                  Send
+                </Button>
+              </Space.Compact>
+
+              <Space wrap>
+                {quickActions.map(({ label, prompt }) => (
+                  <Button
+                    key={label}
+                    size="small"
+                    type={label === 'Approve Plan' ? 'primary' : 'default'}
+                    disabled={loading || !threadId}
+                    onClick={() => handleQuickAction(prompt)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </Space>
+            </Space>
+          </Space>
         </div>
       )}
     </div>
