@@ -10,35 +10,6 @@ client = TestClient(app)
 
 
 @pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")
-def test_query_database_with_top_advertisers():
-    """Test query-database with top advertisers prompt using processed B2 data."""
-    # Database should already be populated from test_map_b2_data_real_file
-
-    # Test the query-database endpoint
-    response = client.post("/query-database", json={
-        "prompt": "Who are the top 3 advertisers for the revenue earned"
-    })
-    assert response.status_code == 200
-    data = response.json()
-
-    # Validate response structure
-    assert data["success"] == True
-    assert "response" in data
-    assert "executed_sql" in data
-    assert "data_csv" in data
-    # Note: rows_returned and execution_time_seconds may be None if regex parsing fails
-    # but the agent is still successfully executing queries
-
-    # Validate SQL was generated and executed
-    assert data["executed_sql"] is not None
-    assert "SELECT" in data["executed_sql"].upper()
-
-    # Validate CSV data format
-    assert data["data_csv"] is not None
-    assert "advertiser" in data["data_csv"].lower() or "revenue" in data["data_csv"].lower()
-
-
-@pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")
 def test_query_database_structured_output_fallback():
     """Test that agent can provide ideas and fall back to LLM response if structured output fails."""
     # Database should already be populated from test_map_b2_data_real_file

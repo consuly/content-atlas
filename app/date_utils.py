@@ -11,6 +11,8 @@ import re
 from datetime import datetime
 import logging
 
+from .config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,25 +38,75 @@ def parse_flexible_date(value: Any) -> Optional[str]:
         return None
     
     # Handle empty strings
-    if isinstance(value, str) and value.strip() == "":
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
+    
+    parse_attempts = []
+    dt = None
+    
+    if isinstance(value, str):
+        numeric_match = re.match(r'^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', value)
+        if numeric_match:
+            date_segment = numeric_match.group(0)
+            parts = re.split(r'[/-]', date_segment)
+            try:
+                first = int(parts[0])
+                second = int(parts[1])
+            except ValueError:
+                first = second = -1  # Trigger fallback behaviour
+
+            # Decide whether day-first is more plausible
+            if first > 12 and second <= 31:
+                dayfirst_preferred = True
+            elif second > 12 and first <= 12:
+                dayfirst_preferred = False
+            elif first <= 12 and second <= 12:
+                dayfirst_preferred = settings.date_default_dayfirst
+            else:
+                dayfirst_preferred = settings.date_default_dayfirst
+
+            preferred_label = "dayfirst" if dayfirst_preferred else "monthfirst"
+            parse_attempts.append((
+                preferred_label,
+                lambda v, df=dayfirst_preferred: pd.to_datetime(v, utc=True, dayfirst=df, errors='raise')
+            ))
+
+            # Always try the alternate interpretation as a fallback
+            alternate = not dayfirst_preferred
+            parse_attempts.append((
+                "alternate_monthfirst" if dayfirst_preferred else "alternate_dayfirst",
+                lambda v, df=alternate: pd.to_datetime(v, utc=True, dayfirst=df, errors='raise')
+            ))
+
+    # Fallback: let pandas infer the format (default behavior)
+    parse_attempts.append(("default", lambda v: pd.to_datetime(v, utc=True, errors='raise')))
+    
+    last_error = None
+    for attempt_name, attempt in parse_attempts:
+        try:
+            dt = attempt(value)
+            break
+        except Exception as exc:
+            last_error = exc
+            continue
+    
+    if dt is None:
+        if last_error:
+            logger.warning(f"Failed to parse date value '{value}': {last_error}")
+        else:
+            logger.warning(f"Failed to parse date value '{value}': Unable to determine format")
         return None
     
-    try:
-        # Let pandas infer the format (infer_datetime_format is now default behavior)
-        dt = pd.to_datetime(value, utc=True)
-        
-        # Convert to ISO 8601 format with Z suffix
-        # If timezone-aware, convert to UTC and format
-        if dt.tzinfo is not None:
-            dt = dt.tz_convert('UTC')
-            return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-        else:
-            # If timezone-naive, assume UTC and add Z
-            return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-            
-    except Exception as e:
-        logger.warning(f"Failed to parse date value '{value}': {e}")
-        return None
+    # Convert to ISO 8601 format with Z suffix
+    # If timezone-aware, convert to UTC and format
+    if dt.tzinfo is not None:
+        dt = dt.tz_convert('UTC')
+        return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    else:
+        # If timezone-naive, assume UTC and add Z
+        return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def detect_date_column(values: list) -> bool:
