@@ -13,6 +13,7 @@ from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from app.domain.imports.schema_mapper import analyze_schema_compatibility, transform_record
 from app.domain.imports.history import start_import_tracking, complete_import_tracking
+from app.utils.date import parse_flexible_date
 import logging
 import time
 
@@ -87,9 +88,7 @@ def execute_llm_import_decision(
         # Get target columns (keys in inverted_mapping, which were values in original column_mapping)
         target_columns = list(inverted_mapping.keys())
         
-        # Build db_schema - infer types from data
-        # IMPORTANT: Be conservative with type detection to avoid false positives
-        # Only use TIMESTAMP if LLM explicitly indicates it's a date column
+        # Build db_schema - infer types from data using conservative heuristics
         import re
         db_schema = {}
         for target_col in target_columns:
@@ -98,9 +97,10 @@ def execute_llm_import_decision(
             if source_col and records:
                 # Sample values from source column
                 sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
+                subset = sample_values[:20]
                 
                 # Convert to strings for pattern matching
-                sample_str = [str(v) for v in sample_values[:20]]
+                sample_str = [str(v) for v in subset]
                 
                 # Infer type (conservative approach)
                 # Check for phone number patterns first (must be TEXT, not NUMERIC)
@@ -125,14 +125,22 @@ def execute_llm_import_decision(
                 elif any('@' in str(v) for v in sample_values[:10]):
                     # Likely email addresses - use TEXT for unlimited length
                     db_schema[target_col] = "TEXT"
-                elif all(isinstance(v, (int, float)) for v in sample_values[:20] if v is not None):
-                    # Numeric data (only if not phone/percentage/email)
-                    db_schema[target_col] = "DECIMAL"
                 else:
-                    # Default to TEXT for safety
-                    # Do NOT auto-detect dates here - too risky and causes false positives
-                    # The LLM should explicitly specify date columns in the decision
-                    db_schema[target_col] = "TEXT"
+                    # Detect date-like values using flexible parser
+                    parsed_samples = [
+                        parse_flexible_date(val)
+                        for val in subset
+                    ]
+                    successful_parses = [ps for ps in parsed_samples if ps is not None]
+                    
+                    if successful_parses and len(successful_parses) >= max(1, len(subset) // 2):
+                        db_schema[target_col] = "TIMESTAMP"
+                    elif subset and all(isinstance(v, (int, float)) for v in subset if v is not None):
+                        # Numeric data (only if not phone/percentage/email)
+                        db_schema[target_col] = "DECIMAL"
+                    else:
+                        # Default to TEXT when no other signal is detected
+                        db_schema[target_col] = "TEXT"
             else:
                 db_schema[target_col] = "TEXT"  # Default
         

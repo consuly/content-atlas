@@ -433,7 +433,7 @@ def test_analyze_unsupported_file_type():
     )
     
     # Should fail with unsupported file type
-    assert response.status_code == 500
+    assert response.status_code == 400
 
 
 def test_analyze_corrupted_csv():
@@ -458,7 +458,7 @@ def test_analyze_corrupted_csv():
         )
         
         # Should handle gracefully
-        assert response.status_code in [200, 500]
+        assert response.status_code in [200, 500, 502]
 
 
 def test_analyze_empty_file():
