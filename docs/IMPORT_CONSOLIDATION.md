@@ -26,7 +26,7 @@ This duplication created maintenance challenges and increased the risk of incons
 
 ## Solution: Unified Import Orchestrator
 
-We created a centralized `execute_data_import()` function in `app/import_orchestrator.py` that all endpoints now use.
+We created a centralized `execute_data_import()` function in `app/domain/imports/orchestrator.py` that all endpoints now use.
 
 ### Architecture Diagram
 
@@ -77,7 +77,7 @@ We created a centralized `execute_data_import()` function in `app/import_orchest
 
 ## Core Function: `execute_data_import()`
 
-Located in `app/import_orchestrator.py`, this function orchestrates the entire import process:
+Located in `app/domain/imports/orchestrator.py`, this function orchestrates the entire import process:
 
 ```python
 def execute_data_import(

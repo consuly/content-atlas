@@ -5,7 +5,7 @@ This test verifies that the LLM cannot access protected system tables
 through natural language queries.
 """
 import pytest
-from app.query_agent import execute_sql_query, PROTECTED_SYSTEM_TABLES
+from app.domain.queries.agent import execute_sql_query, PROTECTED_SYSTEM_TABLES
 
 
 def test_protected_tables_constant():

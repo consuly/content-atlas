@@ -17,9 +17,9 @@ import hashlib
 from fastapi.testclient import TestClient
 from sqlalchemy import text, inspect
 from app.main import app
-from app.database import get_engine
-from app.models import create_table_if_not_exists, insert_records
-from app.schemas import MappingConfig, DuplicateCheckConfig
+from app.db.session import get_engine
+from app.db.models import create_table_if_not_exists, insert_records
+from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
 
 client = TestClient(app)
 
@@ -441,7 +441,7 @@ Person{i},3{i}
             assert response.status_code == 200
         
         # Query import history
-        from app.import_history import get_table_import_lineage
+        from app.domain.imports.history import get_table_import_lineage
         
         lineage = get_table_import_lineage("test_multiple_imports")
         assert len(lineage) >= 2, "Should have at least 2 imports"

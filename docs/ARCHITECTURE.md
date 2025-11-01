@@ -166,7 +166,7 @@ engine = create_engine(
 
 ### 5. B2 Integration
 
-**Location**: `app/b2_utils.py`
+**Location**: `app/integrations/b2.py`
 
 Backblaze B2 cloud storage integration:
 

@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from app.main import app
-from app.database import get_engine
+from app.db.session import get_engine
 
 client = TestClient(app)
 

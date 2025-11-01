@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from app.main import app
-from app.database import get_db
+from app.db.session import get_db
 
 client = TestClient(app)
 
@@ -99,7 +99,7 @@ def test_map_b2_data_real_file():
     # Clean up: Drop table and file imports records to ensure clean state
     table_name = mapping["table_name"]
     try:
-        from app.database import get_engine
+        from app.db.session import get_engine
         engine = get_engine()
         with engine.begin() as conn:
             # Drop any tables matching this file pattern (handles multiple test runs with different timestamps)
@@ -208,7 +208,7 @@ def test_duplicate_detection_row_level():
 
     # Clean up first - be more thorough
     try:
-        from app.database import get_engine
+        from app.db.session import get_engine
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("DELETE FROM file_imports WHERE table_name LIKE 'test_row_duplicates%'"))
@@ -274,7 +274,7 @@ def test_force_import_bypasses_duplicates():
 
     # Clean up first - be more thorough
     try:
-        from app.database import get_engine
+        from app.db.session import get_engine
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("DELETE FROM file_imports WHERE table_name LIKE 'test_force_import%'"))
@@ -322,7 +322,7 @@ def test_custom_uniqueness_columns():
 
     # Clean up first - be more thorough
     try:
-        from app.database import get_engine
+        from app.db.session import get_engine
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("DELETE FROM file_imports WHERE table_name LIKE 'test_custom_unique%'"))
@@ -378,7 +378,7 @@ def test_file_imports_table_created():
 
     # Clean up first - be more thorough
     try:
-        from app.database import get_engine
+        from app.db.session import get_engine
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("DELETE FROM file_imports WHERE table_name LIKE 'test_file_tracking%'"))
@@ -427,7 +427,7 @@ def test_small_file_duplicate_detection():
 
     # Clean up first - be more thorough
     try:
-        from app.database import get_engine
+        from app.db.session import get_engine
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("DELETE FROM file_imports WHERE file_hash = :file_hash OR table_name LIKE 'test_small_file%'"), {"file_hash": file_hash})
@@ -460,8 +460,8 @@ def test_small_file_duplicate_detection():
 
 def test_datetime_standardization():
     """Test datetime standardization functionality."""
-    from app.mapper import standardize_datetime, apply_rules, map_data
-    from app.schemas import MappingConfig
+    from app.domain.imports.mapper import standardize_datetime, apply_rules, map_data
+    from app.api.schemas.shared import MappingConfig
 
     # Test standardize_datetime function with various formats
     test_cases = [
