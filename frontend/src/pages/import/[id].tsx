@@ -139,6 +139,13 @@ export const ImportMappingPage: React.FC = () => {
     fetchFileDetails();
   }, [fetchFileDetails]);
 
+  // Reset result state when file details are fetched and file is mapped
+  useEffect(() => {
+    if (file?.status === 'mapped' && result) {
+      setResult(null);
+    }
+  }, [file, result]);
+
   useEffect(() => {
     if (file?.status === 'mapped' && file.mapped_table_name) {
       fetchMappedFileDetails(file.mapped_table_name);
@@ -173,6 +180,8 @@ export const ImportMappingPage: React.FC = () => {
           rows_imported: response.data.rows_imported,
           execution_time: response.data.execution_time,
         });
+        // Refetch file details to get updated status and trigger detailed view
+        await fetchFileDetails();
       } else {
         setResult({
           success: false,
@@ -308,6 +317,8 @@ export const ImportMappingPage: React.FC = () => {
           rows_imported: response.data.rows_imported,
           execution_time: response.data.execution_time,
         });
+        // Refetch file details to get updated status and trigger detailed view
+        await fetchFileDetails();
       } else {
         setResult({
           success: false,
@@ -743,7 +754,52 @@ export const ImportMappingPage: React.FC = () => {
         Back to Import List
       </Button>
 
-      {file.status === 'mapped' ? (
+      {file.status === 'failed' ? (
+        <Card title={`Failed Mapping: ${file.file_name}`}>
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Alert
+              message="Mapping Failed"
+              description="The file mapping process encountered an error. Please review the details below and try again."
+              type="error"
+              showIcon
+            />
+
+            {file.error_message && (
+              <Card title="Error Details" size="small" type="inner">
+                <Paragraph>
+                  <Text strong>Error Message:</Text>
+                </Paragraph>
+                <Paragraph style={{ 
+                  backgroundColor: '#fff2f0', 
+                  padding: '12px', 
+                  borderRadius: '4px',
+                  border: '1px solid #ffccc7',
+                  fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word'
+                }}>
+                  {file.error_message}
+                </Paragraph>
+              </Card>
+            )}
+
+            <Space>
+              <Button 
+                type="primary" 
+                onClick={() => navigate(`/import/${id}`)}
+              >
+                Try Again
+              </Button>
+              <Button 
+                icon={<ArrowLeftOutlined />}
+                onClick={() => navigate('/import')}
+              >
+                Back to Import List
+              </Button>
+            </Space>
+          </Space>
+        </Card>
+      ) : file.status === 'mapped' ? (
         <Card title={`Mapped File: ${file.file_name}`}>
           {renderMappedFileView()}
         </Card>

@@ -90,6 +90,7 @@ def execute_llm_import_decision(
         # Build db_schema - infer types from data
         # IMPORTANT: Be conservative with type detection to avoid false positives
         # Only use TIMESTAMP if LLM explicitly indicates it's a date column
+        import re
         db_schema = {}
         for target_col in target_columns:
             # Find source column that maps to this target
@@ -98,12 +99,34 @@ def execute_llm_import_decision(
                 # Sample values from source column
                 sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
                 
+                # Convert to strings for pattern matching
+                sample_str = [str(v) for v in sample_values[:20]]
+                
                 # Infer type (conservative approach)
-                if any('@' in str(v) for v in sample_values[:10]):
-                    # Likely email addresses
-                    db_schema[target_col] = "VARCHAR(255)"
+                # Check for phone number patterns first (must be TEXT, not NUMERIC)
+                phone_patterns = [
+                    r'^\d{3}\.\d{3}\.\d{4}$',  # 415.610.7325
+                    r'^\d{3}-\d{3}-\d{4}$',    # 415-610-7325
+                    r'^\(\d{3}\)\s*\d{3}-\d{4}$',  # (415) 610-7325
+                    r'^\d{3}\s+\d{3}\s+\d{4}$',  # 415 610 7325
+                    r'^\+?\d{1,3}[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$',  # International formats
+                ]
+                is_phone = False
+                for pattern in phone_patterns:
+                    if any(re.match(pattern, s) for s in sample_str):
+                        is_phone = True
+                        break
+                
+                if is_phone:
+                    db_schema[target_col] = "TEXT"
+                elif any('%' in s for s in sample_str):
+                    # Percentage values - use TEXT
+                    db_schema[target_col] = "TEXT"
+                elif any('@' in str(v) for v in sample_values[:10]):
+                    # Likely email addresses - use TEXT for unlimited length
+                    db_schema[target_col] = "TEXT"
                 elif all(isinstance(v, (int, float)) for v in sample_values[:20] if v is not None):
-                    # Numeric data
+                    # Numeric data (only if not phone/percentage/email)
                     db_schema[target_col] = "DECIMAL"
                 else:
                     # Default to TEXT for safety
