@@ -37,6 +37,11 @@ from .auth import (
     create_user, init_auth_tables, User
 )
 from .auth_schemas import UserLogin, UserRegister, AuthResponse, Token, UserResponse
+from .api_key_auth import ApiKey, get_api_key_from_header
+from .api_key_schemas import (
+    CreateApiKeyRequest, CreateApiKeyResponse, ListApiKeysResponse, ApiKeyInfo,
+    RevokeApiKeyResponse, UpdateApiKeyRequest, UpdateApiKeyResponse
+)
 from datetime import timedelta
 import time
 
@@ -47,6 +52,7 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize database tables
     try:
         from .uploaded_files import create_uploaded_files_table
+        from .api_key_auth import init_api_key_tables
         
         print("Initializing database tables...")
         create_table_metadata_table()
@@ -60,6 +66,9 @@ async def lifespan(app: FastAPI):
         
         init_auth_tables()
         print("✓ auth tables ready")
+        
+        init_api_key_tables()
+        print("✓ api_keys table ready")
         
         print("✓ All database tables initialized successfully")
     except Exception as e:
@@ -1698,6 +1707,392 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     Requires: Bearer token in Authorization header
     """
     return UserResponse.from_orm(current_user)
+
+
+# ============================================================================
+# API KEY MANAGEMENT ENDPOINTS (Admin Only)
+# ============================================================================
+
+@app.post("/admin/api-keys")
+async def create_api_key_endpoint(
+    request: "CreateApiKeyRequest",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new API key (Admin only).
+    
+    This endpoint generates a new API key for external application access.
+    The plain API key is only shown once and cannot be retrieved later.
+    
+    Requires: JWT authentication (Bearer token)
+    
+    Parameters:
+    - app_name: Name of the application
+    - description: Optional description
+    - expires_in_days: Optional expiration in days
+    - rate_limit_per_minute: Rate limit (default 60)
+    - allowed_endpoints: Optional list of allowed endpoint patterns
+    
+    Returns:
+    - The generated API key (only shown once)
+    - API key metadata
+    """
+    from .api_key_auth import create_api_key
+    from .api_key_schemas import CreateApiKeyRequest, CreateApiKeyResponse
+    
+    try:
+        # Create API key
+        api_key_record, plain_key = create_api_key(
+            db=db,
+            app_name=request.app_name,
+            description=request.description,
+            created_by=current_user.id,
+            expires_in_days=request.expires_in_days,
+            rate_limit_per_minute=request.rate_limit_per_minute,
+            allowed_endpoints=request.allowed_endpoints
+        )
+        
+        return CreateApiKeyResponse(
+            success=True,
+            message="API key created successfully. Save this key securely - it won't be shown again.",
+            api_key=plain_key,
+            key_id=api_key_record.id,
+            app_name=api_key_record.app_name,
+            expires_at=api_key_record.expires_at
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create API key: {str(e)}")
+
+
+@app.get("/admin/api-keys")
+async def list_api_keys_endpoint(
+    is_active: Optional[bool] = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    List all API keys (Admin only).
+    
+    Requires: JWT authentication (Bearer token)
+    
+    Parameters:
+    - is_active: Filter by active status
+    - limit: Maximum number of keys to return
+    - offset: Number of keys to skip
+    
+    Returns:
+    - List of API keys (without the actual key values)
+    """
+    from .api_key_auth import list_api_keys
+    from .api_key_schemas import ListApiKeysResponse, ApiKeyInfo
+    
+    try:
+        api_keys = list_api_keys(
+            db=db,
+            created_by=None,  # Show all keys for admin
+            is_active=is_active,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Convert to response format with key preview
+        api_key_infos = []
+        for key in api_keys:
+            # Show last 4 characters of the hash as preview
+            key_preview = f"...{key.key_hash[-4:]}"
+            
+            api_key_infos.append(ApiKeyInfo(
+                id=key.id,
+                app_name=key.app_name,
+                description=key.description,
+                created_at=key.created_at,
+                last_used_at=key.last_used_at,
+                expires_at=key.expires_at,
+                is_active=key.is_active,
+                rate_limit_per_minute=key.rate_limit_per_minute,
+                allowed_endpoints=key.allowed_endpoints,
+                key_preview=key_preview
+            ))
+        
+        return ListApiKeysResponse(
+            success=True,
+            api_keys=api_key_infos,
+            total_count=len(api_key_infos),
+            limit=limit,
+            offset=offset
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list API keys: {str(e)}")
+
+
+@app.delete("/admin/api-keys/{key_id}")
+async def delete_api_key_endpoint(
+    key_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Permanently delete an API key (Admin only).
+    
+    Requires: JWT authentication (Bearer token)
+    
+    Parameters:
+    - key_id: UUID of the API key to delete
+    
+    Returns:
+    - Success message
+    """
+    from .api_key_auth import delete_api_key
+    from .api_key_schemas import RevokeApiKeyResponse
+    
+    try:
+        success = delete_api_key(db, key_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
+        
+        return RevokeApiKeyResponse(
+            success=True,
+            message="API key deleted successfully",
+            key_id=key_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete API key: {str(e)}")
+
+
+@app.patch("/admin/api-keys/{key_id}")
+async def update_api_key_endpoint(
+    key_id: str,
+    request: "UpdateApiKeyRequest",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update an API key's settings (Admin only).
+    
+    Requires: JWT authentication (Bearer token)
+    
+    Parameters:
+    - key_id: UUID of the API key to update
+    - description: Optional new description
+    - rate_limit_per_minute: Optional new rate limit
+    - allowed_endpoints: Optional new allowed endpoints list
+    - is_active: Optional active status
+    
+    Returns:
+    - Updated API key metadata
+    """
+    from .api_key_auth import ApiKey
+    from .api_key_schemas import UpdateApiKeyRequest, UpdateApiKeyResponse, ApiKeyInfo
+    
+    try:
+        # Get API key
+        api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+        
+        if not api_key:
+            raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
+        
+        # Update fields
+        if request.description is not None:
+            api_key.description = request.description
+        if request.rate_limit_per_minute is not None:
+            api_key.rate_limit_per_minute = request.rate_limit_per_minute
+        if request.allowed_endpoints is not None:
+            api_key.allowed_endpoints = request.allowed_endpoints
+        if request.is_active is not None:
+            api_key.is_active = request.is_active
+        
+        db.commit()
+        db.refresh(api_key)
+        
+        # Convert to response format
+        key_preview = f"...{api_key.key_hash[-4:]}"
+        
+        api_key_info = ApiKeyInfo(
+            id=api_key.id,
+            app_name=api_key.app_name,
+            description=api_key.description,
+            created_at=api_key.created_at,
+            last_used_at=api_key.last_used_at,
+            expires_at=api_key.expires_at,
+            is_active=api_key.is_active,
+            rate_limit_per_minute=api_key.rate_limit_per_minute,
+            allowed_endpoints=api_key.allowed_endpoints,
+            key_preview=key_preview
+        )
+        
+        return UpdateApiKeyResponse(
+            success=True,
+            message="API key updated successfully",
+            api_key=api_key_info
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update API key: {str(e)}")
+
+
+# ============================================================================
+# PUBLIC API ENDPOINTS (API Key Authentication)
+# ============================================================================
+
+@app.post("/api/v1/query")
+async def public_query_database_endpoint(
+    request: QueryDatabaseRequest,
+    api_key: "ApiKey" = Depends(get_api_key_from_header),
+    db: Session = Depends(get_db)
+):
+    """
+    Execute natural language queries against the database (Public API).
+    
+    This endpoint is designed for external applications to query the database
+    using natural language. It requires API key authentication.
+    
+    Authentication: X-API-Key header
+    
+    Parameters:
+    - prompt: Natural language query
+    - thread_id: Optional conversation thread ID for memory continuity
+    
+    Returns:
+    - Query results in CSV format
+    - Executed SQL query
+    - Execution metadata
+    """
+    from .api_key_auth import ApiKey, get_api_key_from_header
+    
+    try:
+        # Execute query using the same agent as internal endpoint
+        result = query_database_with_agent(request.prompt, thread_id=request.thread_id)
+
+        return QueryDatabaseResponse(
+            success=result["success"],
+            response=result["response"],
+            executed_sql=result.get("executed_sql"),
+            data_csv=result.get("data_csv"),
+            execution_time_seconds=result.get("execution_time_seconds"),
+            rows_returned=result.get("rows_returned"),
+            error=result.get("error")
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+@app.get("/api/v1/tables")
+async def public_list_tables_endpoint(
+    api_key: "ApiKey" = Depends(get_api_key_from_header),
+    db: Session = Depends(get_db)
+):
+    """
+    List all available tables (Public API).
+    
+    Authentication: X-API-Key header
+    
+    Returns:
+    - List of table names with row counts
+    """
+    from .api_key_auth import ApiKey, get_api_key_from_header
+    
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            # Query information_schema for user-created tables (exclude system tables)
+            result = conn.execute(text("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'api_keys')
+                AND table_name NOT LIKE 'pg_%'
+                ORDER BY table_name
+            """))
+
+            tables = []
+            for row in result:
+                table_name = row[0]
+
+                # Get row count for each table
+                count_result = conn.execute(text(f"SELECT COUNT(*) FROM \"{table_name}\""))
+                row_count = count_result.scalar()
+
+                tables.append(TableInfo(
+                    table_name=table_name,
+                    row_count=row_count
+                ))
+
+        return TablesListResponse(success=True, tables=tables)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/tables/{table_name}/schema")
+async def public_get_table_schema_endpoint(
+    table_name: str,
+    api_key: "ApiKey" = Depends(get_api_key_from_header),
+    db: Session = Depends(get_db)
+):
+    """
+    Get table schema information (Public API).
+    
+    Authentication: X-API-Key header
+    
+    Parameters:
+    - table_name: Name of the table
+    
+    Returns:
+    - Table column information
+    """
+    from .api_key_auth import ApiKey, get_api_key_from_header
+    
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            # Validate table exists
+            table_check = conn.execute(text("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = :table_name
+            """), {"table_name": table_name})
+
+            if not table_check.fetchone():
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+            # Get column information
+            columns_result = conn.execute(text("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table_name
+                ORDER BY ordinal_position
+            """), {"table_name": table_name})
+
+            columns = []
+            for row in columns_result:
+                columns.append(ColumnInfo(
+                    name=row[0],
+                    type=row[1],
+                    nullable=row[2].upper() == 'YES'
+                ))
+
+        return TableSchemaResponse(
+            success=True,
+            table_name=table_name,
+            columns=columns
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
