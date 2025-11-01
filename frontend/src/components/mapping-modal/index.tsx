@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router';
 import { Modal, Tabs, Button, Space, Alert, Spin, Typography, message } from 'antd';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
+import { ErrorLogViewer } from '../error-log-viewer';
 
 const { Text, Paragraph } = Typography;
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -21,9 +23,11 @@ export const MappingModal: React.FC<MappingModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<string>('auto');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<Record<string, unknown> | null>(null);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -34,6 +38,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
   const handleAutoProcess = async () => {
     setLoading(true);
     setError(null);
+    setErrorDetails(null);
 
     try {
       const token = localStorage.getItem('refine-auth');
@@ -50,16 +55,19 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       });
 
       if (response.data.success) {
-        message.success('File processed successfully!');
+        message.success('File mapped successfully!');
+        // Trigger parent refresh and close modal
         onSuccess();
         onClose();
       } else {
         setError(response.data.error || 'Processing failed');
+        setErrorDetails(response.data.error_details || null);
       }
     } catch (err) {
-      const error = err as AxiosError<{ detail?: string }>;
+      const error = err as AxiosError<{ detail?: string; error_details?: Record<string, unknown> }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Processing failed';
       setError(errorMsg);
+      setErrorDetails(error.response?.data?.error_details || null);
       message.error(errorMsg);
     } finally {
       setLoading(false);
@@ -180,6 +188,11 @@ export const MappingModal: React.FC<MappingModalProps> = ({
         message.success('Import executed successfully!');
         onSuccess();
         onClose();
+        // Small delay to ensure backend has updated file status
+        setTimeout(() => {
+          navigate(`/import/${fileId}`, { replace: true });
+          window.location.reload();
+        }, 500);
       } else {
         setError('Import execution failed');
       }
@@ -216,15 +229,18 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       />
 
       {error && (
-        <Alert
-          message="Error"
-          description={error}
-          type="error"
-          showIcon
-          closable
-          onClose={() => setError(null)}
-          style={{ marginBottom: 24 }}
-        />
+        <div style={{ marginBottom: 24 }}>
+          <ErrorLogViewer
+            error={error}
+            errorDetails={errorDetails || undefined}
+            onRetry={() => {
+              setError(null);
+              setErrorDetails(null);
+              handleAutoProcess();
+            }}
+            showRetry={true}
+          />
+        </div>
       )}
 
       <Space direction="vertical" size="large" style={{ width: '100%' }}>

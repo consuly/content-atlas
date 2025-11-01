@@ -845,18 +845,20 @@ async def analyze_file_endpoint(
                     response.llm_response += f"- Records Processed: {execution_result['records_processed']}\n"
                 else:
                     # Update file status to 'failed' if file_id was provided
+                    error_msg = execution_result.get('error', 'Unknown error')
                     if file_id:
-                        update_file_status(file_id, "failed")
+                        update_file_status(file_id, "failed", error_message=error_msg)
                     
                     response.llm_response += f"\n\n❌ AUTO-EXECUTION FAILED:\n"
-                    response.llm_response += f"- Error: {execution_result.get('error', 'Unknown error')}\n"
+                    response.llm_response += f"- Error: {error_msg}\n"
                     
             except Exception as e:
                 # Update file status to 'failed' if file_id was provided
+                error_msg = str(e)
                 if file_id:
-                    update_file_status(file_id, "failed")
+                    update_file_status(file_id, "failed", error_message=error_msg)
                 
-                response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {str(e)}\n"
+                response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {error_msg}\n"
         
         
         return response
@@ -2330,11 +2332,12 @@ async def execute_interactive_import_endpoint(
             )
         else:
             # Update file status to 'failed'
-            update_file_status(request.file_id, "failed")
+            error_msg = execution_result.get('error', 'Unknown error')
+            update_file_status(request.file_id, "failed", error_message=error_msg)
             
             raise HTTPException(
                 status_code=500,
-                detail=f"Import execution failed: {execution_result.get('error', 'Unknown error')}"
+                detail=f"Import execution failed: {error_msg}"
             )
         
     except HTTPException:

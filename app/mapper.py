@@ -225,6 +225,31 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
         # Series is already datetime-like, so it should be TIMESTAMP
         return "TIMESTAMP"
 
+    # Convert to string for pattern matching
+    sample_str = sample_values.astype(str)
+    
+    # Check for phone number patterns (must be TEXT, not NUMERIC)
+    # Common formats: 415.610.7325, 415-610-7325, (415) 610-7325, etc.
+    import re
+    phone_patterns = [
+        r'^\d{3}\.\d{3}\.\d{4}$',  # 415.610.7325
+        r'^\d{3}-\d{3}-\d{4}$',    # 415-610-7325
+        r'^\(\d{3}\)\s*\d{3}-\d{4}$',  # (415) 610-7325
+        r'^\d{3}\s+\d{3}\s+\d{4}$',  # 415 610 7325
+        r'^\+?\d{1,3}[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$',  # International formats
+    ]
+    for pattern in phone_patterns:
+        if sample_str.str.match(pattern, na=False).any():
+            return "TEXT"
+    
+    # Check for percentage values (e.g., "98%", "2%")
+    if sample_str.str.contains('%', regex=False, na=False).any():
+        return "TEXT"
+    
+    # Check for email patterns
+    if sample_str.str.contains('@', regex=False, na=False).any():
+        return "TEXT"
+
     # Check if all values are numeric - use DECIMAL for all numeric data for maximum flexibility
     try:
         pd.to_numeric(sample_values, errors='raise')

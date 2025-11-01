@@ -65,7 +65,7 @@ def get_user_created_tables(engine: Engine) -> List[str]:
                 'spatial_ref_sys', 'geography_columns', 'geometry_columns', 
                 'raster_columns', 'raster_overviews',
                 'file_imports', 'table_metadata', 'import_history', 
-                'uploaded_files', 'users'
+                'uploaded_files', 'users', 'api_keys', 'mapping_errors'
             )
             AND table_name NOT LIKE 'pg_%'
             ORDER BY table_name

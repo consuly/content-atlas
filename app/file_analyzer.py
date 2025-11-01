@@ -471,6 +471,7 @@ def _infer_column_types_from_rows(
 ) -> Dict[str, Dict[str, Any]]:
     """Infer data types for each column from data rows."""
     from .date_utils import detect_date_column
+    import re
     
     column_types = {}
     
@@ -487,8 +488,28 @@ def _infer_column_types_from_rows(
             }
             continue
         
+        # Check for phone number patterns FIRST (before numeric check)
+        # Phone patterns: xxx.xxx.xxxx, xxx-xxx-xxxx, (xxx) xxx-xxxx, xxxxxxxxxx
+        phone_pattern = re.compile(r'^[\d\s\(\)\.\-]{10,}$')
+        phone_keywords = ['phone', 'tel', 'mobile', 'fax', 'contact']
+        
+        # Check column name for phone keywords
+        col_name_lower = col_name.lower()
+        has_phone_keyword = any(keyword in col_name_lower for keyword in phone_keywords)
+        
+        # Check if values match phone patterns
+        sample_values = [str(v) for v in values[:20]]
+        phone_matches = sum(1 for v in sample_values if phone_pattern.match(v))
+        phone_match_ratio = phone_matches / len(sample_values) if sample_values else 0
+        
+        if has_phone_keyword or phone_match_ratio > 0.7:
+            column_types[col_name] = {
+                "data_type": "TEXT",
+                "confidence": 0.98 if has_phone_keyword else 0.90,
+                "reasoning": "Contains phone number values" if has_phone_keyword else "Values match phone number patterns"
+            }
         # Check for date patterns
-        if detect_date_column(values[:20]):
+        elif detect_date_column(values[:20]):
             column_types[col_name] = {
                 "data_type": "TIMESTAMP",
                 "confidence": 0.95,
@@ -497,11 +518,11 @@ def _infer_column_types_from_rows(
         # Check for email
         elif any('@' in str(v) for v in values[:10]):
             column_types[col_name] = {
-                "data_type": "VARCHAR(255)",
+                "data_type": "TEXT",
                 "confidence": 0.90,
                 "reasoning": "Contains email addresses"
             }
-        # Check for numeric
+        # Check for numeric (only if not phone)
         elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in values[:20]):
             column_types[col_name] = {
                 "data_type": "DECIMAL",
@@ -551,8 +572,21 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
         # Analyze patterns
         sample_values = values[:20]
         
+        # Check for phone number patterns FIRST (before numeric check)
+        phone_pattern = re.compile(r'^[\d\s\(\)\.\-]{10,}$')
+        phone_matches = sum(1 for v in sample_values if phone_pattern.match(str(v)))
+        phone_match_ratio = phone_matches / len(sample_values) if sample_values else 0
+        
+        if phone_match_ratio > 0.7:
+            inferred_columns[f"col_{col_idx}"] = {
+                "semantic_name": "phone",
+                "data_type": "TEXT",
+                "confidence": 0.95,
+                "reasoning": f"{phone_matches}/{len(sample_values)} values match phone number patterns"
+            }
+        
         # Check for date patterns
-        if detect_date_column(sample_values):
+        elif detect_date_column(sample_values):
             date_format = infer_date_format(sample_values)
             inferred_columns[f"col_{col_idx}"] = {
                 "semantic_name": "date",
@@ -572,12 +606,12 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
             email_count = sum(1 for v in sample_values if '@' in str(v))
             inferred_columns[f"col_{col_idx}"] = {
                 "semantic_name": "email",
-                "data_type": "VARCHAR(255)",
+                "data_type": "TEXT",
                 "confidence": 0.98,
                 "reasoning": f"{email_count}/{len(sample_values)} values contain @ symbol"
             }
         
-        # Check for numeric
+        # Check for numeric (only if not phone)
         elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in sample_values):
             if all(str(v).isdigit() for v in sample_values):
                 inferred_columns[f"col_{col_idx}"] = {
@@ -611,7 +645,7 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
                     
                     inferred_columns[f"col_{col_idx}"] = {
                         "semantic_name": semantic_name,
-                        "data_type": "VARCHAR(255)",
+                        "data_type": "TEXT",
                         "confidence": 0.75,
                         "reasoning": "Proper case strings, short length"
                     }
