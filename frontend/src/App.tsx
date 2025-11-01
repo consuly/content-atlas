@@ -29,6 +29,7 @@ import { Register } from "./pages/register";
 import { ImportPage } from "./pages/import";
 import { ImportMappingPage } from "./pages/import/[id]";
 import { QueryPage } from "./pages/query";
+import { ApiKeysPage } from "./pages/api-keys";
 
 function App() {
   return (
@@ -57,6 +58,14 @@ function App() {
                     meta: {
                       label: "Import Data",
                       icon: "📤",
+                    },
+                  },
+                  {
+                    name: "api-keys",
+                    list: "/api-keys",
+                    meta: {
+                      label: "API Keys",
+                      icon: "🔑",
                     },
                   },
                 ]}
@@ -97,6 +106,9 @@ function App() {
                           <QueryPage />
                         </ErrorBoundary>
                       } />
+                    </Route>
+                    <Route path="/api-keys">
+                      <Route index element={<ApiKeysPage />} />
                     </Route>
                     <Route path="*" element={<ErrorComponent />} />
                   </Route>
