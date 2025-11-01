@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider } from 'antd';
+import { Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, message } from 'antd';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 
@@ -65,6 +65,22 @@ export const ImportMappingPage: React.FC = () => {
   const [conversation, setConversation] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
   const [userInput, setUserInput] = useState('');
   const [canExecute, setCanExecute] = useState(false);
+  const [needsUserInput, setNeedsUserInput] = useState(true);
+  const quickActions = [
+    { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
+    {
+      label: 'Request New Table',
+      prompt: 'Could we create a brand new table for this import instead? Outline the recommended schema.',
+    },
+    {
+      label: 'Adjust Column Mapping',
+      prompt: 'Please walk me through adjusting the column mapping. Suggest columns that should be renamed or remapped.',
+    },
+    {
+      label: 'Review Duplicates',
+      prompt: 'Explain how duplicate detection is configured. Are there better uniqueness rules we should consider?',
+    },
+  ];
 
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -206,6 +222,7 @@ export const ImportMappingPage: React.FC = () => {
     setProcessing(true);
     setError(null);
     setConversation([]);
+    setNeedsUserInput(true);
     setResult(null);
 
     try {
@@ -230,6 +247,7 @@ export const ImportMappingPage: React.FC = () => {
           { role: 'assistant', content: response.data.llm_message },
         ]);
         setCanExecute(response.data.can_execute);
+        setNeedsUserInput(response.data.needs_user_input ?? true);
       } else {
         setError(response.data.error || 'Analysis failed');
       }
@@ -237,19 +255,21 @@ export const ImportMappingPage: React.FC = () => {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
+      message.error(errorMsg);
     } finally {
       setProcessing(false);
     }
   };
 
-  const handleInteractiveSend = async () => {
-    if (!userInput.trim() || !threadId || !id) return;
+  const sendInteractiveMessage = async (messageToSend: string) => {
+    if (!threadId || !id) return;
+    const trimmed = messageToSend.trim();
+    if (!trimmed) return;
 
     setProcessing(true);
     setError(null);
 
-    const newConversation = [...conversation, { role: 'user' as const, content: userInput }];
-    setConversation(newConversation);
+    setConversation((prev) => [...prev, { role: 'user', content: trimmed }]);
     setUserInput('');
 
     try {
@@ -258,7 +278,7 @@ export const ImportMappingPage: React.FC = () => {
         `${API_URL}/analyze-file-interactive`,
         {
           file_id: id,
-          user_message: userInput,
+          user_message: trimmed,
           thread_id: threadId,
           max_iterations: 5,
         },
@@ -271,21 +291,35 @@ export const ImportMappingPage: React.FC = () => {
       );
 
       if (response.data.success) {
-        setConversation([
-          ...newConversation,
+        setConversation((prev) => [
+          ...prev,
           { role: 'assistant', content: response.data.llm_message },
         ]);
         setCanExecute(response.data.can_execute);
+        setNeedsUserInput(response.data.needs_user_input ?? true);
       } else {
-        setError(response.data.error || 'Analysis failed');
+        const fallback = response.data.error || 'Analysis failed';
+        setError(fallback);
+        message.error(fallback);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
+      message.error(errorMsg);
     } finally {
       setProcessing(false);
     }
+  };
+
+  const handleInteractiveSend = async () => {
+    if (!userInput.trim()) return;
+    await sendInteractiveMessage(userInput);
+  };
+
+  const handleQuickAction = async (prompt: string) => {
+    if (!prompt || processing) return;
+    await sendInteractiveMessage(prompt);
   };
 
   const handleInteractiveExecute = async () => {
@@ -311,6 +345,13 @@ export const ImportMappingPage: React.FC = () => {
       );
 
       if (response.data.success) {
+        setConversation((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `✅ Import executed successfully into ${response.data.table_name}.`,
+          },
+        ]);
         setResult({
           success: true,
           table_name: response.data.table_name,
@@ -319,19 +360,33 @@ export const ImportMappingPage: React.FC = () => {
         });
         // Refetch file details to get updated status and trigger detailed view
         await fetchFileDetails();
+        setCanExecute(false);
+        setNeedsUserInput(false);
+        setThreadId(null);
       } else {
-        setResult({
-          success: false,
-          error: 'Import execution failed',
+        const failureMessage = response.data.message || 'Import execution failed';
+        setConversation((prev) => {
+          const next = [
+            ...prev,
+            { role: 'assistant', content: `⚠️ ${failureMessage}` },
+          ];
+          if (response.data.llm_followup) {
+            next.push({ role: 'assistant', content: response.data.llm_followup });
+          }
+          return next;
         });
+        setCanExecute(response.data.can_execute ?? false);
+        setNeedsUserInput(response.data.needs_user_input ?? true);
+        if (response.data.thread_id) {
+          setThreadId(response.data.thread_id);
+        }
+        message.error(failureMessage);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Import execution failed';
-      setResult({
-        success: false,
-        error: errorMsg,
-      });
+      setError(errorMsg);
+      message.error(errorMsg);
     } finally {
       setProcessing(false);
     }
@@ -662,49 +717,79 @@ export const ImportMappingPage: React.FC = () => {
             )}
           </div>
 
-          {canExecute ? (
-            <Button
-              type="primary"
-              size="large"
-              icon={<CheckCircleOutlined />}
-              onClick={handleInteractiveExecute}
-              loading={processing}
-              block
-            >
-              {processing ? 'Executing...' : 'Execute Import'}
-            </Button>
-          ) : (
-            <Space.Compact style={{ width: '100%' }}>
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter' && !processing) {
-                    handleInteractiveSend();
-                  }
-                }}
-                placeholder="Type your response..."
-                disabled={processing}
-                style={{
-                  flex: 1,
-                  padding: '8px 12px',
-                  border: '1px solid #d9d9d9',
-                  borderRadius: '4px 0 0 4px',
-                  fontSize: 14,
-                }}
-              />
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Alert
+              type={canExecute ? 'success' : 'info'}
+              message={
+                canExecute
+                  ? 'Mapping confirmed. Execute when ready or ask for additional adjustments below.'
+                  : needsUserInput
+                    ? 'The assistant is waiting for your direction. Ask for changes or confirm when the plan looks right.'
+                    : 'Processing... the assistant will respond shortly.'
+              }
+              showIcon
+            />
+
+            {canExecute && (
               <Button
                 type="primary"
-                onClick={handleInteractiveSend}
+                size="large"
+                icon={<CheckCircleOutlined />}
+                onClick={handleInteractiveExecute}
                 loading={processing}
-                disabled={!userInput.trim()}
-                style={{ borderRadius: '0 4px 4px 0' }}
+                block
               >
-                Send
+                {processing ? 'Executing...' : 'Execute Import'}
               </Button>
-            </Space.Compact>
-          )}
+            )}
+
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Space.Compact style={{ width: '100%' }}>
+                <input
+                  type="text"
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && !processing) {
+                      handleInteractiveSend();
+                    }
+                  }}
+                  placeholder="Ask for changes, confirmations, or next steps..."
+                  disabled={processing || !threadId}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: '4px 0 0 4px',
+                    fontSize: 14,
+                  }}
+                />
+                <Button
+                  type="primary"
+                  onClick={handleInteractiveSend}
+                  loading={processing}
+                  disabled={!userInput.trim() || processing || !threadId}
+                  style={{ borderRadius: '0 4px 4px 0' }}
+                >
+                  Send
+                </Button>
+              </Space.Compact>
+
+              <Space wrap>
+                {quickActions.map(({ label, prompt }) => (
+                  <Button
+                    key={label}
+                    size="small"
+                    type={label === 'Approve Plan' ? 'primary' : 'default'}
+                    disabled={!threadId || processing}
+                    onClick={() => handleQuickAction(prompt)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </Space>
+            </Space>
+          </Space>
         </div>
       )}
     </div>

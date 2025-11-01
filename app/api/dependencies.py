@@ -11,6 +11,7 @@ from app.api.schemas.shared import AsyncTaskStatus, AnalyzeFileResponse
 # Global task storage (in production, use Redis or database)
 task_storage: Dict[str, AsyncTaskStatus] = {}
 analysis_storage: Dict[str, AnalyzeFileResponse] = {}
+interactive_sessions: Dict[str, Any] = {}
 
 # Cache for parsed file records to avoid double processing
 # Key: file_hash, Value: dict with 'raw_records', 'mapped_records', 'config_hash', 'timestamp'

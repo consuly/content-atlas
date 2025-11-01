@@ -1011,7 +1011,7 @@ def track_analysis_attempts(state: AgentState, runtime: Runtime) -> dict[str, An
     return {"attempt_count": attempt_count}
 
 
-def create_file_analyzer_agent(max_iterations: int = 5):
+def create_file_analyzer_agent(max_iterations: int = 5, interactive_mode: bool = False):
     """
     Create an LLM-powered agent for file analysis with conversation memory.
     
@@ -1044,7 +1044,7 @@ def create_file_analyzer_agent(max_iterations: int = 5):
         make_import_decision
     ]
     
-    system_prompt = """You are a database consolidation expert helping users organize data from multiple sources.
+    base_system_prompt = """You are a database consolidation expert helping users organize data from multiple sources.
 
 Your task is to analyze an uploaded file and determine the best way to import it into an existing database.
 
@@ -1125,7 +1125,22 @@ After calling make_import_decision, provide a structured recommendation includin
 - Unique columns for duplicate detection
 - Any data quality issues or conflicts found
 """
-    
+
+    if interactive_mode:
+        interactive_addendum = """
+
+INTERACTIVE MODE COLLABORATION RULES:
+- You are collaborating live with a human reviewer. Present the current import plan and explicitly outline actionable next steps they can choose (e.g., rename columns, change target table, request a new table, confirm duplicates strategy).
+- Do NOT call the make_import_decision tool until the user explicitly approves with language such as "CONFIRM", "APPROVE", or "PROCEED". A confirmation message may also contain the token "CONFIRM IMPORT".
+- When the user confirms, call make_import_decision exactly once, summarize the final plan, and state that the mapping is ready to execute.
+- If the user requests changes after a confirmation, treat it as a revision: withdraw the previous decision, update the plan, and wait for a fresh confirmation before calling make_import_decision again.
+- When informed that execution failed (messages beginning with "EXECUTION_FAILED"), diagnose the failure, propose concrete fixes, and wait for the user's confirmation before finalizing a new decision.
+- Always respond with: (1) a concise status summary, (2) the recommended plan or revision notes, and (3) a numbered list of suggested next actions for the user.
+"""
+        system_prompt = f"{base_system_prompt}{interactive_addendum}"
+    else:
+        system_prompt = base_system_prompt
+
     agent = create_agent(
         model=model,
         tools=tools,
@@ -1145,7 +1160,9 @@ def analyze_file_for_import(
     conflict_mode: ConflictResolutionMode = ConflictResolutionMode.ASK_USER,
     user_id: Optional[str] = None,
     max_iterations: int = 5,
-    thread_id: Optional[str] = None
+    thread_id: Optional[str] = None,
+    messages: Optional[List[Dict[str, str]]] = None,
+    interactive_mode: bool = False
 ) -> Dict[str, Any]:
     """
     Analyze a file and determine the optimal import strategy.
@@ -1158,6 +1175,9 @@ def analyze_file_for_import(
         user_id: Optional user identifier
         max_iterations: Maximum LLM iterations
         thread_id: Optional thread ID for conversation continuity. If not provided, uses "default".
+        messages: Optional list of conversation messages to send to the agent.
+                  If not provided, a default analysis prompt is used.
+        interactive_mode: When True, enables the interactive collaboration system prompt.
         
     Returns:
         Analysis results with recommendations
@@ -1169,7 +1189,7 @@ def analyze_file_for_import(
         # Create analysis context
         context = AnalysisContext(
             file_sample=file_sample,
-            file_metadata=file_metadata,
+            file_metadata=dict(file_metadata),
             existing_schema=schema_info,
             analysis_mode=analysis_mode,
             conflict_mode=conflict_mode,
@@ -1177,7 +1197,10 @@ def analyze_file_for_import(
         )
         
         # Create and run agent
-        agent = create_file_analyzer_agent(max_iterations=max_iterations)
+        agent = create_file_analyzer_agent(
+            max_iterations=max_iterations,
+            interactive_mode=interactive_mode
+        )
         
         # Use default thread if none provided
         if thread_id is None:
@@ -1186,16 +1209,20 @@ def analyze_file_for_import(
         # Create config with thread_id for conversation continuity
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         
-        prompt = f"""Analyze this file for database import:
+        if messages is None:
+            prompt = f"""Analyze this file for database import:
 
 File: {file_metadata.get('name', 'unknown')}
 Total Rows: {file_metadata.get('total_rows', 'unknown')}
 Sample Size: {len(file_sample)}
 
 Please analyze the file structure, compare it with existing tables, and recommend the best import strategy."""
+            messages_to_send = [{"role": "user", "content": prompt}]
+        else:
+            messages_to_send = messages
         
         result = agent.invoke(
-            {"messages": [{"role": "user", "content": prompt}]},
+            {"messages": messages_to_send},
             context=context,
             config=config
         )
