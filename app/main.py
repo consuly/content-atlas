@@ -9,14 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # Import routers
-from .routers import (
+from .api.routers import (
     imports, mapping, tables, tasks, query, analysis,
     import_history, uploads, auth, api_keys, public_api
 )
 
 # Backwards-compatible exports used by tests and legacy modules.
-from .file_analyzer import analyze_file_for_import  # noqa: F401
-from .b2_utils import download_file_from_b2  # noqa: F401
+from .domain.queries.analyzer import analyze_file_for_import  # noqa: F401
+from .integrations.b2 import download_file_from_b2  # noqa: F401
 
 
 @asynccontextmanager
@@ -24,11 +24,11 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown events."""
     # Startup: Initialize database tables
     try:
-        from .uploaded_files import create_uploaded_files_table
-        from .api_key_auth import init_api_key_tables
-        from .table_metadata import create_table_metadata_table
-        from .import_history import create_import_history_table
-        from .auth import init_auth_tables
+        from .domain.uploads.uploaded_files import create_uploaded_files_table
+        from .core.api_key_auth import init_api_key_tables
+        from .db.metadata import create_table_metadata_table
+        from .domain.imports.history import create_import_history_table
+        from .core.security import init_auth_tables
         
         print("Initializing database tables...")
         create_table_metadata_table()

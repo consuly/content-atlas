@@ -367,7 +367,7 @@ No code changes are required to enable tracking.
 If you're creating custom import logic, use the tracking functions:
 
 ```python
-from app.import_history import start_import_tracking, complete_import_tracking
+from app.domain.imports.history import start_import_tracking, complete_import_tracking
 from app.models import calculate_file_hash
 import time
 

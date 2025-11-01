@@ -153,7 +153,7 @@ get_mapping_errors(
 ### Check Mapping Status
 
 ```python
-from app.import_history import get_import_history
+from app.domain.imports.history import get_import_history
 
 # Get import record
 imports = get_import_history(import_id="uuid-here")
@@ -167,7 +167,7 @@ print(f"Duration: {import_record['mapping_duration_seconds']}s")
 ### Retrieve Mapping Errors
 
 ```python
-from app.import_history import get_mapping_errors
+from app.domain.imports.history import get_mapping_errors
 
 # Get all errors for an import
 errors = get_mapping_errors(import_id="uuid-here", limit=100)
@@ -211,7 +211,7 @@ datetime_errors = get_mapping_errors(
 When resetting the development database, both tables are automatically created:
 
 ```python
-from app.import_history import create_import_history_table
+from app.domain.imports.history import create_import_history_table
 
 # Creates both import_history and mapping_errors tables
 create_import_history_table()

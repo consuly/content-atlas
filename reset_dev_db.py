@@ -20,8 +20,8 @@ What is preserved:
 
 import sys
 import argparse
-from app.db_reset import reset_database_data, is_production_environment, ProductionEnvironmentError
-from app.config import settings
+from app.db.seeds.reset import reset_database_data, is_production_environment, ProductionEnvironmentError
+from app.core.config import settings
 
 
 def print_banner():

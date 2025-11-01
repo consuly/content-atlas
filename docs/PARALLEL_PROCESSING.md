@@ -166,7 +166,7 @@ max_workers = min(4, os.cpu_count() or 2)
 
 ### Key Functions
 
-#### In `app/import_orchestrator.py`:
+#### In `app/domain/imports/orchestrator.py`:
 
 ##### `_map_chunks_parallel()`
 Main orchestrator for parallel data mapping:

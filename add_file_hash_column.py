@@ -2,7 +2,7 @@
 Migration script to add file_hash column to uploaded_files table.
 Run this once to update the existing database schema.
 """
-from app.database import get_engine
+from app.db.session import get_engine
 from sqlalchemy import text
 
 def migrate_add_file_hash():

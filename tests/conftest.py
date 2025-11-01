@@ -6,11 +6,11 @@ database initialization to ensure system tables exist before tests run.
 """
 
 import pytest
-from app.database import get_engine
-from app.table_metadata import create_table_metadata_table
-from app.import_history import create_import_history_table
-from app.uploaded_files import create_uploaded_files_table
-from app.models import create_file_imports_table_if_not_exists
+from app.db.session import get_engine
+from app.db.metadata import create_table_metadata_table
+from app.domain.imports.history import create_import_history_table
+from app.domain.uploads.uploaded_files import create_uploaded_files_table
+from app.db.models import create_file_imports_table_if_not_exists
 
 
 @pytest.fixture(scope="session", autouse=True)

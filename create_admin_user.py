@@ -5,8 +5,8 @@ Run this script to create the first user account.
 Usage:
     python create_admin_user.py
 """
-from app.database import get_engine
-from app.auth import create_user, init_auth_tables
+from app.db.session import get_engine
+from app.core.security import create_user, init_auth_tables
 from sqlalchemy.orm import Session
 import getpass
 
