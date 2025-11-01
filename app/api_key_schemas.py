@@ -1,7 +1,7 @@
 """
 Pydantic schemas for API Key management.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -24,8 +24,8 @@ class CreateApiKeyResponse(BaseModel):
     app_name: str
     expires_at: Optional[datetime] = None
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "success": True,
                 "message": "API key created successfully",
@@ -35,6 +35,7 @@ class CreateApiKeyResponse(BaseModel):
                 "expires_at": "2025-12-31T23:59:59"
             }
         }
+    )
 
 
 class ApiKeyInfo(BaseModel):
@@ -50,8 +51,7 @@ class ApiKeyInfo(BaseModel):
     allowed_endpoints: Optional[List[str]] = None
     key_preview: str = Field(..., description="Last 4 characters of the key for identification")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ListApiKeysResponse(BaseModel):

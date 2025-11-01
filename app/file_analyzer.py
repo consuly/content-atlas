@@ -5,12 +5,13 @@ This module uses LangChain agents with Claude Haiku to analyze uploaded files
 and determine the optimal import strategy by comparing with existing database tables.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Annotated
 from typing_extensions import NotRequired
 from enum import Enum
 import numpy as np
 from dataclasses import dataclass
 from langchain.tools import tool, ToolRuntime
+from langchain_core.tools import InjectedToolArg
 from langchain.agents import create_agent, AgentState
 from langchain.agents.middleware import before_model
 from langchain_anthropic import ChatAnthropic
@@ -183,7 +184,7 @@ def sample_file_data(
 
 @tool
 def analyze_file_structure(
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> Dict[str, Any]:
     """
     Analyze the structure of the uploaded file sample.
@@ -240,7 +241,7 @@ def analyze_file_structure(
 
 @tool
 def get_existing_database_schema(
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> str:
     """
     Get the current database schema with all tables and their structures.
@@ -259,7 +260,7 @@ def get_existing_database_schema(
 @tool
 def compare_file_with_tables(
     file_columns: List[str],
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> List[Dict[str, Any]]:
     """
     Compare file columns with existing database tables to find potential matches.
@@ -311,7 +312,7 @@ def compare_file_with_tables(
 def resolve_conflict(
     conflict_description: str,
     options: List[str],
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> str:
     """
     Resolve a schema or data type conflict.
@@ -345,7 +346,7 @@ def resolve_conflict(
 
 @tool
 def analyze_raw_csv_structure(
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> Dict[str, Any]:
     """
     Analyze raw CSV structure to determine if it has headers and infer column meanings.
@@ -685,7 +686,7 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
 
 @tool
 def infer_schema_from_headerless_data(
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> Dict[str, Any]:
     """
     DEPRECATED: Use analyze_raw_csv_structure instead.
@@ -836,7 +837,7 @@ def infer_schema_from_headerless_data(
 
 @tool
 def describe_file_purpose(
-    runtime: ToolRuntime[AnalysisContext]
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> Dict[str, Any]:
     """
     Analyze the semantic purpose and business domain of this file.
@@ -904,11 +905,11 @@ def make_import_decision(
     reasoning: str,
     purpose_short: str,
     column_mapping: Dict[str, str],
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()],
     unique_columns: Optional[List[str]] = None,
     has_header: Optional[bool] = None,
     data_domain: Optional[str] = None,
-    key_entities: Optional[List[str]] = None,
-    runtime: ToolRuntime[AnalysisContext] = None
+    key_entities: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
     Make final import decision with strategy and target table.

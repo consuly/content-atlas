@@ -173,6 +173,9 @@ def test_headerless_file_merge_with_duplicates():
     first_table_name = user_tables_1[0]['table_name']
     first_table_rows = user_tables_1[0]['row_count']
     
+    assert not first_table_name.startswith('test_'), \
+        f"LLM should not target reserved test tables, got '{first_table_name}'"
+    
     print(f"\n  ✓ First file processed successfully")
     print(f"    Table: {first_table_name}")
     print(f"    Rows: {first_table_rows}")
