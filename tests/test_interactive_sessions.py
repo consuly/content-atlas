@@ -74,6 +74,41 @@ def test_run_interactive_session_initial_prompt(monkeypatch: pytest.MonkeyPatch)
     assert recorded["file_sample"] == session.sample
 
 
+def test_run_interactive_session_includes_previous_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: Dict[str, Any] = {}
+
+    def fake_analyze(
+        *,
+        file_sample,
+        file_metadata,
+        analysis_mode,
+        conflict_mode,
+        user_id,
+        max_iterations,
+        thread_id,
+        messages,
+        interactive_mode
+    ):
+        recorded["messages"] = messages
+        return {
+            "success": True,
+            "response": "Here is an updated plan accounting for the failure.",
+            "iterations_used": 1,
+            "llm_decision": None,
+        }
+
+    monkeypatch.setattr(analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze)
+
+    session = _make_session()
+    session.last_error = "duplicate key value violates constraint"
+
+    _run_interactive_session_step(session, user_message=None)
+
+    assert "previous execution attempt failed" in session.conversation[0]["content"]
+    assert "duplicate key value violates constraint" in session.conversation[0]["content"]
+    assert "duplicate key value violates constraint" in recorded["messages"][0]["content"]
+
+
 def test_run_interactive_session_confirms_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: Dict[str, Any] = {}
 

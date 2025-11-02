@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def extract_raw_csv_rows(file_content: bytes, num_rows: int = 20) -> List[List[str]]:
+def extract_raw_csv_rows(file_content: bytes, num_rows: int = 100) -> List[List[str]]:
     """
     Extract raw CSV rows without making any assumptions about headers.
     
@@ -19,7 +19,7 @@ def extract_raw_csv_rows(file_content: bytes, num_rows: int = 20) -> List[List[s
     
     Args:
         file_content: CSV file content as bytes
-        num_rows: Number of rows to extract (default 20)
+        num_rows: Number of rows to extract (default 100)
         
     Returns:
         List of rows, where each row is a list of string values
@@ -31,7 +31,7 @@ def extract_raw_csv_rows(file_content: bytes, num_rows: int = 20) -> List[List[s
         # Use csv.reader to parse without assumptions
         csv_reader = csv.reader(StringIO(text_content))
         
-        # Extract first N rows
+        # Extract first N rows (capped to keep LLM context manageable)
         raw_rows = []
         for i, row in enumerate(csv_reader):
             if i >= num_rows:

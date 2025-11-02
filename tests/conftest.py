@@ -5,6 +5,7 @@ This module provides shared fixtures and setup for all tests, including
 database initialization to ensure system tables exist before tests run.
 """
 
+import os
 import pytest
 from app.db.session import get_engine
 from app.db.metadata import create_table_metadata_table
@@ -36,6 +37,12 @@ def initialize_test_database():
     print("="*80)
     
     try:
+        if os.getenv("SKIP_DB_INIT") == "1":
+            print("  SKIP_DB_INIT=1 detected; skipping database bootstrap for fast unit test run")
+            print("="*80 + "\n")
+            yield
+            return
+
         engine = get_engine()
         
         # Create all system tables

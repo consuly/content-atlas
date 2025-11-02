@@ -494,7 +494,7 @@ async def analyze_file_endpoint(
         records = []
         
         if file_type == 'csv':
-            raw_csv_rows = extract_raw_csv_rows(file_content, num_rows=20)
+            raw_csv_rows = extract_raw_csv_rows(file_content, num_rows=100)
             
             # IMPORTANT: Do NOT parse the CSV file yet!
             # The LLM needs to analyze the raw structure first to determine if it has headers
@@ -528,7 +528,7 @@ async def analyze_file_endpoint(
             return special_response
         
         # Smart sampling
-        sample, total_rows = sample_file_data(records, sample_size)
+        sample, total_rows = sample_file_data(records, sample_size, max_sample_size=100)
         
         # Prepare metadata
         file_metadata = {
@@ -684,7 +684,7 @@ async def analyze_b2_file_endpoint(
             return special_response
         
         # Smart sampling
-        sample, total_rows = sample_file_data(records, request.sample_size)
+        sample, total_rows = sample_file_data(records, request.sample_size, max_sample_size=100)
         
         # Prepare metadata
         file_metadata = {
@@ -833,7 +833,7 @@ async def analyze_file_interactive_endpoint(
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
 
-        sample, total_rows = sample_file_data(records, None)
+        sample, total_rows = sample_file_data(records, None, max_sample_size=100)
 
         file_metadata = {
             "name": file_record["file_name"],
@@ -862,6 +862,11 @@ async def analyze_file_interactive_endpoint(
             sample=sample,
             max_iterations=request.max_iterations
         )
+
+        if request.previous_error_message:
+            cleaned_error = request.previous_error_message.strip()
+            if cleaned_error:
+                session.last_error = cleaned_error
 
         if special_response is not None:
             session.conversation.append({"role": "assistant", "content": special_response.llm_response})
