@@ -170,6 +170,10 @@ def start_import_tracking(
     Returns:
         import_id (UUID string) for tracking this import
     """
+    # Defensive guard so imports still work after a DB reset without restarting the API.
+    # This recreates import_history/mapping_errors when they were dropped by reset_dev_db.py.
+    create_import_history_table()
+
     engine = get_engine()
     import_id = str(uuid.uuid4())
     

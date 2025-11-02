@@ -33,7 +33,8 @@ def cleanup_test_tables():
         "test_corrections",
         "test_undo",
         "test_multiple_imports",
-        "test_metadata_hidden"
+        "test_metadata_hidden",
+        "test_auto_recreate",
     ]
     
     # Cleanup before test
@@ -372,6 +373,45 @@ Jane Smith,25
             result = conn.execute(text('SELECT name FROM "test_multiple_imports"'))
             name = result.fetchone()[0]
             assert name == "Jane Smith", "Should have Jane Smith remaining"
+
+
+class TestSystemTableRecovery:
+    """Ensure system tracking tables recover after external resets."""
+
+    def test_import_history_recreated_after_reset(self, cleanup_test_tables):
+        """Import should recreate tracking tables if they were dropped during runtime."""
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(text('DROP TABLE IF EXISTS "mapping_errors" CASCADE'))
+            conn.execute(text('DROP TABLE IF EXISTS "import_history" CASCADE'))
+
+        csv_content = """name,age
+Alex Reset,42
+"""
+        files = {"file": ("reset.csv", io.BytesIO(csv_content.encode()), "text/csv")}
+        data = {
+            "mapping_json": json.dumps({
+                "table_name": "test_auto_recreate",
+                "db_schema": {"name": "VARCHAR(255)", "age": "INTEGER"},
+                "mappings": {"name": "name", "age": "age"},
+                "duplicate_check": {"enabled": False}
+            })
+        }
+
+        response = client.post("/map-data", files=files, data=data)
+        assert response.status_code == 200
+
+        with engine.connect() as conn:
+            import_count = conn.execute(
+                text("SELECT COUNT(*) FROM import_history WHERE table_name = :table_name"),
+                {"table_name": "test_auto_recreate"}
+            ).scalar()
+            assert import_count == 1, "Import history should be recreated automatically"
+
+            mapping_exists = conn.execute(
+                text("SELECT to_regclass('public.mapping_errors')")
+            ).scalar()
+            assert mapping_exists is not None, "mapping_errors table should be recreated"
 
 
 class TestMetadataHidden:
