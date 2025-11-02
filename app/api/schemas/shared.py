@@ -345,6 +345,7 @@ class AnalyzeFileInteractiveRequest(BaseModel):
     user_message: Optional[str] = None
     thread_id: Optional[str] = None
     max_iterations: int = Field(default=5, ge=1, le=10)
+    previous_error_message: Optional[str] = None
 
 
 class AnalyzeFileInteractiveResponse(BaseModel):

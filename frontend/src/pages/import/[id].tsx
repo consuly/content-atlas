@@ -66,6 +66,7 @@ export const ImportMappingPage: React.FC = () => {
   const [userInput, setUserInput] = useState('');
   const [canExecute, setCanExecute] = useState(false);
   const [needsUserInput, setNeedsUserInput] = useState(true);
+  const [showInteractiveRetry, setShowInteractiveRetry] = useState(false);
   const quickActions = [
     { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
     {
@@ -168,6 +169,12 @@ export const ImportMappingPage: React.FC = () => {
     }
   }, [file, fetchMappedFileDetails]);
 
+  useEffect(() => {
+    if (file && file.status !== 'failed' && showInteractiveRetry) {
+      setShowInteractiveRetry(false);
+    }
+  }, [file, showInteractiveRetry]);
+
   const handleAutoProcess = async () => {
     if (!id) return;
     
@@ -216,7 +223,7 @@ export const ImportMappingPage: React.FC = () => {
     }
   };
 
-  const handleInteractiveStart = async () => {
+  const handleInteractiveStart = async (options?: { previousError?: string }) => {
     if (!id) return;
     
     setProcessing(true);
@@ -224,15 +231,22 @@ export const ImportMappingPage: React.FC = () => {
     setConversation([]);
     setNeedsUserInput(true);
     setResult(null);
+    setThreadId(null);
 
     try {
       const token = localStorage.getItem('refine-auth');
+      const payload: Record<string, unknown> = {
+        file_id: id,
+        max_iterations: 5,
+      };
+
+      if (options?.previousError) {
+        payload.previous_error_message = options.previousError;
+      }
+
       const response = await axios.post(
         `${API_URL}/analyze-file-interactive`,
-        {
-          file_id: id,
-          max_iterations: 5,
-        },
+        payload,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -259,6 +273,18 @@ export const ImportMappingPage: React.FC = () => {
     } finally {
       setProcessing(false);
     }
+  };
+
+  const handleRetryInteractive = async () => {
+    if (!id || processing) return;
+
+    setShowInteractiveRetry(true);
+    setActiveTab('interactive');
+
+    const cleanedError = file?.error_message?.trim();
+    await handleInteractiveStart({
+      previousError: cleanedError && cleanedError.length > 0 ? cleanedError : undefined,
+    });
   };
 
   const sendInteractiveMessage = async (messageToSend: string) => {
@@ -664,16 +690,27 @@ export const ImportMappingPage: React.FC = () => {
             <Text>{formatBytes(file.file_size)}</Text>
           </div>
 
-          <Button
-            type="primary"
-            size="large"
-            icon={<MessageOutlined />}
-            onClick={handleInteractiveStart}
-            loading={processing}
-            block
-          >
-            {processing ? 'Starting...' : 'Start Interactive Analysis'}
-          </Button>
+          {processing ? (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <Spin size="large" />
+            </div>
+          ) : (
+            <Button
+              type="primary"
+              size="large"
+              icon={<MessageOutlined />}
+              onClick={() => {
+                const previousError =
+                  file.status === 'failed' && showInteractiveRetry
+                    ? (file.error_message || '').trim()
+                    : '';
+                handleInteractiveStart(previousError ? { previousError } : undefined);
+              }}
+              block
+            >
+              Start Interactive Analysis
+            </Button>
+          )}
         </Space>
       )}
 
@@ -867,14 +904,16 @@ export const ImportMappingPage: React.FC = () => {
                 </Paragraph>
               </Card>
             )}
-
             <Space>
-              <Button 
-                type="primary" 
-                onClick={() => navigate(`/import/${id}`)}
-              >
-                Try Again
-              </Button>
+              {!showInteractiveRetry && (
+                <Button 
+                  type="primary"
+                  onClick={handleRetryInteractive}
+                  disabled={processing}
+                >
+                  {processing ? 'Starting...' : 'Try Again'}
+                </Button>
+              )}
               <Button 
                 icon={<ArrowLeftOutlined />}
                 onClick={() => navigate('/import')}
@@ -882,6 +921,16 @@ export const ImportMappingPage: React.FC = () => {
                 Back to Import List
               </Button>
             </Space>
+
+            {showInteractiveRetry && (
+              <Card 
+                title="Retry with AI Assistant" 
+                size="small" 
+                type="inner"
+              >
+                {interactiveTabContent}
+              </Card>
+            )}
           </Space>
         </Card>
       ) : file.status === 'mapped' ? (

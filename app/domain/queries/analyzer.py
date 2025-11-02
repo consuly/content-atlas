@@ -131,7 +131,8 @@ def calculate_sample_size(total_rows: int) -> int:
 
 def sample_file_data(
     records: List[Dict[str, Any]], 
-    target_sample_size: Optional[int] = None
+    target_sample_size: Optional[int] = None,
+    max_sample_size: Optional[int] = None
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Intelligent sampling strategy for file analysis.
@@ -144,6 +145,7 @@ def sample_file_data(
     Args:
         records: All records from the file
         target_sample_size: Desired sample size (auto-calculated if None)
+        max_sample_size: Optional hard cap for the computed sample size
         
     Returns:
         Tuple of (sampled_records, total_row_count)
@@ -153,6 +155,9 @@ def sample_file_data(
     # Calculate sample size if not provided
     if target_sample_size is None:
         target_sample_size = calculate_sample_size(total_rows)
+    
+    if max_sample_size is not None:
+        target_sample_size = min(target_sample_size, max_sample_size)
     
     # If file is smaller than target, use all data
     if total_rows <= target_sample_size:
@@ -905,7 +910,8 @@ def make_import_decision(
     unique_columns: Optional[List[str]] = None,
     has_header: Optional[bool] = None,
     data_domain: Optional[str] = None,
-    key_entities: Optional[List[str]] = None
+    key_entities: Optional[List[str]] = None,
+    expected_column_types: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     """
     Make final import decision with strategy and target table.
@@ -924,6 +930,8 @@ def make_import_decision(
         has_header: For CSV files, whether the file has a header row (True/False). Required for CSV files.
         data_domain: Category/domain (e.g., "contacts", "sales") - optional
         key_entities: List of key entity types (e.g., ["customer", "contact"]) - optional
+        expected_column_types: Optional map describing the detected data type for each SOURCE column
+            (e.g., {"col_0": "TIMESTAMP", "col_1": "TEXT"}). These types will guide pandas coercion.
         
     Returns:
         Confirmation of decision recorded
@@ -960,7 +968,8 @@ def make_import_decision(
         "unique_columns": unique_columns or [],
         "has_header": has_header,
         "data_domain": data_domain,
-        "key_entities": key_entities or []
+        "key_entities": key_entities or [],
+        "expected_column_types": expected_column_types or {}
     }
     
     return {
@@ -970,7 +979,8 @@ def make_import_decision(
         "target_table": target_table,
         "purpose": purpose_short,
         "column_mapping": column_mapping,
-        "has_header": has_header
+        "has_header": has_header,
+        "expected_column_types": expected_column_types or {}
     }
 
 

@@ -4,7 +4,7 @@ Auto-import execution logic for LLM-analyzed files.
 This module handles the execution of import strategies recommended by the LLM agent.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from sqlalchemy import text, inspect
 from app.domain.imports.mapper import detect_mapping_from_file
 from app.db.models import create_table_if_not_exists, insert_records, calculate_file_hash
@@ -14,10 +14,155 @@ from app.db.metadata import store_table_metadata, enrich_table_metadata
 from app.domain.imports.schema_mapper import analyze_schema_compatibility, transform_record
 from app.domain.imports.history import start_import_tracking, complete_import_tracking
 from app.utils.date import parse_flexible_date
+import pandas as pd
 import logging
 import time
 
 logger = logging.getLogger(__name__)
+
+
+_TYPE_ALIAS_MAP = {
+    "numeric": "DECIMAL",
+    "number": "DECIMAL",
+    "decimal": "DECIMAL",
+    "float": "DECIMAL",
+    "double": "DECIMAL",
+    "currency": "DECIMAL",
+    "percentage": "DECIMAL",
+    "percent": "DECIMAL",
+    "integer": "INTEGER",
+    "int": "INTEGER",
+    "bigint": "INTEGER",
+    "smallint": "INTEGER",
+    "whole": "INTEGER",
+    "timestamp": "TIMESTAMP",
+    "datetime": "TIMESTAMP",
+    "date": "DATE",
+    "time": "TIMESTAMP",
+    "text": "TEXT",
+    "string": "TEXT",
+    "varchar": "TEXT",
+    "char": "TEXT",
+    "boolean": "BOOLEAN",
+    "bool": "BOOLEAN"
+}
+
+_SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "TIMESTAMP", "DATE", "BOOLEAN"}
+
+
+def normalize_expected_type(raw_type: Optional[str]) -> str:
+    """
+    Normalize arbitrary type descriptions into the limited set we support.
+    Defaults to TEXT when no confident match is found.
+    """
+    if raw_type is None:
+        return "TEXT"
+    raw_str = str(raw_type).strip()
+    if not raw_str:
+        return "TEXT"
+    lookup_key = raw_str.lower()
+    canonical = _TYPE_ALIAS_MAP.get(lookup_key)
+    if canonical:
+        return canonical
+    upper_value = raw_str.upper()
+    return upper_value if upper_value in _SUPPORTED_TYPES else "TEXT"
+
+
+def _coerce_boolean_series(series: pd.Series) -> tuple[pd.Series, int]:
+    """Best-effort boolean coercion using common truthy/falsey tokens."""
+    true_tokens = {"true", "t", "1", "yes", "y", "on"}
+    false_tokens = {"false", "f", "0", "no", "n", "off"}
+    coerced = 0
+    values = []
+    for value in series:
+        if pd.isna(value):
+            values.append(None)
+            continue
+        token = str(value).strip().lower()
+        if token in true_tokens:
+            values.append(True)
+        elif token in false_tokens:
+            values.append(False)
+        else:
+            values.append(None)
+            coerced += 1
+    return pd.Series(values, dtype="object"), coerced
+
+
+def coerce_records_to_expected_types(
+    records: List[Dict[str, Any]],
+    expected_types: Dict[str, str]
+) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """
+    Use pandas to coerce the incoming records to the types the LLM determined.
+    Returns converted records and a summary of conversions applied.
+    """
+    if not records or not expected_types:
+        return records, {}
+    df = pd.DataFrame(records)
+    if df.empty:
+        return records, {}
+
+    conversion_summary: Dict[str, Dict[str, Any]] = {}
+    for source_col, raw_type in expected_types.items():
+        normalized_type = normalize_expected_type(raw_type)
+        column_summary: Dict[str, Any] = {"expected_type": normalized_type}
+
+        if source_col not in df.columns:
+            column_summary["status"] = "missing_source_column"
+            conversion_summary[source_col] = column_summary
+            continue
+
+        series = df[source_col]
+        try:
+            if normalized_type in {"DECIMAL", "INTEGER"}:
+                converted = pd.to_numeric(series, errors="coerce")
+                coerced_count = int((series.notna() & converted.isna()).sum())
+                column_summary["status"] = "converted"
+                if coerced_count:
+                    column_summary["coerced_values"] = coerced_count
+                df[source_col] = converted
+            elif normalized_type in {"TIMESTAMP", "DATE"}:
+                converted = pd.to_datetime(series, errors="coerce", utc=False)
+                coerced_count = int((series.notna() & converted.isna()).sum())
+                column_summary["status"] = "converted"
+                if coerced_count:
+                    column_summary["coerced_values"] = coerced_count
+                df[source_col] = converted
+            elif normalized_type == "BOOLEAN":
+                converted, coerced_count = _coerce_boolean_series(series)
+                column_summary["status"] = "converted"
+                if coerced_count:
+                    column_summary["coerced_values"] = coerced_count
+                df[source_col] = converted
+            elif normalized_type == "TEXT":
+                df[source_col] = series.astype(str).where(series.notna(), None)
+                column_summary["status"] = "converted"
+            else:
+                column_summary["status"] = "unsupported_type"
+        except Exception as exc:
+            column_summary["status"] = "error"
+            column_summary["error"] = str(exc)
+            logger.warning(
+                "AUTO-IMPORT: Failed to coerce column '%s' to type '%s': %s",
+                source_col,
+                normalized_type,
+                exc
+            )
+
+        conversion_summary[source_col] = column_summary
+
+    df = df.where(pd.notnull(df), None)
+    records_converted = df.to_dict(orient="records")
+    for record in records_converted:
+        for key, value in list(record.items()):
+            if pd.isna(value):
+                record[key] = None
+                continue
+            if isinstance(value, pd.Timestamp):
+                record[key] = value.to_pydatetime()
+
+    return records_converted, conversion_summary
 
 
 def execute_llm_import_decision(
@@ -74,6 +219,17 @@ def execute_llm_import_decision(
             records = all_records
         
         logger.info(f"AUTO-IMPORT: Parsed {len(records)} records")
+
+        expected_column_types = llm_decision.get("expected_column_types") or {}
+        column_type_enforcement_log: Dict[str, Dict[str, Any]] = {}
+        if expected_column_types:
+            records, column_type_enforcement_log = coerce_records_to_expected_types(
+                records,
+                expected_column_types
+            )
+            logger.info("AUTO-IMPORT: Applied expected column types via pandas: %s", column_type_enforcement_log)
+        else:
+            logger.info("AUTO-IMPORT: No expected column types provided by LLM; using heuristic inference.")
         
         # Build MappingConfig using LLM's column mapping
         # IMPORTANT: LLM provides {source_col: target_col} but mapper.py expects {target_col: source_col}
@@ -88,63 +244,51 @@ def execute_llm_import_decision(
         # Get target columns (keys in inverted_mapping, which were values in original column_mapping)
         target_columns = list(inverted_mapping.keys())
         
-        # Build db_schema - infer types from data using conservative heuristics
+        # Build db_schema prioritizing LLM expectations and falling back to heuristics where absent
         import re
-        db_schema = {}
+        db_schema: Dict[str, str] = {}
         for target_col in target_columns:
-            # Find source column that maps to this target
             source_col = next((k for k, v in column_mapping.items() if v == target_col), None)
-            if source_col and records:
-                # Sample values from source column
-                sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
-                subset = sample_values[:20]
-                
-                # Convert to strings for pattern matching
-                sample_str = [str(v) for v in subset]
-                
-                # Infer type (conservative approach)
-                # Check for phone number patterns first (must be TEXT, not NUMERIC)
-                phone_patterns = [
-                    r'^\d{3}\.\d{3}\.\d{4}$',  # 415.610.7325
-                    r'^\d{3}-\d{3}-\d{4}$',    # 415-610-7325
-                    r'^\(\d{3}\)\s*\d{3}-\d{4}$',  # (415) 610-7325
-                    r'^\d{3}\s+\d{3}\s+\d{4}$',  # 415 610 7325
-                    r'^\+?\d{1,3}[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$',  # International formats
-                ]
-                is_phone = False
-                for pattern in phone_patterns:
-                    if any(re.match(pattern, s) for s in sample_str):
-                        is_phone = True
-                        break
-                
-                if is_phone:
-                    db_schema[target_col] = "TEXT"
-                elif any('%' in s for s in sample_str):
-                    # Percentage values - use TEXT
-                    db_schema[target_col] = "TEXT"
-                elif any('@' in str(v) for v in sample_values[:10]):
-                    # Likely email addresses - use TEXT for unlimited length
-                    db_schema[target_col] = "TEXT"
-                else:
-                    # Detect date-like values using flexible parser
-                    parsed_samples = [
-                        parse_flexible_date(val)
-                        for val in subset
+            schema_type: Optional[str] = None
+
+            if source_col:
+                source_expected = expected_column_types.get(source_col)
+                if source_expected:
+                    schema_type = normalize_expected_type(source_expected)
+
+            if not schema_type:
+                if source_col and records:
+                    sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
+                    subset = sample_values[:20]
+                    sample_str = [str(v) for v in subset]
+
+                    phone_patterns = [
+                        r'^\d{3}\.\d{3}\.\d{4}$',
+                        r'^\d{3}-\d{3}-\d{4}$',
+                        r'^\(\d{3}\)\s*\d{3}-\d{4}$',
+                        r'^\d{3}\s+\d{3}\s+\d{4}$',
+                        r'^\+?\d{1,3}[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$',
                     ]
-                    successful_parses = [ps for ps in parsed_samples if ps is not None]
-                    
-                    if successful_parses and len(successful_parses) >= max(1, len(subset) // 2):
-                        db_schema[target_col] = "TIMESTAMP"
-                    elif subset and all(isinstance(v, (int, float)) for v in subset if v is not None):
-                        # Numeric data (only if not phone/percentage/email)
-                        db_schema[target_col] = "DECIMAL"
+                    is_phone = any(re.match(pattern, s) for pattern in phone_patterns for s in sample_str)
+
+                    if is_phone or any('%' in s for s in sample_str) or any('@' in s for s in sample_str[:10]):
+                        schema_type = "TEXT"
                     else:
-                        # Default to TEXT when no other signal is detected
-                        db_schema[target_col] = "TEXT"
-            else:
-                db_schema[target_col] = "TEXT"  # Default
+                        parsed_samples = [parse_flexible_date(val) for val in subset]
+                        successful_parses = [ps for ps in parsed_samples if ps is not None]
+
+                        if successful_parses and len(successful_parses) >= max(1, len(subset) // 2):
+                            schema_type = "TIMESTAMP"
+                        elif subset and all(isinstance(v, (int, float)) for v in subset if v is not None):
+                            schema_type = "DECIMAL"
+                        else:
+                            schema_type = "TEXT"
+                else:
+                    schema_type = "TEXT"
+
+            db_schema[target_col] = schema_type or "TEXT"
         
-        logger.info(f"AUTO-IMPORT: Inferred schema: {db_schema}")
+        logger.info(f"AUTO-IMPORT: Resolved schema types: {db_schema}")
         
         # IMPORTANT: For merging into existing tables, we need to check if table exists
         # and use its schema instead of creating a new one
