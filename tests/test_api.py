@@ -516,7 +516,8 @@ def test_datetime_standardization():
     transformed_record, errors = apply_rules(record_with_error, rules)
     assert transformed_record['event_date'] is None  # Failed conversion
     assert len(errors) == 1
-    assert 'Failed to convert datetime field' in errors[0]
+    assert errors[0]["type"] == "datetime_conversion"
+    assert 'Failed to convert datetime field' in errors[0]["message"]
 
     # Test map_data with datetime transformations
     records = [
@@ -541,4 +542,5 @@ def test_datetime_standardization():
 
     # Check that errors were collected
     assert len(all_errors) == 1
-    assert 'Failed to convert datetime field' in all_errors[0]
+    assert all_errors[0]["type"] == "datetime_conversion"
+    assert 'Failed to convert datetime field' in all_errors[0]["message"]

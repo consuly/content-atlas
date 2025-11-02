@@ -930,7 +930,7 @@ def make_import_decision(
         has_header: For CSV files, whether the file has a header row (True/False). Required for CSV files.
         data_domain: Category/domain (e.g., "contacts", "sales") - optional
         key_entities: List of key entity types (e.g., ["customer", "contact"]) - optional
-        expected_column_types: Optional map describing the detected data type for each SOURCE column
+        expected_column_types: REQUIRED map describing the detected data type for each SOURCE column
             (e.g., {"col_0": "TIMESTAMP", "col_1": "TEXT"}). These types will guide pandas coercion.
         
     Returns:
@@ -958,6 +958,16 @@ def make_import_decision(
             "error": "has_header is required for CSV files. Specify True if file has headers, False if headerless."
         }
     
+    expected_types = expected_column_types or {}
+    missing_expected = [source_col for source_col in column_mapping.keys() if source_col not in expected_types]
+    if missing_expected:
+        return {
+            "error": (
+                "expected_column_types must include every SOURCE column from column_mapping. "
+                f"Missing entries for: {missing_expected}"
+            )
+        }
+
     # Store decision in context (will be retrieved by caller)
     context.file_metadata["llm_decision"] = {
         "strategy": strategy,
@@ -969,7 +979,7 @@ def make_import_decision(
         "has_header": has_header,
         "data_domain": data_domain,
         "key_entities": key_entities or [],
-        "expected_column_types": expected_column_types or {}
+        "expected_column_types": expected_types
     }
     
     return {
@@ -980,7 +990,7 @@ def make_import_decision(
         "purpose": purpose_short,
         "column_mapping": column_mapping,
         "has_header": has_header,
-        "expected_column_types": expected_column_types or {}
+        "expected_column_types": expected_types
     }
 
 
@@ -1088,6 +1098,11 @@ Analysis Process (SEMANTIC-FIRST):
 7. Call resolve_conflict if needed
 8. **FINAL AND REQUIRED**: Call make_import_decision with strategy, target_table, AND purpose information
 
+Schema Remediation Guidance:
+- When the schema context lists "Recent Import Issues (Type Mismatches)", you must evaluate those columns before recommending a merge.
+- Propose a clear fix: create a new column with the appropriate type, migrate existing values into it, and retire the old column so future imports succeed.
+- Explain how the mismatch blocked previous imports and why the migration resolves it.
+
 Decision Priority (MOST IMPORTANT):
 - **Semantic match + reasonable structure = MERGE** (even with column name differences)
 - **Semantic match + incompatible structure = You decide if reconciliation is possible**
@@ -1123,6 +1138,10 @@ You MUST call the make_import_decision tool before providing your final response
 3. **has_header** (CSV files only): True if file has headers, False if headerless
    - This tells the system how to parse the CSV file
    - Use analyze_raw_csv_structure tool to determine this
+4. **expected_column_types**: Provide a SOURCE-column keyed map with detected types
+   - Example: {{"email": "TEXT", "signup_date": "TIMESTAMP"}}
+   - Supported values: TEXT, INTEGER, DECIMAL, TIMESTAMP, DATE, BOOLEAN
+   - If uncertain, default to TEXT rather than omitting the column. Never skip a mapped source column.
 
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:
