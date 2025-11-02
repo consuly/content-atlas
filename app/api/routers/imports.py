@@ -108,7 +108,10 @@ async def map_data_endpoint(
             message="Data mapped and inserted successfully",
             records_processed=result["records_processed"],
             duplicates_skipped=result.get("duplicates_skipped", 0),
-            table_name=result["table_name"]
+            table_name=result["table_name"],
+            llm_followup=result.get("llm_followup"),
+            mapping_errors=result.get("mapping_errors"),
+            type_mismatch_summary=result.get("type_mismatch_summary")
         )
 
     except FileAlreadyImportedException as e:
@@ -159,7 +162,10 @@ async def map_b2_data_endpoint(
             success=True,
             message="B2 data mapped and inserted successfully",
             records_processed=result["records_processed"],
-            table_name=result["table_name"]
+            table_name=result["table_name"],
+            llm_followup=result.get("llm_followup"),
+            mapping_errors=result.get("mapping_errors"),
+            type_mismatch_summary=result.get("type_mismatch_summary")
         )
 
     except FileAlreadyImportedException as e:

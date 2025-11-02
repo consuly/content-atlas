@@ -14,6 +14,25 @@ class DuplicateCheckConfig(BaseModel):
     error_message: Optional[str] = None  # Custom error message for duplicates
 
 
+class MappingErrorDetail(BaseModel):
+    """Structured information about mapping errors surfaced during import."""
+    type: str
+    message: str
+    column: Optional[str] = None
+    expected_type: Optional[str] = None
+    value: Optional[Any] = None
+    source_field: Optional[str] = None
+    target_field: Optional[str] = None
+
+
+class TypeMismatchSummary(BaseModel):
+    """Aggregated summary of type mismatch errors for remediation planning."""
+    column: str
+    expected_type: Optional[str] = None
+    occurrences: int = 0
+    samples: List[str] = Field(default_factory=list)
+
+
 class MappingConfig(BaseModel):
     table_name: str
     db_schema: Dict[str, str]
@@ -39,6 +58,8 @@ class MapDataResponse(BaseModel):
     can_execute: Optional[bool] = None
     llm_decision: Optional[Dict[str, Any]] = None
     thread_id: Optional[str] = None
+    mapping_errors: Optional[List[MappingErrorDetail]] = None
+    type_mismatch_summary: Optional[List[TypeMismatchSummary]] = None
 
 
 class MapB2DataRequest(BaseModel):

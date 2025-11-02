@@ -3,13 +3,40 @@ import pandas as pd
 import io
 import logging
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
+import numbers
 from app.api.schemas.shared import MappingConfig
 from app.utils.date import parse_flexible_date, detect_date_column
 
 logger = logging.getLogger(__name__)
 
 
-def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List[Dict[str, Any]], List[str]]:
+def _build_mapping_error(
+    *,
+    error_type: str,
+    message: str,
+    column: Optional[str] = None,
+    expected_type: Optional[str] = None,
+    value: Optional[Any] = None
+) -> Dict[str, Any]:
+    """Create a structured error payload for downstream processing."""
+    error_payload: Dict[str, Any] = {
+        "type": error_type,
+        "message": message
+    }
+    if column is not None:
+        error_payload["column"] = column
+    if expected_type is not None:
+        error_payload["expected_type"] = expected_type
+    if value is not None:
+        if isinstance(value, (int, float, str, bool)):
+            error_payload["value"] = value
+        else:
+            error_payload["value"] = str(value)
+    return error_payload
+
+
+def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map input data according to the configuration.
     
@@ -22,25 +49,37 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     Returns:
         Tuple of (mapped_records, list_of_all_errors)
     """
-    all_errors = []
+    all_errors: List[Dict[str, Any]] = []
     
     # Pre-compute mapping items ONCE (not N times in loop)
     # Convert to tuple for faster iteration
     mapping_items = tuple(config.mappings.items())
     
-    # Identify date/timestamp columns from schema for automatic conversion
+    # Identify date/timestamp/integer columns from schema for automatic conversion
     date_columns = set()
+    integer_columns = set()
+    numeric_columns = set()
     if config.db_schema:
         for col_name, col_type in config.db_schema.items():
-            if col_type and ('TIMESTAMP' in col_type.upper() or 'DATE' in col_type.upper()):
+            if not col_type:
+                continue
+            col_type_upper = col_type.upper()
+            if 'TIMESTAMP' in col_type_upper or 'DATE' in col_type_upper:
                 date_columns.add(col_name)
+            if 'INT' in col_type_upper:
+                integer_columns.add(col_name)
+                numeric_columns.add(col_name)
+            if any(keyword in col_type_upper for keyword in ('DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE', 'REAL')):
+                numeric_columns.add(col_name)
     
     # Check if we need to apply rules or date conversions
     has_rules = bool(config.rules)
     has_date_columns = bool(date_columns)
+    has_integer_columns = bool(integer_columns)
+    has_numeric_columns = bool(numeric_columns - integer_columns)
     
-    # Fast path: no rules and no date columns to convert
-    if not has_rules and not has_date_columns:
+    # Fast path: no rules and no date/integer columns to convert
+    if not has_rules and not has_date_columns and not has_integer_columns and not has_numeric_columns:
         # Use list comprehension - significantly faster than append loop
         mapped_records = [
             {output_col: record.get(input_field) 
@@ -55,7 +94,151 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
         # Use dict comprehension for mapping (faster than loop with assignment)
         mapped_record = {output_col: record.get(input_field) 
                         for output_col, input_field in mapping_items}
-        
+        # Normalize integer columns to avoid float artifacts like 840.0
+        if integer_columns:
+            for col_name in integer_columns:
+                if col_name not in mapped_record:
+                    continue
+                value = mapped_record[col_name]
+                if isinstance(value, bool):
+                    continue  # bool should not be coerced
+                if value is None:
+                    continue
+                if isinstance(value, (int,)):
+                    continue
+                if isinstance(value, Decimal):
+                    if value == value.to_integral():
+                        mapped_record[col_name] = int(value)
+                    else:
+                        message = f"Non-integer decimal value '{value}' detected for integer column '{col_name}'. Value set to None."
+                        all_errors.append(_build_mapping_error(
+                            error_type="type_mismatch",
+                            message=message,
+                            column=col_name,
+                            expected_type=config.db_schema.get(col_name),
+                            value=value
+                        ))
+                        logger.warning(message)
+                        mapped_record[col_name] = None
+                    continue
+                if isinstance(value, numbers.Real):
+                    if pd.isna(value):
+                        mapped_record[col_name] = None
+                        continue
+                    if float(value).is_integer():
+                        mapped_record[col_name] = int(value)
+                    else:
+                        message = f"Non-integer numeric value '{value}' detected for integer column '{col_name}'. Value set to None."
+                        all_errors.append(_build_mapping_error(
+                            error_type="type_mismatch",
+                            message=message,
+                            column=col_name,
+                            expected_type=config.db_schema.get(col_name),
+                            value=value
+                        ))
+                        logger.warning(message)
+                        mapped_record[col_name] = None
+                    continue
+                if isinstance(value, str):
+                    value_str = value.strip()
+                    if not value_str:
+                        mapped_record[col_name] = None
+                        continue
+                    normalized_str = value_str.replace(',', '')
+                    if normalized_str.startswith('$'):
+                        normalized_str = normalized_str[1:]
+                    if normalized_str.startswith('(') and normalized_str.endswith(')'):
+                        normalized_str = f"-{normalized_str[1:-1]}"
+                    try:
+                        numeric_value = Decimal(normalized_str)
+                    except InvalidOperation:
+                        message = f"Non-numeric value '{value}' detected for integer column '{col_name}'. Value set to None."
+                        all_errors.append(_build_mapping_error(
+                            error_type="type_mismatch",
+                            message=message,
+                            column=col_name,
+                            expected_type=config.db_schema.get(col_name),
+                            value=value
+                        ))
+                        logger.warning(message)
+                        mapped_record[col_name] = None
+                        continue
+                    if numeric_value == numeric_value.to_integral():
+                        mapped_record[col_name] = int(numeric_value)
+                    else:
+                        message = f"Value '{value}' is not an integer for column '{col_name}'. Value set to None."
+                        all_errors.append(_build_mapping_error(
+                            error_type="type_mismatch",
+                            message=message,
+                            column=col_name,
+                            expected_type=config.db_schema.get(col_name),
+                            value=value
+                        ))
+                        logger.warning(message)
+                        mapped_record[col_name] = None
+                    continue
+                # Unsupported type for integer column
+                mapped_record[col_name] = None
+        # Normalize other numeric columns (DECIMAL/NUMERIC/FLOAT/DOUBLE/REAL) from strings
+        if numeric_columns:
+            for col_name in numeric_columns - integer_columns:
+                if col_name not in mapped_record:
+                    continue
+                value = mapped_record[col_name]
+                if value is None or isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float, Decimal)):
+                    continue
+                if isinstance(value, numbers.Real):
+                    if pd.isna(value):
+                        mapped_record[col_name] = None
+                    continue
+                if isinstance(value, str):
+                    value_str = value.strip()
+                    if not value_str:
+                        mapped_record[col_name] = None
+                        continue
+                    normalized_str = value_str.replace(',', '')
+                    if normalized_str.startswith('$'):
+                        normalized_str = normalized_str[1:]
+                    if normalized_str.startswith('(') and normalized_str.endswith(')'):
+                        normalized_str = f"-{normalized_str[1:-1]}"
+                    try:
+                        mapped_record[col_name] = Decimal(normalized_str)
+                    except InvalidOperation:
+                        message = f"Non-numeric value '{value}' detected for numeric column '{col_name}'. Value set to None."
+                        all_errors.append(_build_mapping_error(
+                            error_type="type_mismatch",
+                            message=message,
+                            column=col_name,
+                            expected_type=config.db_schema.get(col_name),
+                            value=value
+                        ))
+                        logger.warning(message)
+                        mapped_record[col_name] = None
+
+        # Convert any integral numeric values (even DECIMAL columns) to ints for display consistency
+        for col_name, value in list(mapped_record.items()):
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                continue  # preserve boolean True/False
+            if isinstance(value, int):
+                continue
+            if isinstance(value, Decimal):
+                if value == value.to_integral():
+                    mapped_record[col_name] = int(value)
+                continue
+            if isinstance(value, numbers.Real):
+                # pandas may surface NaN as float; guard before converting
+                if pd.isna(value):
+                    mapped_record[col_name] = None
+                    continue
+                if float(value).is_integer():
+                    mapped_record[col_name] = int(value)
+                else:
+                    mapped_record[col_name] = float(value)
+
         # Apply automatic date conversion for TIMESTAMP/DATE columns
         if has_date_columns:
             for col_name in date_columns:
@@ -64,26 +247,32 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                     if original_value is not None:
                         # Defensive check: skip obviously non-date values
                         value_str = str(original_value).strip()
-                        
+
                         # Skip if value contains email pattern
                         if '@' in value_str:
                             logger.info(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be an email")
                             mapped_record[col_name] = original_value
                             continue
-                        
+
                         # Skip if value looks like a name (single word with capital letter, no numbers)
                         if value_str and value_str[0].isupper() and value_str.isalpha() and len(value_str) < 30:
                             logger.info(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be a name")
                             mapped_record[col_name] = original_value
                             continue
-                        
+
                         # Try to convert the date
                         converted_value = parse_flexible_date(original_value)
                         if converted_value is None and value_str:
                             # Conversion failed for non-empty value
-                            error_msg = f"Failed to convert datetime field '{col_name}' with value '{original_value}'"
-                            all_errors.append(error_msg)
-                            logger.warning(error_msg)
+                            message = f"Failed to convert datetime field '{col_name}' with value '{original_value}'"
+                            all_errors.append(_build_mapping_error(
+                                error_type="datetime_conversion",
+                                message=message,
+                                column=col_name,
+                                expected_type=config.db_schema.get(col_name),
+                                value=original_value
+                            ))
+                            logger.warning(message)
                         mapped_record[col_name] = converted_value
         
         # Apply rules if present
@@ -96,7 +285,7 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     return mapped_records, all_errors
 
 
-def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.DataFrame, List[str]]:
+def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
     """
     Apply transformation rules to the DataFrame using vectorized operations.
     Much faster than row-by-row processing.
@@ -104,7 +293,7 @@ def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.
     Returns:
         Tuple of (transformed_dataframe, list_of_errors)
     """
-    errors = []
+    errors: List[Dict[str, Any]] = []
     transformations = rules.get('transformations', [])
     datetime_transformations = rules.get('datetime_transformations', [])
 
@@ -139,9 +328,13 @@ def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.
             failed_count = conversion_failed.sum()
             
             if failed_count > 0:
-                error_msg = f"Failed to convert {failed_count} datetime values in field '{field}'"
-                errors.append(error_msg)
-                logger.warning(error_msg)
+                message = f"Failed to convert {failed_count} datetime values in field '{field}'"
+                errors.append(_build_mapping_error(
+                    error_type="datetime_conversion",
+                    message=message,
+                    column=field
+                ))
+                logger.warning(message)
             
             # Format to ISO 8601
             # For date-only values, use date format; for datetime, use full ISO format
@@ -154,14 +347,14 @@ def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.
     return df, errors
 
 
-def apply_rules(record: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+def apply_rules(record: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Apply transformation rules to the record (legacy row-by-row version).
 
     Returns:
         Tuple of (transformed_record, list_of_errors)
     """
-    errors = []
+    errors: List[Dict[str, Any]] = []
     transformations = rules.get('transformations', [])
     datetime_transformations = rules.get('datetime_transformations', [])
 
@@ -185,9 +378,14 @@ def apply_rules(record: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[Dict[str
 
             if standardized_value is None and original_value is not None and str(original_value).strip():
                 # Conversion failed for a non-empty value
-                error_msg = f"Failed to convert datetime field '{field}' with value '{original_value}'"
-                errors.append(error_msg)
-                logger.warning(error_msg)
+                message = f"Failed to convert datetime field '{field}' with value '{original_value}'"
+                errors.append(_build_mapping_error(
+                    error_type="datetime_conversion",
+                    message=message,
+                    column=field,
+                    value=original_value
+                ))
+                logger.warning(message)
 
             # Always update the record (None for failed conversions, standardized value for success)
             record[field] = standardized_value

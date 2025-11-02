@@ -30,6 +30,20 @@ def get_database_schema() -> Dict[str, Any]:
             "relationships": []
         }
 
+        # Fetch latest import metadata (type mismatch summaries, etc.) for each table
+        import_metadata: Dict[str, Any] = {}
+        import_meta_sql = """
+            SELECT DISTINCT ON (table_name) table_name, metadata
+            FROM import_history
+            WHERE metadata IS NOT NULL
+            ORDER BY table_name, updated_at DESC
+        """
+        import_meta_result = conn.execute(text(import_meta_sql))
+        for row in import_meta_result:
+            metadata_payload = row[1]
+            if metadata_payload:
+                import_metadata[row[0]] = metadata_payload
+
         for table_name in tables:
             # Get column information
             columns_result = conn.execute(text("""
@@ -69,6 +83,9 @@ def get_database_schema() -> Dict[str, Any]:
                 "metadata": None  # Will be populated below
             }
 
+            if table_name in import_metadata:
+                schema_info["tables"][table_name]["latest_import_metadata"] = import_metadata[table_name]
+
         # Get foreign key relationships
         fk_result = conn.execute(text("""
             SELECT
@@ -99,8 +116,15 @@ def get_database_schema() -> Dict[str, Any]:
     try:
         all_metadata = get_all_table_metadata()
         for table_name in schema_info["tables"]:
+            table_info = schema_info["tables"][table_name]
             if table_name in all_metadata:
-                schema_info["tables"][table_name]["metadata"] = all_metadata[table_name]
+                table_info["metadata"] = all_metadata[table_name]
+            # Attach recent import metadata (type mismatches, etc.) to metadata dict for LLM context
+            if "latest_import_metadata" in table_info:
+                existing_metadata = table_info.get("metadata") or {}
+                existing_metadata["latest_import_metadata"] = table_info["latest_import_metadata"]
+                table_info["metadata"] = existing_metadata
+                del table_info["latest_import_metadata"]
     except Exception as e:
         # Metadata table might not exist yet, that's okay
         pass
@@ -127,6 +151,21 @@ def format_schema_for_prompt(schema_info: Dict[str, Any]) -> str:
             if metadata.get("key_entities"):
                 entities = ", ".join(metadata.get("key_entities", []))
                 lines.append(f"- **KEY ENTITIES**: {entities}")
+            latest_import = metadata.get("latest_import_metadata")
+            if latest_import and isinstance(latest_import, dict):
+                mismatches = latest_import.get("type_mismatch_summary")
+                if mismatches:
+                    lines.append("- Recent Import Issues (Type Mismatches):")
+                    for mismatch in mismatches:
+                        column = mismatch.get("column", "unknown")
+                        expected = mismatch.get("expected_type") or "unspecified"
+                        samples = mismatch.get("samples") or []
+                        occurrences = mismatch.get("occurrences")
+                        sample_str = ", ".join(samples[:3]) if samples else "n/a"
+                        summary_line = f"  - {column} expected {expected}; sample values: {sample_str}"
+                        if occurrences:
+                            summary_line += f" (occurrences: {occurrences})"
+                        lines.append(summary_line)
         
         lines.append("- Columns:")
 

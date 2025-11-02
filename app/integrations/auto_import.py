@@ -50,6 +50,44 @@ _TYPE_ALIAS_MAP = {
 _SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "TIMESTAMP", "DATE", "BOOLEAN"}
 
 
+def _is_numeric_like(value: Any) -> bool:
+    """Return True when the value looks like a plain numeric token."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return True
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return False
+        try:
+            float(token)
+            return True
+        except ValueError:
+            return False
+    return False
+
+
+def _is_integer_like(value: Any) -> bool:
+    """Return True when the value represents an integer."""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return float(value).is_integer()
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return False
+        if token[0] in {"+", "-"}:
+            token = token[1:]
+        return token.isdigit()
+    return False
+
+
 def normalize_expected_type(raw_type: Optional[str]) -> str:
     """
     Normalize arbitrary type descriptions into the limited set we support.
@@ -271,16 +309,21 @@ def execute_llm_import_decision(
                     ]
                     is_phone = any(re.match(pattern, s) for pattern in phone_patterns for s in sample_str)
 
+                    all_numeric = bool(subset) and all(_is_numeric_like(v) for v in subset)
+
                     if is_phone or any('%' in s for s in sample_str) or any('@' in s for s in sample_str[:10]):
                         schema_type = "TEXT"
+                    elif all_numeric:
+                        if all(_is_integer_like(v) for v in subset):
+                            schema_type = "INTEGER"
+                        else:
+                            schema_type = "DECIMAL"
                     else:
                         parsed_samples = [parse_flexible_date(val) for val in subset]
                         successful_parses = [ps for ps in parsed_samples if ps is not None]
 
                         if successful_parses and len(successful_parses) >= max(1, len(subset) // 2):
                             schema_type = "TIMESTAMP"
-                        elif subset and all(isinstance(v, (int, float)) for v in subset if v is not None):
-                            schema_type = "DECIMAL"
                         else:
                             schema_type = "TEXT"
                 else:
@@ -373,7 +416,9 @@ def execute_llm_import_decision(
             "strategy_executed": strategy,
             "table_name": target_table,
             "records_processed": result["records_processed"],
-            "mapping_errors": result.get("mapping_errors", [])
+            "mapping_errors": result.get("mapping_errors", []),
+            "type_mismatch_summary": result.get("type_mismatch_summary", []),
+            "llm_followup": result.get("llm_followup")
         }
         
     except Exception as e:

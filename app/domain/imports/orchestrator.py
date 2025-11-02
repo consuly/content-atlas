@@ -41,6 +41,60 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 20000
 
 
+def _summarize_type_mismatches(mapping_errors: List[Any]) -> List[Dict[str, Any]]:
+    """Aggregate type mismatch errors for easier remediation suggestions."""
+    summary: Dict[str, Dict[str, Any]] = {}
+    for error in mapping_errors:
+        if not isinstance(error, dict):
+            continue
+        if error.get("type") != "type_mismatch":
+            continue
+        column = error.get("column")
+        if not column:
+            continue
+        entry = summary.setdefault(column, {
+            "column": column,
+            "expected_type": error.get("expected_type"),
+            "samples": [],
+            "occurrences": 0
+        })
+        entry["occurrences"] += 1
+        value = error.get("value")
+        if value is not None:
+            value_str = str(value)
+            if value_str not in entry["samples"] and len(entry["samples"]) < 5:
+                entry["samples"].append(value_str)
+    return sorted(summary.values(), key=lambda item: item["column"])
+
+
+def _build_type_mismatch_followup(table_name: str, summary: List[Dict[str, Any]]) -> str:
+    """Craft a follow-up message explaining type mismatches and next steps."""
+    if not summary:
+        return ""
+
+    lines = [
+        "WARNING: Import blocked by column type mismatches.",
+        "Columns causing issues:"
+    ]
+    for item in summary:
+        expected = item.get("expected_type") or "unknown type"
+        samples = item.get("samples") or []
+        sample_str = ", ".join(samples[:3]) if samples else "n/a"
+        lines.append(
+            f"- {item['column']} (expected {expected}; sample values: {sample_str})"
+        )
+    lines.append(
+        "Ask the LLM to propose a schema migration plan: "
+        "create a new column with the correct type, migrate existing values, "
+        "and retire the old column so future imports succeed."
+    )
+    lines.append(
+        "Provide the column details above when requesting the migration."
+    )
+
+    return "\n".join(lines)
+
+
 def detect_file_type(filename: str) -> str:
     """Detect file type from filename."""
     if filename.endswith('.csv'):
@@ -85,7 +139,7 @@ def _map_chunk(
     chunk_records: List[Dict[str, Any]],
     config: MappingConfig,
     chunk_num: int
-) -> Tuple[int, List[Dict[str, Any]], List[str]]:
+) -> Tuple[int, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map a single chunk of records. Designed to be called in parallel.
     
@@ -115,7 +169,7 @@ def _map_chunks_parallel(
     raw_chunks: List[List[Dict[str, Any]]],
     config: MappingConfig,
     max_workers: int = 4
-) -> Tuple[List[Dict[str, Any]], List[str]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map multiple chunks in parallel and aggregate results.
     
@@ -310,6 +364,7 @@ def execute_data_import(
     records = []
     
     try:
+        type_mismatch_summary: List[Dict[str, Any]] = []
         # Detect file type
         file_type = detect_file_type(file_name)
         
@@ -381,6 +436,7 @@ def execute_data_import(
                 # Use sequential mapping for small datasets
                 logger.info(f"Using sequential mapping for {total_rows} records")
                 mapped_records, mapping_errors = map_data(records, mapping_config)
+            type_mismatch_summary = _summarize_type_mismatches(mapping_errors)
             
             map_time = time.time() - map_start
             records_per_sec = len(mapped_records) / map_time if map_time > 0 else 0
@@ -397,13 +453,26 @@ def execute_data_import(
             # Convert error strings to structured format for storage
             error_records = []
             for i, error_msg in enumerate(mapping_errors):
+                if isinstance(error_msg, dict):
+                    error_message = error_msg.get("message", str(error_msg))
+                    error_type = error_msg.get("type", "mapping_error")
+                    source_field = error_msg.get("column") or error_msg.get("source_field")
+                    target_field = error_msg.get("target_field")
+                    source_value = error_msg.get("value")
+                else:
+                    error_message = str(error_msg)
+                    error_type = "mapping_error"
+                    source_field = None
+                    target_field = None
+                    source_value = None
+
                 error_records.append({
                     'record_number': i + 1,
-                    'error_type': 'mapping_error',
-                    'error_message': error_msg,
-                    'source_field': None,
-                    'target_field': None,
-                    'source_value': None,
+                    'error_type': error_type,
+                    'error_message': error_message,
+                    'source_field': source_field,
+                    'target_field': target_field,
+                    'source_value': source_value,
                     'chunk_number': None
                 })
             
@@ -481,8 +550,13 @@ def execute_data_import(
                 )
                 logger.info(f"Enriched metadata for table '{mapping_config.table_name}'")
         
-        # Complete import tracking
+        # Complete import tracking with structured metadata
         duration = time.time() - start_time
+        followup_message = _build_type_mismatch_followup(mapping_config.table_name, type_mismatch_summary)
+        metadata_payload: Optional[Dict[str, Any]] = None
+        if type_mismatch_summary:
+            metadata_payload = {"type_mismatch_summary": type_mismatch_summary}
+
         complete_import_tracking(
             import_id=import_id,
             status="success",
@@ -493,9 +567,10 @@ def execute_data_import(
             duplicates_found=duplicates_skipped,
             duration_seconds=duration,
             parsing_time_seconds=parse_time,
-            insert_time_seconds=insert_time
+            insert_time_seconds=insert_time,
+            metadata=metadata_payload
         )
-        
+
         logger.info(f"Import completed successfully in {duration:.2f}s")
         
         return {
@@ -504,7 +579,9 @@ def execute_data_import(
             "duplicates_skipped": duplicates_skipped,
             "table_name": mapping_config.table_name,
             "mapping_errors": mapping_errors if mapping_errors else [],
-            "duration_seconds": duration
+            "type_mismatch_summary": type_mismatch_summary,
+            "duration_seconds": duration,
+            "llm_followup": followup_message or None
         }
         
     except FileAlreadyImportedException as e:
