@@ -1466,9 +1466,16 @@ def create_file_analyzer_agent(max_iterations: int = 5, interactive_mode: bool =
     Returns:
         Configured LangChain agent with memory and retry support
     """
+    api_key = (settings.anthropic_api_key or "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "Anthropic API key not configured. Set ANTHROPIC_API_KEY in your environment "
+            "or update settings.anthropic_api_key to enable LLM analysis."
+        )
+
     model = ChatAnthropic(
         model="claude-haiku-4-5-20251001",  # Much faster than Sonnet
-        api_key=settings.anthropic_api_key,
+        api_key=api_key,
         temperature=0,  # Deterministic for consistent decisions
         max_tokens=4096
     )
@@ -1595,14 +1602,17 @@ INTERACTIVE MODE COLLABORATION RULES:
 - When informed that execution failed (messages beginning with "EXECUTION_FAILED"), diagnose the failure, propose concrete fixes, and wait for the user's confirmation before finalizing a new decision.
 - Always respond with: (1) a concise status summary, (2) the recommended plan or revision notes, and (3) a numbered list of suggested next actions for the user.
 """
-        system_prompt = f"{base_system_prompt}{interactive_addendum}"
+        combined_prompt = f"{base_system_prompt}{interactive_addendum}"
     else:
-        system_prompt = base_system_prompt
+        combined_prompt = base_system_prompt
+
+    # Use direct replacement to avoid str.format collisions with literal braces in prompt examples.
+    system_prompt = combined_prompt.replace("{max_iterations}", str(max_iterations))
 
     agent = create_agent(
         model=model,
         tools=tools,
-        system_prompt=system_prompt.format(max_iterations=max_iterations),
+        system_prompt=system_prompt,
         state_schema=FileAnalysisState,
         checkpointer=_file_analyzer_checkpointer,
         middleware=[track_analysis_attempts]
@@ -1704,9 +1714,10 @@ Please analyze the file structure, compare it with existing tables, and recommen
         }
         
     except Exception as e:
-        logger.error(f"Error analyzing file: {str(e)}", exc_info=True)
+        error_detail = f"{e.__class__.__name__}: {e}"
+        logger.error(f"Error analyzing file: {error_detail}", exc_info=True)
         return {
             "success": False,
-            "error": str(e),
-            "response": f"Analysis failed: {str(e)}"
+            "error": error_detail,
+            "response": f"Analysis failed: {error_detail}"
         }
