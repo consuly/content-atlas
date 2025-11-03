@@ -377,7 +377,7 @@ def analyze_raw_csv_structure(
     
     if not raw_rows:
         # Fallback to analyzing processed sample data
-        return infer_schema_from_headerless_data(runtime)
+        return _infer_schema_from_headerless_data_impl(runtime)
     
     if len(raw_rows) < 2:
         return {
@@ -1082,8 +1082,7 @@ def _normalize_column_transformations_for_decision(
     return normalized
 
 
-@tool
-def infer_schema_from_headerless_data(
+def _infer_schema_from_headerless_data_impl(
     runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
 ) -> Dict[str, Any]:
     """
@@ -1228,6 +1227,19 @@ def infer_schema_from_headerless_data(
         "column_count": len(columns),
         "recommendation": "Use inferred semantic names for mapping to existing tables"
     }
+
+
+@tool
+def infer_schema_from_headerless_data(
+    runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
+) -> Dict[str, Any]:
+    """
+    DEPRECATED: Use analyze_raw_csv_structure instead.
+
+    This tool is kept for backward compatibility but analyze_raw_csv_structure
+    provides more comprehensive analysis.
+    """
+    return _infer_schema_from_headerless_data_impl(runtime)
 
 
 @tool
