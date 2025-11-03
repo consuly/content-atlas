@@ -2,6 +2,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 import io
 import logging
+import json
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import numbers
@@ -73,13 +75,16 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                 numeric_columns.add(col_name)
     
     # Check if we need to apply rules or date conversions
-    has_rules = bool(config.rules)
+    rules = config.rules or {}
+    has_rules = bool(rules)
     has_date_columns = bool(date_columns)
     has_integer_columns = bool(integer_columns)
     has_numeric_columns = bool(numeric_columns - integer_columns)
+    pre_map_transformations = rules.get("column_transformations", [])
+    has_pre_map_transformations = bool(pre_map_transformations)
     
     # Fast path: no rules and no date/integer columns to convert
-    if not has_rules and not has_date_columns and not has_integer_columns and not has_numeric_columns:
+    if not has_rules and not has_date_columns and not has_integer_columns and not has_numeric_columns and not has_pre_map_transformations:
         # Use list comprehension - significantly faster than append loop
         mapped_records = [
             {output_col: record.get(input_field) 
@@ -91,8 +96,12 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     # Process records with rules and/or date conversion
     mapped_records = []
     for record in records:
+        source_record = record
+        if has_pre_map_transformations:
+            source_record = _apply_column_transformations(record, pre_map_transformations)
+        
         # Use dict comprehension for mapping (faster than loop with assignment)
-        mapped_record = {output_col: record.get(input_field) 
+        mapped_record = {output_col: source_record.get(input_field) 
                         for output_col, input_field in mapping_items}
         # Normalize integer columns to avoid float artifacts like 840.0
         if integer_columns:
@@ -277,12 +286,242 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
         
         # Apply rules if present
         if has_rules:
-            mapped_record, record_errors = apply_rules(mapped_record, config.rules)
+            mapped_record, record_errors = apply_rules(mapped_record, rules)
             all_errors.extend(record_errors)
         
         mapped_records.append(mapped_record)
 
     return mapped_records, all_errors
+
+
+def _apply_column_transformations(
+    record: Dict[str, Any],
+    transformations: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Apply pre-mapping column transformations to a single record.
+
+    Returns a new dictionary when modifications are needed; otherwise returns the original record.
+    """
+    updated_record: Optional[Dict[str, Any]] = None
+
+    for transformation in transformations:
+        if not transformation or not isinstance(transformation, dict):
+            continue
+
+        t_type = transformation.get("type")
+        if not t_type:
+            continue
+
+        # Lazily copy when the first transformation needs to mutate data
+        if updated_record is None:
+            updated_record = dict(record)
+
+        if t_type == "split_multi_value_column":
+            _apply_split_multi_value(updated_record, record, transformation)
+        elif t_type == "compose_international_phone":
+            _apply_compose_international_phone(updated_record, record, transformation)
+        elif t_type == "split_international_phone":
+            _apply_split_international_phone(updated_record, record, transformation)
+        else:
+            logger.debug("Unknown column transformation type '%s' skipped", t_type)
+
+    return updated_record if updated_record is not None else record
+
+
+def _apply_split_multi_value(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    source_column = transformation.get("source_column") or transformation.get("column")
+    outputs = transformation.get("outputs") or transformation.get("targets") or []
+
+    if not source_column or not outputs:
+        return
+
+    raw_value = source_record.get(source_column)
+    if raw_value in (None, "", "null"):
+        for output in outputs:
+            name = output.get("name") or output.get("field") or output.get("column")
+            if name:
+                destination[name] = None
+        return
+
+    values = _parse_multi_value_list(raw_value)
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        index = output.get("index", 0)
+        name = output.get("name") or output.get("field") or output.get("column")
+        if name is None:
+            continue
+        value = values[index] if index < len(values) else output.get("default")
+        destination[name] = value
+
+
+def _parse_multi_value_list(raw_value: Any) -> List[Any]:
+    if isinstance(raw_value, list):
+        return raw_value
+
+    if isinstance(raw_value, str):
+        trimmed = raw_value.strip()
+        if not trimmed:
+            return []
+        # Try JSON first
+        try:
+            parsed = json.loads(trimmed)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        # Fallback to CSV-like splitting
+        parts = [part.strip() for part in re.split(r"[;,]", trimmed) if part.strip()]
+        if parts:
+            return parts
+        return [trimmed]
+
+    return [raw_value]
+
+
+def _apply_compose_international_phone(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    target_column = (
+        transformation.get("target_column")
+        or transformation.get("target_field")
+        or transformation.get("column")
+    )
+    if not target_column:
+        return
+
+    components = transformation.get("components") or transformation.get("parts") or []
+    component_map: Dict[str, Optional[str]]
+    if isinstance(components, dict):
+        component_map = {
+            "country_code": components.get("country_code"),
+            "area_code": components.get("area_code"),
+            "subscriber_number": components.get("subscriber_number"),
+            "extension": components.get("extension"),
+        }
+    else:
+        component_map = {}
+        for item in components:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            column = item.get("column") or item.get("source") or item.get("field")
+            if role and column:
+                component_map[role] = column
+
+    composed = _compose_e164_phone(
+        source_record.get(component_map.get("country_code")) if component_map.get("country_code") else None,
+        source_record.get(component_map.get("area_code")) if component_map.get("area_code") else None,
+        source_record.get(component_map.get("subscriber_number")) if component_map.get("subscriber_number") else None,
+        source_record.get(component_map.get("extension")) if component_map.get("extension") else None,
+    )
+    destination[target_column] = composed
+
+
+def _apply_split_international_phone(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    source_column = transformation.get("source_column") or transformation.get("column")
+    outputs = transformation.get("outputs") or transformation.get("targets") or []
+
+    if not source_column or not outputs:
+        return
+
+    split = _split_international_phone(source_record.get(source_column))
+
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        role = output.get("role")
+        name = output.get("name") or output.get("field") or output.get("column")
+        if not role or not name:
+            continue
+        destination[name] = split.get(role) if split else None
+
+    if transformation.get("preserve_original") is False and split:
+        destination[source_column] = None
+
+
+def _compose_e164_phone(
+    country_code: Optional[Any],
+    area_code: Optional[Any],
+    subscriber_number: Optional[Any],
+    extension: Optional[Any] = None,
+) -> Optional[str]:
+    digits_country = _extract_digits(country_code)
+    digits_area = _extract_digits(area_code)
+    digits_subscriber = _extract_digits(subscriber_number)
+
+    if not digits_country and not digits_subscriber:
+        return None
+
+    full_number = f"+{digits_country or ''}{digits_area}{digits_subscriber}"
+    if full_number == "+":
+        return None
+
+    ext_digits = _extract_digits(extension)
+    if ext_digits:
+        full_number = f"{full_number}x{ext_digits}"
+
+    return full_number
+
+
+def _split_international_phone(value: Any) -> Dict[str, str]:
+    if value in (None, "", "null"):
+        return {}
+
+    text = str(value).strip()
+    if not text:
+        return {}
+
+    digits_only = _extract_digits(text)
+    if not digits_only:
+        return {}
+
+    tokens = re.split(r"[^\d]+", text.lstrip("+"))
+    tokens = [token for token in tokens if token]
+
+    if tokens:
+        country_code = tokens[0]
+        subscriber_token = "".join(tokens[1:]) if len(tokens) > 1 else ""
+        if not subscriber_token and len(digits_only) > len(country_code):
+            subscriber_token = digits_only[len(country_code):]
+    else:
+        if len(digits_only) <= 10:
+            return {}
+        country_code = digits_only[:-10]
+        subscriber_token = digits_only[-10:]
+
+    if not subscriber_token:
+        return {}
+
+    result: Dict[str, str] = {
+        "country_code": country_code,
+        "subscriber_number": subscriber_token,
+    }
+
+    # Attempt to infer area code if subscriber appears longer than 10 digits
+    if len(subscriber_token) > 10:
+        result["area_code"] = subscriber_token[: len(subscriber_token) - 10]
+        result["subscriber_number"] = subscriber_token[-10:]
+
+    return result
+
+
+def _extract_digits(value: Optional[Any]) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\D", "", str(value))
 
 
 def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
