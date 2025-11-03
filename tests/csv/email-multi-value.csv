@@ -1,0 +1,6 @@
+contact_id,first_name,last_name,emails
+1,Alice,Smith,"[""alice.personal@example.com"",""alice.work@example.com""]"
+2,Bob,Jones,"[""bob@example.com""]"
+3,Carol,Davis,"[""carol.home@example.com"",""carol.travel@example.com"",""carol.work@example.com""]"
+4,David,Wu,"[""david@example.com"",""david.backup@example.com""]"
+

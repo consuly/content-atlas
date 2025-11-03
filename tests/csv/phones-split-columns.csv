@@ -1,0 +1,6 @@
+contact_id,first_name,last_name,country_code,area_code,phone_number,extension
+1,Alice,Smith,+1,555,1234567,
+2,Bob,Jones,1,415,5550123,101
+3,Carol,Davis,+44,20,79461234,
+4,David,Wu,1,,4085550167,
+

@@ -48,6 +48,7 @@ def test_llm_sequential_file_merge():
             """))
             
             all_tables = [row[0] for row in result]
+            all_tables_set = set(all_tables)
             
             # System tables that should NOT be dropped
             system_tables = {
@@ -76,14 +77,12 @@ def test_llm_sequential_file_merge():
             
             # Clean up ALL import tracking records (not just client-list files)
             # This ensures no orphaned records from previous test runs
-            conn.execute(text("DELETE FROM file_imports"))
-            print("  Cleaned up all file_imports records")
-            
-            conn.execute(text("DELETE FROM table_metadata"))
-            print("  Cleaned up all table_metadata records")
-            
-            conn.execute(text("DELETE FROM import_history"))
-            print("  Cleaned up all import_history records")
+            for system_table in ("file_imports", "table_metadata", "import_history"):
+                if system_table in all_tables_set:
+                    conn.execute(text(f'DELETE FROM "{system_table}"'))
+                    print(f"  Cleaned up all {system_table} records")
+                else:
+                    print(f"  Skipping cleanup for {system_table}; table does not exist")
             
     except Exception as e:
         print(f"  Warning during cleanup: {e}")

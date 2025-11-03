@@ -264,6 +264,7 @@ def execute_llm_import_decision(
         logger.info(f"AUTO-IMPORT: Parsed {len(records)} records")
 
         expected_column_types = llm_decision.get("expected_column_types") or {}
+        column_transformations = llm_decision.get("column_transformations") or []
         column_type_enforcement_log: Dict[str, Dict[str, Any]] = {}
         if expected_column_types:
             records, column_type_enforcement_log = coerce_records_to_expected_types(
@@ -387,7 +388,7 @@ def execute_llm_import_decision(
                 table_name=target_table,
                 db_schema={},  # Empty - will use existing table schema
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
-                rules={},
+                rules={"column_transformations": column_transformations} if column_transformations else {},
                 unique_columns=unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=True,
@@ -403,7 +404,7 @@ def execute_llm_import_decision(
                 table_name=target_table,
                 db_schema=db_schema,
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
-                rules={},
+                rules={"column_transformations": column_transformations} if column_transformations else {},
                 unique_columns=unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=True,

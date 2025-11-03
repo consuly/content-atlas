@@ -8,6 +8,8 @@ and determine the optimal import strategy by comparing with existing database ta
 from typing import List, Dict, Any, Optional, Tuple, Annotated
 from typing_extensions import NotRequired
 from enum import Enum
+import json
+import re
 import numpy as np
 from dataclasses import dataclass
 from langchain.tools import tool, ToolRuntime
@@ -368,8 +370,6 @@ def analyze_raw_csv_structure(
     Returns:
         Comprehensive analysis of CSV structure with recommendations
     """
-    import re
-    
     context = runtime.context
     
     # Check if we have raw CSV rows in metadata
@@ -406,6 +406,7 @@ def analyze_raw_csv_structure(
         # Analyze data types from subsequent rows
         data_rows = raw_rows[1:]
         result["inferred_types"] = _infer_column_types_from_rows(first_row, data_rows)
+        result["transformations_needed"] = _detect_column_transformations(first_row, data_rows)
         
     else:
         # First row is data - need to infer column meanings
@@ -418,6 +419,13 @@ def analyze_raw_csv_structure(
         result["overall_confidence"] = inferred_schema["confidence"]
         result["transformations_needed"] = inferred_schema["transformations"]
     
+    if result.get("transformations_needed"):
+        # Persist detected transformations for downstream tools (LLM decision, execution)
+        context.file_metadata["detected_transformations"] = result["transformations_needed"]
+    elif "detected_transformations" in context.file_metadata:
+        # Clear previous hints if this run produced none
+        context.file_metadata.pop("detected_transformations")
+
     return result
 
 
@@ -430,7 +438,6 @@ def _analyze_if_header_row(first_row: List[str], second_row: List[str]) -> bool:
     - Headers don't contain timestamps, emails, or typical data patterns
     - Headers are usually shorter and more uniform
     """
-    import re
     
     # Common header keywords
     header_keywords = [
@@ -476,8 +483,6 @@ def _infer_column_types_from_rows(
     data_rows: List[List[str]]
 ) -> Dict[str, Dict[str, Any]]:
     """Infer data types for each column from data rows."""
-    import re
-    
     column_types = {}
     
     for col_idx, col_name in enumerate(column_names):
@@ -546,8 +551,6 @@ def _infer_column_types_from_rows(
 
 def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
     """Infer semantic column names and types from data rows (headerless file)."""
-    import re
-    
     if not data_rows or not data_rows[0]:
         return {
             "columns": {},
@@ -556,16 +559,17 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
         }
     
     num_columns = len(data_rows[0])
-    inferred_columns = {}
-    transformations = []
+    inferred_columns: Dict[str, Dict[str, Any]] = {}
+    transformations: List[Dict[str, Any]] = []
+    phone_pattern = re.compile(r'^[\d\s\(\)\.\-]{10,}$')
     
     for col_idx in range(num_columns):
-        # Extract values for this column
+        column_id = f"col_{col_idx}"
         values = [row[col_idx] if col_idx < len(row) else None for row in data_rows]
-        values = [v for v in values if v]  # Remove empty
+        values = [v for v in values if v not in (None, "", "null")]
         
         if not values:
-            inferred_columns[f"col_{col_idx}"] = {
+            inferred_columns[column_id] = {
                 "semantic_name": "unknown",
                 "data_type": "TEXT",
                 "confidence": 0.0,
@@ -573,66 +577,94 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
             }
             continue
         
-        # Analyze patterns
+        # Detect multi-value columns (e.g. JSON arrays stored as text)
+        multi_value_info = _analyze_multi_value_list(values)
+        if multi_value_info:
+            transformations.append({**multi_value_info, "column": column_id})
+            semantic_name = (
+                f"{multi_value_info['item_type']}_list"
+                if multi_value_info.get("item_type")
+                else "multi_value_list"
+            )
+            inferred_columns[column_id] = {
+                "semantic_name": semantic_name,
+                "data_type": "TEXT",
+                "confidence": 0.90,
+                "reasoning": multi_value_info["reasoning"],
+                "sample_values": [
+                    ", ".join(str(item) for item in multi_value_info.get("example_items", [])[:3])
+                ]
+            }
+            continue
+        
         sample_values = values[:20]
         
         # Check for phone number patterns FIRST (before numeric check)
-        phone_pattern = re.compile(r'^[\d\s\(\)\.\-]{10,}$')
         phone_matches = sum(1 for v in sample_values if phone_pattern.match(str(v)))
         phone_match_ratio = phone_matches / len(sample_values) if sample_values else 0
         
         if phone_match_ratio > 0.7:
-            inferred_columns[f"col_{col_idx}"] = {
+            inferred_columns[column_id] = {
                 "semantic_name": "phone",
                 "data_type": "TEXT",
                 "confidence": 0.95,
-                "reasoning": f"{phone_matches}/{len(sample_values)} values match phone number patterns"
+                "reasoning": f"{phone_matches}/{len(sample_values)} values match phone number patterns",
+                "sample_values": [str(v)[:50] for v in sample_values[:3]]
             }
+            continue
         
         # Check for date patterns
+        if detect_date_column(sample_values):
             date_format = infer_date_format(sample_values)
-            inferred_columns[f"col_{col_idx}"] = {
+            inferred_columns[column_id] = {
                 "semantic_name": "date",
                 "data_type": "TIMESTAMP",
                 "confidence": 0.95,
-                "reasoning": f"Contains date values in {date_format} format"
+                "reasoning": f"Contains date values in {date_format} format",
+                "sample_values": [str(v)[:50] for v in sample_values[:3]]
             }
             transformations.append({
-                "column": f"col_{col_idx}",
+                "column": column_id,
                 "type": "date_standardization",
                 "from_format": date_format,
                 "to_format": "ISO 8601"
             })
+            continue
         
         # Check for email
-        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+        if any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
             email_count = sum(1 for v in sample_values if '@' in str(v))
-            inferred_columns[f"col_{col_idx}"] = {
+            inferred_columns[column_id] = {
                 "semantic_name": "email",
                 "data_type": "TEXT",
                 "confidence": 0.98,
-                "reasoning": f"{email_count}/{len(sample_values)} values contain @ symbol"
+                "reasoning": f"{email_count}/{len(sample_values)} values contain @ symbol",
+                "sample_values": [str(v)[:50] for v in sample_values[:3]]
             }
+            continue
         
         # Check for numeric (only if not phone)
-        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in sample_values):
+        if all(str(v).replace('.', '').replace('-', '').isdigit() for v in sample_values):
             if all(str(v).isdigit() for v in sample_values):
-                inferred_columns[f"col_{col_idx}"] = {
+                inferred_columns[column_id] = {
                     "semantic_name": "id" if col_idx == 0 else "number",
                     "data_type": "INTEGER",
                     "confidence": 0.85,
-                    "reasoning": "All values are integers"
+                    "reasoning": "All values are integers",
+                    "sample_values": [str(v)[:50] for v in sample_values[:3]]
                 }
             else:
-                inferred_columns[f"col_{col_idx}"] = {
+                inferred_columns[column_id] = {
                     "semantic_name": "decimal_value",
                     "data_type": "DECIMAL(10,2)",
                     "confidence": 0.85,
-                    "reasoning": "Values contain decimal numbers"
+                    "reasoning": "Values contain decimal numbers",
+                    "sample_values": [str(v)[:50] for v in sample_values[:3]]
                 }
+            continue
         
         # Check for proper names
-        elif all(isinstance(v, str) for v in sample_values):
+        if all(isinstance(v, str) for v in sample_values):
             proper_case_count = sum(1 for v in sample_values if v and v[0].isupper())
             
             if proper_case_count / len(sample_values) > 0.7:
@@ -646,34 +678,38 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
                     else:
                         semantic_name = "name"
                     
-                    inferred_columns[f"col_{col_idx}"] = {
+                    inferred_columns[column_id] = {
                         "semantic_name": semantic_name,
                         "data_type": "TEXT",
                         "confidence": 0.75,
-                        "reasoning": "Proper case strings, short length"
+                        "reasoning": "Proper case strings, short length",
+                        "sample_values": [str(v)[:50] for v in sample_values[:3]]
                     }
                 else:
-                    inferred_columns[f"col_{col_idx}"] = {
+                    inferred_columns[column_id] = {
                         "semantic_name": "text_field",
                         "data_type": "TEXT",
                         "confidence": 0.60,
-                        "reasoning": "Text values, longer strings"
+                        "reasoning": "Text values, longer strings",
+                        "sample_values": [str(v)[:50] for v in sample_values[:3]]
                     }
             else:
-                inferred_columns[f"col_{col_idx}"] = {
+                inferred_columns[column_id] = {
                     "semantic_name": "text_field",
                     "data_type": "TEXT",
                     "confidence": 0.50,
-                    "reasoning": "String values without clear pattern"
+                    "reasoning": "String values without clear pattern",
+                    "sample_values": [str(v)[:50] for v in sample_values[:3]]
                 }
+            continue
         
-        else:
-            inferred_columns[f"col_{col_idx}"] = {
-                "semantic_name": "mixed_field",
-                "data_type": "TEXT",
-                "confidence": 0.40,
-                "reasoning": "Mixed data types"
-            }
+        inferred_columns[column_id] = {
+            "semantic_name": "mixed_field",
+            "data_type": "TEXT",
+            "confidence": 0.40,
+            "reasoning": "Mixed data types",
+            "sample_values": [str(v)[:50] for v in sample_values[:3]]
+        }
     
     # Calculate overall confidence
     confidences = [col["confidence"] for col in inferred_columns.values()]
@@ -686,6 +722,366 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
     }
 
 
+def _analyze_multi_value_list(values: List[Any]) -> Optional[Dict[str, Any]]:
+    """
+    Detect if the provided values represent JSON array structures stored as text.
+    
+    Returns metadata describing how the data should be split into separate columns.
+    """
+    if not values:
+        return None
+    
+    parsed_lists: List[List[Any]] = []
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            parsed = list(value)
+        else:
+            if not isinstance(value, str):
+                continue
+            trimmed = value.strip()
+            if not trimmed.startswith("[") or not trimmed.endswith("]"):
+                continue
+            try:
+                parsed = json.loads(trimmed)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        if not isinstance(parsed, list):
+            continue
+        parsed_lists.append(parsed)
+    
+    if not parsed_lists:
+        return None
+    
+    ratio = len(parsed_lists) / len(values)
+    if ratio < 0.6:
+        return None
+    
+    lengths = [len(items) for items in parsed_lists]
+    if not lengths:
+        return None
+    
+    flat_items = [
+        item for items in parsed_lists for item in items
+        if item not in (None, "", "null")
+    ]
+    item_type = "text"
+    if flat_items:
+        stringified = [str(item) for item in flat_items]
+        email_hits = sum(1 for item in stringified if "@" in item and "." in item)
+        digit_hits = sum(1 for item in stringified if item.replace(" ", "").replace("-", "").isdigit())
+        if email_hits / len(stringified) >= 0.6:
+            item_type = "email"
+        elif digit_hits / len(stringified) >= 0.6:
+            item_type = "number"
+    
+    reasoning = (
+        f"{len(parsed_lists)}/{len(values)} values are list-like data with up to "
+        f"{max(lengths)} items"
+    )
+    
+    return {
+        "type": "split_multi_value_column",
+        "item_type": item_type,
+        "max_items": max(lengths),
+        "avg_items": sum(lengths) / len(lengths),
+        "example_items": parsed_lists[0],
+        "reasoning": reasoning
+    }
+
+
+def _detect_multi_value_transformations(
+    column_names: List[str],
+    data_rows: List[List[str]]
+) -> List[Dict[str, Any]]:
+    transformations: List[Dict[str, Any]] = []
+    if not column_names or not data_rows:
+        return transformations
+    
+    for idx, column_name in enumerate(column_names):
+        column_values = []
+        for row in data_rows:
+            if idx < len(row):
+                value = row[idx]
+                if value not in (None, "", "null"):
+                    column_values.append(value)
+        info = _analyze_multi_value_list(column_values)
+        if info:
+            transformations.append({**info, "column": column_name})
+    
+    return transformations
+
+
+def _normalize_column_identifier(name: str) -> str:
+    """Normalize column names for easier pattern matching."""
+    return re.sub(r'[^a-z0-9]', '', name.lower())
+
+
+def _extract_digits(value: Optional[Any]) -> str:
+    if value is None:
+        return ""
+    return re.sub(r'\D', '', str(value))
+
+
+def _compose_phone_from_components(
+    country: Optional[Any],
+    area: Optional[Any],
+    number: Optional[Any],
+    extension: Optional[Any] = None
+) -> Optional[str]:
+    """Combine phone pieces into an international format example."""
+    country_digits = _extract_digits(country)
+    area_digits = _extract_digits(area)
+    number_digits = _extract_digits(number)
+    
+    if not (country_digits or number_digits):
+        return None
+    
+    combined = ""
+    if country_digits:
+        combined = f"+{country_digits}"
+    else:
+        combined = "+"
+    
+    combined += area_digits + number_digits
+    
+    extension_digits = _extract_digits(extension)
+    if extension_digits:
+        combined = f"{combined}x{extension_digits}"
+    
+    return combined if len(combined) > 1 else None
+
+
+def _split_international_phone_number(value: Any) -> Optional[Dict[str, str]]:
+    """Split international phone numbers into components using simple heuristics."""
+    if value in (None, "", "null"):
+        return None
+    
+    text = str(value).strip()
+    if not text:
+        return None
+    
+    tokens = re.split(r'[^\d]+', text.lstrip("+"))
+    tokens = [token for token in tokens if token]
+    digits_only = _extract_digits(text)
+    
+    if not tokens and len(digits_only) <= 10:
+        return None
+    
+    if tokens:
+        country_code = tokens[0]
+        national_parts = tokens[1:]
+        if national_parts:
+            subscriber_number = "".join(national_parts)
+        else:
+            # Fallback if we only detected a single chunk
+            if len(digits_only) > 10:
+                country_code = digits_only[:-10]
+                subscriber_number = digits_only[-10:]
+            else:
+                return None
+    else:
+        country_code = digits_only[:-10]
+        subscriber_number = digits_only[-10:]
+    
+    if not subscriber_number:
+        return None
+    
+    result = {
+        "country_code": country_code,
+        "subscriber_number": subscriber_number,
+    }
+    
+    # Detect potential area code if the subscriber number looks longer than 10 digits
+    if len(subscriber_number) > 10:
+        result["area_code"] = subscriber_number[: len(subscriber_number) - 10]
+        result["subscriber_number"] = subscriber_number[-10:]
+    
+    return result
+
+
+def _collect_column_values(data_rows: List[List[str]], idx: int) -> List[str]:
+    values: List[str] = []
+    for row in data_rows:
+        if idx < len(row):
+            value = row[idx]
+            if value not in (None, "", "null"):
+                values.append(value)
+    return values
+
+
+def _detect_phone_component_transformations(
+    column_names: List[str],
+    data_rows: List[List[str]]
+) -> List[Dict[str, Any]]:
+    transformations: List[Dict[str, Any]] = []
+    if not column_names or not data_rows:
+        return transformations
+    
+    normalized = [_normalize_column_identifier(name) for name in column_names]
+    
+    country_indices = [
+        idx for idx, name in enumerate(normalized)
+        if any(keyword in name for keyword in ("countrycode", "dialcode", "isdcode", "countryprefix"))
+    ]
+    area_indices = [
+        idx for idx, name in enumerate(normalized)
+        if any(keyword in name for keyword in ("areacode", "regioncode", "citycode"))
+    ]
+    extension_indices = [
+        idx for idx, name in enumerate(normalized)
+        if "extension" in name or name.endswith("ext")
+    ]
+    international_indices = [
+        idx for idx, name in enumerate(normalized)
+        if any(keyword in name for keyword in ("internationalphone", "phoneinternational", "fullphone", "intlphone", "e164"))
+    ]
+    
+    subscriber_indices: List[int] = []
+    for idx, name in enumerate(normalized):
+        if idx in country_indices or idx in area_indices or idx in international_indices or idx in extension_indices:
+            continue
+        if any(keyword in name for keyword in ("phone", "phonenumber", "mobile", "contactnumber", "cellphone")):
+            subscriber_indices.append(idx)
+    
+    if country_indices and subscriber_indices:
+        country_idx = country_indices[0]
+        subscriber_idx = subscriber_indices[0]
+        area_idx = area_indices[0] if area_indices else None
+        extension_idx = extension_indices[0] if extension_indices else None
+        
+        subscriber_values = _collect_column_values(data_rows, subscriber_idx)
+        if subscriber_values:
+            plus_ratio = sum(1 for value in subscriber_values if isinstance(value, str) and "+" in value) / len(subscriber_values)
+            if plus_ratio < 0.5:
+                examples: List[str] = []
+                for row in data_rows[:5]:
+                    country = row[country_idx] if country_idx < len(row) else None
+                    area_val = row[area_idx] if area_idx is not None and area_idx < len(row) else None
+                    number = row[subscriber_idx] if subscriber_idx < len(row) else None
+                    extension = row[extension_idx] if extension_idx is not None and extension_idx < len(row) else None
+                    combined = _compose_phone_from_components(country, area_val, number, extension)
+                    if combined:
+                        examples.append(combined)
+                if examples:
+                    components = [
+                        {"column": column_names[country_idx], "role": "country_code"}
+                    ]
+                    if area_idx is not None:
+                        components.append({"column": column_names[area_idx], "role": "area_code"})
+                    components.append({"column": column_names[subscriber_idx], "role": "subscriber_number"})
+                    if extension_idx is not None:
+                        components.append({"column": column_names[extension_idx], "role": "extension"})
+                    
+                    transformations.append({
+                        "type": "compose_international_phone",
+                        "components": components,
+                        "target_format": "E.164",
+                        "example_output": examples[:3],
+                        "reasoning": "Detected separate phone components that can be combined into a single international number"
+                    })
+    
+    # Detect columns storing full international phone numbers
+    for idx in international_indices:
+        values = _collect_column_values(data_rows, idx)
+        if not values:
+            continue
+        splits = [_split_international_phone_number(value) for value in values]
+        splits = [split for split in splits if split]
+        if not splits:
+            continue
+        ratio = len(splits) / len(values)
+        if ratio < 0.6:
+            continue
+        
+        has_area = any("area_code" in split for split in splits)
+        output_columns = [
+            {"name": "country_code", "role": "country_code"},
+        ]
+        if has_area:
+            output_columns.append({"name": "area_code", "role": "area_code"})
+        output_columns.append({"name": "subscriber_number", "role": "subscriber_number"})
+        
+        transformations.append({
+            "type": "split_international_phone",
+            "column": column_names[idx],
+            "output_columns": output_columns,
+            "reasoning": f"{len(splits)}/{len(values)} values follow international phone number patterns",
+            "example_components": splits[:3]
+        })
+    
+    return transformations
+
+
+def _detect_column_transformations(
+    column_names: List[str],
+    data_rows: List[List[str]]
+) -> List[Dict[str, Any]]:
+    """Aggregate all transformation hints from the raw data."""
+    transformations: List[Dict[str, Any]] = []
+    if not column_names or not data_rows:
+        return transformations
+    
+    transformations.extend(_detect_multi_value_transformations(column_names, data_rows))
+    transformations.extend(_detect_phone_component_transformations(column_names, data_rows))
+    
+    return transformations
+
+
+def _normalize_column_transformations_for_decision(
+    transformations: Optional[List[Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Sanitize transformation payloads provided by the LLM or default detection.
+    
+    Guarantees each entry is a dict with a 'type' field and normalizes common aliases.
+    """
+    if not transformations:
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+
+    for raw in transformations:
+        if not isinstance(raw, dict):
+            continue
+
+        entry = dict(raw)  # shallow copy to avoid mutating caller state
+        t_type = entry.get("type") or entry.get("transform_type") or entry.get("action")
+
+        if not t_type:
+            # Heuristic inference if the LLM omitted the type label
+            if {"outputs", "source_column"} <= entry.keys():
+                t_type = "split_multi_value_column"
+            elif entry.get("components"):
+                t_type = "compose_international_phone"
+            elif entry.get("outputs") and entry.get("column"):
+                t_type = "split_international_phone"
+
+        if not t_type:
+            logger.debug("Skipping transformation without type descriptor: %s", raw)
+            continue
+
+        entry["type"] = t_type
+
+        # Normalize common field aliases
+        if t_type == "split_multi_value_column":
+            if "source_column" not in entry and "column" in entry:
+                entry["source_column"] = entry["column"]
+            if "outputs" not in entry and entry.get("targets"):
+                entry["outputs"] = entry["targets"]
+        elif t_type == "compose_international_phone":
+            if "target_column" not in entry and "column" in entry:
+                entry["target_column"] = entry["column"]
+        elif t_type == "split_international_phone":
+            if "source_column" not in entry and "column" in entry:
+                entry["source_column"] = entry["column"]
+            if "outputs" not in entry and entry.get("targets"):
+                entry["outputs"] = entry["targets"]
+
+        normalized.append(entry)
+
+    return normalized
+
+
 @tool
 def infer_schema_from_headerless_data(
     runtime: Annotated[ToolRuntime[AnalysisContext], InjectedToolArg()]
@@ -696,8 +1092,6 @@ def infer_schema_from_headerless_data(
     This tool is kept for backward compatibility but analyze_raw_csv_structure
     provides more comprehensive analysis.
     """
-    import re
-    
     context = runtime.context
     sample_data = context.file_sample
     
@@ -913,6 +1307,7 @@ def make_import_decision(
     key_entities: Optional[List[str]] = None,
     expected_column_types: Optional[Dict[str, str]] = None,
     schema_migrations: Optional[List[Dict[str, Any]]] = None,
+    column_transformations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Make final import decision with strategy and target table.
@@ -935,6 +1330,8 @@ def make_import_decision(
             (e.g., {"col_0": "TIMESTAMP", "col_1": "TEXT"}). These types will guide pandas coercion.
         schema_migrations: Optional list of schema migration actions the executor should run
             before importing (e.g., [{"action": "replace_column", ...}]).
+        column_transformations: Optional list of source data transformation instructions
+            (e.g., split arrays, compose phone numbers) the executor should perform before mapping.
         
     Returns:
         Confirmation of decision recorded
@@ -982,6 +1379,12 @@ def make_import_decision(
             }
 
     # Store decision in context (will be retrieved by caller)
+    normalized_transformations = _normalize_column_transformations_for_decision(
+        column_transformations
+        if column_transformations is not None
+        else context.file_metadata.get("detected_transformations")
+    )
+
     context.file_metadata["llm_decision"] = {
         "strategy": strategy,
         "target_table": target_table,
@@ -994,6 +1397,7 @@ def make_import_decision(
         "key_entities": key_entities or [],
         "expected_column_types": expected_types,
         "schema_migrations": migrations,
+        "column_transformations": normalized_transformations,
     }
     
     return {
@@ -1006,6 +1410,7 @@ def make_import_decision(
         "has_header": has_header,
         "expected_column_types": expected_types,
         "schema_migrations": migrations,
+        "column_transformations": normalized_transformations,
     }
 
 
@@ -1112,6 +1517,7 @@ Analysis Process (SEMANTIC-FIRST):
 6. Make decision based on BOTH semantic AND structural fit
 7. Call resolve_conflict if needed
 8. **FINAL AND REQUIRED**: Call make_import_decision with strategy, target_table, AND purpose information
+9. When analyze_file_structure or other tools surface `transformations_needed`, translate them into explicit preprocessing instructions so the executor can reshape the source columns before mapping.
 
 Schema Remediation Guidance:
 - When the schema context lists "Recent Import Issues (Type Mismatches)", you must evaluate those columns before recommending a merge.
@@ -1157,6 +1563,13 @@ You MUST call the make_import_decision tool before providing your final response
    - Example: {{"email": "TEXT", "signup_date": "TIMESTAMP"}}
    - Supported values: TEXT, INTEGER, DECIMAL, TIMESTAMP, DATE, BOOLEAN
    - If uncertain, default to TEXT rather than omitting the column. Never skip a mapped source column.
+5. **column_transformations**: When preprocessing is required (e.g., splitting JSON arrays, composing international phone numbers, normalizing formats), provide a list of transformation instructions.
+   - Base each instruction on evidence from `transformations_needed` or your own analysis.
+   - Use explicit structures so executors can apply them without guessing:
+     • `{"type": "split_multi_value_column", "source_column": "emails", "outputs": [{"name": "email_one", "index": 0}, {"name": "email_two", "index": 1, "default": null}]}`  
+     • `{"type": "compose_international_phone", "target_column": "phone_e164", "components": [{"role": "country_code", "column": "country_code"}, {"role": "area_code", "column": "area_code"}, {"role": "subscriber_number", "column": "phone_number"}]}`
+     • `{"type": "split_international_phone", "source_column": "intl_phone", "outputs": [{"name": "country_code", "role": "country_code"}, {"name": "subscriber_number", "role": "subscriber_number"}]}`
+   - If no preprocessing is needed, pass an empty list (`[]`). Do **not** omit the argument.
 
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:
@@ -1168,6 +1581,7 @@ After calling make_import_decision, provide a structured recommendation includin
 - Column mappings (source → target)
 - Unique columns for duplicate detection
 - Any data quality issues or conflicts found
+- Any preprocessing/transformation steps you instructed (reference the column_transformations list)
 """
 
     if interactive_mode:
