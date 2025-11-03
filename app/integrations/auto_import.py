@@ -12,6 +12,10 @@ from app.db.session import get_engine
 from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from app.domain.imports.schema_mapper import analyze_schema_compatibility, transform_record
+from app.domain.imports.schema_migrations import (
+    apply_schema_migrations,
+    SchemaMigrationError,
+)
 from app.domain.imports.history import start_import_tracking, complete_import_tracking
 from app.utils.date import parse_flexible_date
 import pandas as pd
@@ -224,6 +228,7 @@ def execute_llm_import_decision(
     from app.domain.imports.orchestrator import execute_data_import
     from app.domain.imports.processors.csv_processor import process_csv
     
+    schema_migration_results: List[Dict[str, Any]] = []
     try:
         strategy = llm_decision["strategy"]
         target_table = llm_decision["target_table"]
@@ -347,6 +352,33 @@ def execute_llm_import_decision(
             """), {"table_name": target_table})
             table_exists = result.scalar()
         
+        schema_migrations = llm_decision.get("schema_migrations") or []
+        if schema_migrations:
+            if table_exists:
+                try:
+                    schema_migration_results = apply_schema_migrations(
+                        engine, target_table, schema_migrations
+                    )
+                    logger.info(
+                        "AUTO-IMPORT: Applied schema migrations: %s",
+                        schema_migration_results,
+                    )
+                except SchemaMigrationError as exc:
+                    logger.error(
+                        "AUTO-IMPORT: Schema migration failed: %s", exc, exc_info=True
+                    )
+                    return {
+                        "success": False,
+                        "error": str(exc),
+                        "strategy_attempted": strategy,
+                        "target_table": target_table,
+                    }
+            else:
+                logger.warning(
+                    "AUTO-IMPORT: Requested schema migrations for non-existent table '%s'; skipping",
+                    target_table,
+                )
+
         if table_exists and strategy in ["MERGE_EXACT", "ADAPT_DATA"]:
             logger.info(f"AUTO-IMPORT: Table '{target_table}' exists, will merge into it")
             # For merging, we only need the mappings, not the schema
@@ -418,7 +450,8 @@ def execute_llm_import_decision(
             "records_processed": result["records_processed"],
             "mapping_errors": result.get("mapping_errors", []),
             "type_mismatch_summary": result.get("type_mismatch_summary", []),
-            "llm_followup": result.get("llm_followup")
+            "llm_followup": result.get("llm_followup"),
+            "schema_migration_results": schema_migration_results,
         }
         
     except Exception as e:

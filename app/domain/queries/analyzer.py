@@ -911,7 +911,8 @@ def make_import_decision(
     has_header: Optional[bool] = None,
     data_domain: Optional[str] = None,
     key_entities: Optional[List[str]] = None,
-    expected_column_types: Optional[Dict[str, str]] = None
+    expected_column_types: Optional[Dict[str, str]] = None,
+    schema_migrations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Make final import decision with strategy and target table.
@@ -932,6 +933,8 @@ def make_import_decision(
         key_entities: List of key entity types (e.g., ["customer", "contact"]) - optional
         expected_column_types: REQUIRED map describing the detected data type for each SOURCE column
             (e.g., {"col_0": "TIMESTAMP", "col_1": "TEXT"}). These types will guide pandas coercion.
+        schema_migrations: Optional list of schema migration actions the executor should run
+            before importing (e.g., [{"action": "replace_column", ...}]).
         
     Returns:
         Confirmation of decision recorded
@@ -968,6 +971,16 @@ def make_import_decision(
             )
         }
 
+    migrations = schema_migrations or []
+    for idx, migration in enumerate(migrations):
+        if not isinstance(migration, dict) or "action" not in migration:
+            return {
+                "error": (
+                    "schema_migrations must be a list of objects with an 'action' field. "
+                    f"Invalid entry at index {idx}."
+                )
+            }
+
     # Store decision in context (will be retrieved by caller)
     context.file_metadata["llm_decision"] = {
         "strategy": strategy,
@@ -979,7 +992,8 @@ def make_import_decision(
         "has_header": has_header,
         "data_domain": data_domain,
         "key_entities": key_entities or [],
-        "expected_column_types": expected_types
+        "expected_column_types": expected_types,
+        "schema_migrations": migrations,
     }
     
     return {
@@ -990,7 +1004,8 @@ def make_import_decision(
         "purpose": purpose_short,
         "column_mapping": column_mapping,
         "has_header": has_header,
-        "expected_column_types": expected_types
+        "expected_column_types": expected_types,
+        "schema_migrations": migrations,
     }
 
 
