@@ -30,7 +30,6 @@ import { ImportPage } from "./pages/import";
 import { ImportMappingPage } from "./pages/import/[id]";
 import { QueryPage } from "./pages/query";
 import { ApiKeysPage } from "./pages/api-keys";
-
 function App() {
   return (
     <BrowserRouter>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Typography, Alert, Space, Button, message } from 'antd';
+import { App as AntdApp, Modal, Typography, Alert, Space, Button } from 'antd';
 import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 import type { CreateKeyResponse } from './types';
 
@@ -20,6 +20,7 @@ export const RevealKeyModal: React.FC<RevealKeyModalProps> = ({
   onDismiss,
 }) => {
   const [copied, setCopied] = useState(false);
+  const { message: messageApi } = AntdApp.useApp();
 
   useEffect(() => {
     if (!visible) {
@@ -39,10 +40,10 @@ export const RevealKeyModal: React.FC<RevealKeyModalProps> = ({
     try {
       await navigator.clipboard.writeText(apiKey.api_key);
       setCopied(true);
-      message.success('API key copied to clipboard!');
+      messageApi.success('API key copied to clipboard!');
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      message.error('Failed to copy to clipboard');
+      messageApi.error('Failed to copy to clipboard');
     }
   };
 

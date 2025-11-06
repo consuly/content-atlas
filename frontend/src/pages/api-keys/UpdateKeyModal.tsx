@@ -6,7 +6,7 @@ import {
   InputNumber,
   Switch,
   Button,
-  message,
+  App as AntdApp,
   DatePicker,
   Alert,
   Space,
@@ -40,6 +40,7 @@ export const UpdateKeyModal: React.FC<UpdateKeyModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [storedApiKey, setStoredApiKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const { message: messageApi } = AntdApp.useApp();
 
   useEffect(() => {
     if (apiKey && visible) {
@@ -80,11 +81,11 @@ export const UpdateKeyModal: React.FC<UpdateKeyModalProps> = ({
         }
       );
 
-      message.success('API key updated successfully!');
+      messageApi.success('API key updated successfully!');
       onSuccess();
       handleClose();
     } catch (error) {
-      message.error('Failed to update API key');
+      messageApi.error('Failed to update API key');
       console.error('Error updating API key:', error);
     } finally {
       setLoading(false);
@@ -104,10 +105,10 @@ export const UpdateKeyModal: React.FC<UpdateKeyModalProps> = ({
     try {
       await navigator.clipboard.writeText(storedApiKey);
       setCopied(true);
-      message.success('API key copied to clipboard!');
+      messageApi.success('API key copied to clipboard!');
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      message.error('Failed to copy to clipboard');
+      messageApi.error('Failed to copy to clipboard');
     }
   };
 

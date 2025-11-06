@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Upload, message, Modal, Button, Space } from 'antd';
+import { App as AntdApp, Upload, Modal, Button, Space } from 'antd';
 import { InboxOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import type { UploadProps, UploadFile } from 'antd';
 import axios from 'axios';
@@ -36,6 +36,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 }) => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFileInfo | null>(null);
+  const { message: messageApi } = AntdApp.useApp();
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -43,7 +44,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     if (!duplicateFile) return;
 
     if (action === 'skip') {
-      message.info(`Skipped uploading ${duplicateFile.file.name}`);
+      messageApi.info(`Skipped uploading ${duplicateFile.file.name}`);
       setDuplicateFile(null);
       return;
     }
@@ -68,12 +69,12 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       });
 
       if (response.data.success) {
-        message.success(`${duplicateFile.file.name} uploaded successfully`);
+        messageApi.success(`${duplicateFile.file.name} uploaded successfully`);
         onUploadSuccess?.([response.data.files[0]]);
       }
     } catch (error) {
       const err = error as Error;
-      message.error(`Failed to upload ${duplicateFile.file.name}: ${err.message}`);
+      messageApi.error(`Failed to upload ${duplicateFile.file.name}: ${err.message}`);
       onUploadError?.([err]);
     } finally {
       setDuplicateFile(null);
@@ -95,7 +96,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       });
 
       if (response.data.success) {
-        message.success(`${file.name} uploaded successfully`);
+        messageApi.success(`${file.name} uploaded successfully`);
         onUploadSuccess?.([response.data.files[0]]);
         return true;
       } else if (response.data.exists) {
@@ -118,7 +119,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         return false;
       }
       const err = error as Error;
-      message.error(`Failed to upload ${file.name}: ${err.message}`);
+      messageApi.error(`Failed to upload ${file.name}: ${err.message}`);
       onUploadError?.([err]);
       return false;
     }
@@ -145,13 +146,13 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     );
     
     if (!isValidType) {
-      message.error(`${file.name} is not a supported file type`);
+      messageApi.error(`${file.name} is not a supported file type`);
       return Upload.LIST_IGNORE;
     }
 
     const isValidSize = file.size / 1024 / 1024 < maxFileSize;
     if (!isValidSize) {
-      message.error(`${file.name} must be smaller than ${maxFileSize}MB`);
+      messageApi.error(`${file.name} must be smaller than ${maxFileSize}MB`);
       return Upload.LIST_IGNORE;
     }
 
@@ -171,7 +172,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       if (status === 'done') {
         setFileList(prev => prev.filter(f => f.uid !== info.file.uid));
       } else if (status === 'error') {
-        message.error(`${info.file.name} file upload failed.`);
+        messageApi.error(`${info.file.name} file upload failed.`);
       }
     },
     onDrop(e) {
