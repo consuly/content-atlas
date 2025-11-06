@@ -9,6 +9,7 @@ export interface ApiKey {
   is_active: boolean;
   rate_limit_per_minute: number;
   allowed_endpoints?: string[];
+  key_preview?: string;
 }
 
 export interface CreateKeyRequest {

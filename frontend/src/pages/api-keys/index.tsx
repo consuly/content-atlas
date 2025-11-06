@@ -12,7 +12,8 @@ import type { ColumnsType } from 'antd/es/table';
 import axios from 'axios';
 import { CreateKeyModal } from './CreateKeyModal';
 import { UpdateKeyModal } from './UpdateKeyModal';
-import type { ApiKey } from './types';
+import { RevealKeyModal } from './RevealKeyModal';
+import type { ApiKey, CreateKeyResponse } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -23,6 +24,8 @@ export const ApiKeysPage: React.FC = () => {
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
   const [selectedKey, setSelectedKey] = useState<ApiKey | null>(null);
+  const [recentlyCreatedKey, setRecentlyCreatedKey] = useState<CreateKeyResponse | null>(null);
+  const [showRevealModal, setShowRevealModal] = useState(false);
 
   const fetchKeys = async (status?: string) => {
     setLoading(true);
@@ -286,6 +289,25 @@ export const ApiKeysPage: React.FC = () => {
 
   return (
     <div style={{ padding: '24px' }}>
+      {recentlyCreatedKey && (
+        <Card
+          type="inner"
+          title="Don't forget to configure your new API key"
+          style={{ marginBottom: 16 }}
+          extra={
+            <Space>
+              <Button type="primary" onClick={() => setShowRevealModal(true)}>
+                Show API Key Again
+              </Button>
+              <Button onClick={() => setRecentlyCreatedKey(null)}>Dismiss</Button>
+            </Space>
+          }
+        >
+          The base URL for this project is{' '}
+          <strong>{API_URL}</strong>. Use it together with the API key when setting
+          up another application.
+        </Card>
+      )}
       <Card
         title="API Keys Management"
         extra={
@@ -332,6 +354,9 @@ export const ApiKeysPage: React.FC = () => {
         visible={createModalVisible}
         onClose={() => setCreateModalVisible(false)}
         onSuccess={() => fetchKeys(activeTab)}
+        onKeyCreated={(key) => {
+          setRecentlyCreatedKey(key);
+        }}
       />
 
       <UpdateKeyModal
@@ -342,6 +367,12 @@ export const ApiKeysPage: React.FC = () => {
           setSelectedKey(null);
         }}
         onSuccess={() => fetchKeys(activeTab)}
+      />
+      <RevealKeyModal
+        visible={showRevealModal && !!recentlyCreatedKey}
+        apiKey={recentlyCreatedKey}
+        onClose={() => setShowRevealModal(false)}
+        onDismiss={() => setRecentlyCreatedKey(null)}
       />
     </div>
   );
