@@ -3,6 +3,7 @@ import { Modal, Form, Input, InputNumber, Select, Button, Alert, Space, Typograp
 import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import type { CreateKeyRequest, CreateKeyResponse } from './types';
+import { saveApiKeySecret } from './apiKeyStorage';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -11,11 +12,17 @@ interface CreateKeyModalProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  onKeyCreated?: (key: CreateKeyResponse) => void;
 }
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({ visible, onClose, onSuccess }) => {
+export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({
+  visible,
+  onClose,
+  onSuccess,
+  onKeyCreated,
+}) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [createdKey, setCreatedKey] = useState<CreateKeyResponse | null>(null);
@@ -36,6 +43,8 @@ export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({ visible, onClose
       );
 
       setCreatedKey(response.data);
+      saveApiKeySecret(response.data.key_id, response.data.api_key, response.data.app_name);
+      onKeyCreated?.(response.data);
       message.success('API key created successfully!');
       // Refresh the list immediately after creation
       onSuccess();
@@ -126,6 +135,22 @@ export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({ visible, onClose
             >
               {copied ? 'Copied!' : 'Copy to Clipboard'}
             </Button>
+          </div>
+
+          <div>
+            <Text strong>Base URL:</Text>
+            <div
+              style={{
+                marginTop: 8,
+                padding: 12,
+                background: '#f5f5f5',
+                borderRadius: 4,
+                fontFamily: 'monospace',
+                wordBreak: 'break-all',
+              }}
+            >
+              {API_URL}
+            </div>
           </div>
 
           <div>
