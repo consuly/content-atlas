@@ -440,6 +440,7 @@ def test_analyze_response_structure(require_llm):
     assert "error" in data or data["error"] is None
 
 
+@pytest.mark.b2
 def test_b2_analyze_response_structure(require_llm):
     """Test B2 analysis response structure with the real LLM."""
     with patch('app.main.download_file_from_b2') as mock_download:

@@ -173,6 +173,9 @@ pytest --cov=app
 # Run specific tests
 pytest tests/test_api.py -v
 
+# Skip B2 analysis tests (e.g., when B2/LLM creds unavailable)
+pytest -m "not b2"
+
 # Start development server
 uvicorn app.main:app --reload
 ```
