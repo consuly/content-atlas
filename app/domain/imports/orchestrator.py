@@ -10,7 +10,7 @@ from sqlalchemy import text, inspect
 import time
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait, FIRST_COMPLETED
 
 from .processors.csv_processor import process_csv, process_excel, process_large_excel
 from .processors.json_processor import process_json
@@ -33,12 +33,14 @@ from .history import (
 )
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from .schema_mapper import analyze_schema_compatibility, transform_record
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 # Chunk size for parallel processing - increased to 20K for better performance
 # Reduces overhead of chunk management while maintaining parallelism benefits
 CHUNK_SIZE = 20000
+MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
 
 
 def _summarize_type_mismatches(mapping_errors: List[Any]) -> List[Dict[str, Any]]:
@@ -168,7 +170,8 @@ def _map_chunk(
 def _map_chunks_parallel(
     raw_chunks: List[List[Dict[str, Any]]],
     config: MappingConfig,
-    max_workers: int = 4
+    max_workers: int = 4,
+    timeout_seconds: Optional[int] = None
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map multiple chunks in parallel and aggregate results.
@@ -177,15 +180,20 @@ def _map_chunks_parallel(
         raw_chunks: List of record chunks to map
         config: Mapping configuration
         max_workers: Maximum number of parallel workers
+        timeout_seconds: Optional timeout for the mapping stage in seconds
     
     Returns:
         Tuple of (all_mapped_records, all_errors)
     """
     logger.info(f"Starting parallel mapping for {len(raw_chunks)} chunks with {max_workers} workers")
+    if timeout_seconds and timeout_seconds > 0:
+        logger.info("Enforcing mapping timeout of %d seconds for parallel mapping", timeout_seconds)
     
-    all_mapped_records = []
-    all_errors = []
-    chunk_results = {}
+    all_mapped_records: List[Dict[str, Any]] = []
+    all_errors: List[Dict[str, Any]] = []
+    chunk_results: Dict[int, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
+
+    deadline = time.time() + timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all chunk mapping tasks
@@ -193,17 +201,84 @@ def _map_chunks_parallel(
             executor.submit(_map_chunk, chunk_records, config, chunk_num + 1): chunk_num
             for chunk_num, chunk_records in enumerate(raw_chunks)
         }
-        
-        # Collect results as they complete
-        for future in as_completed(future_to_chunk):
-            chunk_num = future_to_chunk[future]
+        pending_futures = set(future_to_chunk.keys())
+
+        while pending_futures:
+            if deadline is not None:
+                wait_timeout = deadline - time.time()
+                if wait_timeout <= 0:
+                    pending_chunks = [
+                        future_to_chunk[future] + 1
+                        for future in pending_futures
+                        if not future.done()
+                    ]
+                    logger.error(
+                        "Parallel mapping timed out after %d seconds; pending chunks: %s",
+                        timeout_seconds,
+                        pending_chunks or "none",
+                    )
+                    for future in pending_futures:
+                        future.cancel()
+                    raise TimeoutError(
+                        f"Mapping stage timed out after {timeout_seconds} seconds. "
+                        "Check mapping rules or reduce dataset size."
+                    )
+            else:
+                wait_timeout = None
+
             try:
-                result_chunk_num, mapped_records, errors = future.result()
-                chunk_results[result_chunk_num] = (mapped_records, errors)
-                logger.info(f"Chunk {result_chunk_num} mapping completed")
-            except Exception as e:
-                logger.error(f"Error in chunk {chunk_num + 1} mapping: {e}")
-                raise
+                done, not_done = wait(
+                    pending_futures,
+                    timeout=wait_timeout,
+                    return_when=FIRST_COMPLETED
+                )
+            except FuturesTimeoutError as exc:  # pragma: no cover - defensive
+                pending_chunks = [
+                    future_to_chunk[future] + 1
+                    for future in pending_futures
+                    if not future.done()
+                ]
+                logger.error(
+                    "Parallel mapping timed out after %d seconds; pending chunks: %s",
+                    timeout_seconds,
+                    pending_chunks or "none",
+                )
+                for future in pending_futures:
+                    future.cancel()
+                raise TimeoutError(
+                    f"Mapping stage timed out after {timeout_seconds} seconds. "
+                    "Check mapping rules or reduce dataset size."
+                ) from exc
+
+            if not done:
+                pending_chunks = [
+                    future_to_chunk[future] + 1
+                    for future in pending_futures
+                    if not future.done()
+                ]
+                logger.error(
+                    "Parallel mapping timed out after %d seconds; pending chunks: %s",
+                    timeout_seconds,
+                    pending_chunks or "none",
+                )
+                for future in pending_futures:
+                    future.cancel()
+                raise TimeoutError(
+                    f"Mapping stage timed out after {timeout_seconds} seconds. "
+                    "Check mapping rules or reduce dataset size."
+                )
+
+            for future in done:
+                chunk_num = future_to_chunk[future]
+                try:
+                    result_chunk_num, mapped_records, errors = future.result()
+                    chunk_results[result_chunk_num] = (mapped_records, errors)
+                    logger.info(f"Chunk {result_chunk_num} mapping completed")
+                except Exception as e:
+                    logger.error(f"Error in chunk {chunk_num + 1} mapping: {e}")
+                    raise
+
+            pending_futures = not_done
     
     # Aggregate results in order
     for chunk_num in sorted(chunk_results.keys()):
@@ -431,11 +506,36 @@ def execute_data_import(
                 logger.info(f"Using {max_workers} parallel workers for mapping")
                 
                 # Map chunks in parallel
-                mapped_records, mapping_errors = _map_chunks_parallel(chunks, mapping_config, max_workers)
+                timeout_seconds = MAP_STAGE_TIMEOUT_SECONDS if MAP_STAGE_TIMEOUT_SECONDS > 0 else None
+                mapped_records, mapping_errors = _map_chunks_parallel(
+                    chunks,
+                    mapping_config,
+                    max_workers,
+                    timeout_seconds=timeout_seconds
+                )
             else:
                 # Use sequential mapping for small datasets
                 logger.info(f"Using sequential mapping for {total_rows} records")
-                mapped_records, mapping_errors = map_data(records, mapping_config)
+                timeout_seconds = MAP_STAGE_TIMEOUT_SECONDS if MAP_STAGE_TIMEOUT_SECONDS > 0 else None
+                if timeout_seconds:
+                    logger.info("Enforcing mapping timeout of %d seconds for sequential mapping", timeout_seconds)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(map_data, records, mapping_config)
+                    try:
+                        if timeout_seconds is None:
+                            mapped_records, mapping_errors = future.result()
+                        else:
+                            mapped_records, mapping_errors = future.result(timeout=timeout_seconds)
+                    except FuturesTimeoutError as exc:
+                        logger.error(
+                            "Sequential mapping timed out after %d seconds",
+                            timeout_seconds
+                        )
+                        future.cancel()
+                        raise TimeoutError(
+                            f"Mapping stage timed out after {timeout_seconds} seconds. "
+                            "Check mapping rules or reduce dataset size."
+                        ) from exc
             type_mismatch_summary = _summarize_type_mismatches(mapping_errors)
             
             map_time = time.time() - map_start

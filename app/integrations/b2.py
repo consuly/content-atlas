@@ -1,7 +1,39 @@
 import io
-from b2sdk.v2 import B2Api, InMemoryAccountInfo
-from app.core.config import settings
+import logging
 from typing import Dict, Any
+
+from b2sdk.exception import B2Error
+from b2sdk.v2 import B2Api, B2Http, B2Session, InMemoryAccountInfo
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class FastFailB2Http(B2Http):
+    """Limit B2 network retries so failures surface quickly."""
+
+    @classmethod
+    def _translate_and_retry(cls, fcn, try_count, post_params=None):
+        max_attempts = max(1, settings.b2_max_retries)
+        limited_try_count = min(try_count, max_attempts)
+        if limited_try_count < try_count:
+            logger.debug(
+                "Reducing B2 retry attempts from %d to %d", try_count, limited_try_count
+            )
+        return super()._translate_and_retry(fcn, limited_try_count, post_params)
+
+
+class FastFailB2Session(B2Session):
+    """Use fast-fail HTTP layer for all B2 interactions."""
+
+    B2HTTP_CLASS = FastFailB2Http
+
+
+class FastFailB2Api(B2Api):
+    """API wrapper that employs limited retry behaviour."""
+
+    SESSION_CLASS = FastFailB2Session
 
 
 def get_b2_api():
@@ -10,7 +42,7 @@ def get_b2_api():
         raise ValueError("B2 configuration is incomplete. Please set B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, and B2_BUCKET_NAME in your environment.")
 
     info = InMemoryAccountInfo()
-    b2_api = B2Api(info)
+    b2_api = FastFailB2Api(info)
     b2_api.authorize_account("production", settings.b2_application_key_id, settings.b2_application_key)
     return b2_api
 
@@ -29,7 +61,16 @@ def download_file_from_b2(file_name: str) -> bytes:
     bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
 
     # Download file - bucket.download_file_by_name returns a DownloadedFile object
-    downloaded_file = bucket.download_file_by_name(file_name)
+    try:
+        downloaded_file = bucket.download_file_by_name(file_name)
+    except B2Error as exc:
+        logger.error(
+            "Failed to download B2 file '%s' after %d attempts: %s",
+            file_name,
+            settings.b2_max_retries,
+            exc,
+        )
+        raise
 
     # Get the content from the response
     return downloaded_file.response.content

@@ -1,6 +1,7 @@
 """
 Data import endpoints for mapping and inserting data from various sources.
 """
+import logging
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.orm import Session
 import json
@@ -13,6 +14,8 @@ from app.api.dependencies import records_cache, CACHE_TTL_SECONDS
 from app.integrations.b2 import download_file_from_b2
 
 router = APIRouter(tags=["imports"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/map-data", response_model=MapDataResponse)
@@ -42,6 +45,8 @@ async def map_data_endpoint(
     from app.db.models import FileAlreadyImportedException, DuplicateDataException
     
     try:
+        logger.info("Received /map-data request for file '%s'", getattr(file, "filename", "unknown"))
+
         # Parse mapping config
         if not mapping_json:
             raise HTTPException(status_code=400, detail="Mapping configuration required")
@@ -72,16 +77,24 @@ async def map_data_endpoint(
                 if cache_entry.get('config_hash') == config_hash and 'mapped_records' in cache_entry:
                     cached_records = cache_entry['mapped_records']
                     use_mapped_cache = True
-                    print(f"✅ CACHE HIT: Using cached MAPPED records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
+                    logger.info(
+                        "CACHE HIT: using cached mapped records for file hash %s... (%d records)",
+                        file_hash[:8],
+                        len(cached_records),
+                    )
                 elif 'raw_records' in cache_entry:
                     cached_records = cache_entry['raw_records']
-                    print(f"✅ CACHE HIT: Using cached RAW records for file hash {file_hash[:8]}... ({len(cached_records)} records)")
+                    logger.info(
+                        "CACHE HIT: using cached raw records for file hash %s... (%d records)",
+                        file_hash[:8],
+                        len(cached_records),
+                    )
             else:
                 # Cache expired, remove it
                 del records_cache[file_hash]
-                print(f"⏰ Cache expired for file hash {file_hash[:8]}...")
+                logger.info("Cache expired for file hash %s...", file_hash[:8])
         else:
-            print(f"❌ CACHE MISS: No cached records for file hash {file_hash[:8]}...")
+            logger.info("CACHE MISS: no cached records for file hash %s...", file_hash[:8])
         
         # Execute unified import with optional cached records
         # Pass pre_mapped=True only if we're using cached MAPPED records
@@ -101,7 +114,7 @@ async def map_data_endpoint(
             # For now, we'll keep the cache entry but update timestamp
             records_cache[file_hash]['timestamp'] = current_time
             records_cache[file_hash]['config_hash'] = config_hash
-            print(f"💾 Updated cache entry for file hash {file_hash[:8]}...")
+            logger.info("Updated cache entry for file hash %s...", file_hash[:8])
 
         return MapDataResponse(
             success=True,
@@ -115,10 +128,13 @@ async def map_data_endpoint(
         )
 
     except FileAlreadyImportedException as e:
+        logger.warning("File already imported: %s", e)
         raise HTTPException(status_code=409, detail=str(e))
     except DuplicateDataException as e:
+        logger.warning("Duplicate data detected: %s", e)
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
+        logger.exception("Map data processing failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

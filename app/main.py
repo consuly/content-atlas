@@ -8,6 +8,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+from .core.config import settings
+from .core.logging_config import configure_logging
+
 # Import routers
 from .api.routers import (
     imports, mapping, tables, tasks, query, analysis,
@@ -17,6 +20,9 @@ from .api.routers import (
 # Backwards-compatible exports used by tests and legacy modules.
 from .domain.queries.analyzer import analyze_file_for_import  # noqa: F401
 from .integrations.b2 import download_file_from_b2  # noqa: F401
+
+# Ensure logging is configured before the application starts serving requests.
+configure_logging(settings.log_level)
 
 
 @asynccontextmanager
