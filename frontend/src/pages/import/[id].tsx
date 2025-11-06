@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, message } from 'antd';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider } from 'antd';
+import type { BreadcrumbProps, DescriptionsProps } from 'antd';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 
@@ -52,6 +53,7 @@ interface ImportHistory {
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { message: messageApi } = AntdApp.useApp();
   
   const [file, setFile] = useState<UploadedFile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -128,8 +130,25 @@ export const ImportMappingPage: React.FC = () => {
       });
 
       if (tableResponse.data.success) {
+        const rawData = tableResponse.data.data as Record<string, unknown>[];
+        const dataWithKeys = rawData.map((row, index) => {
+          const existingKey =
+            (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as
+              | string
+              | number
+              | undefined;
+          const key =
+            existingKey !== undefined
+              ? String(existingKey)
+              : `${tableName}-${index}`;
+
+          return {
+            __rowKey: key,
+            ...row,
+          };
+        });
         setTableData({
-          data: tableResponse.data.data,
+          data: dataWithKeys,
           total_rows: tableResponse.data.total_rows,
         });
       }
@@ -269,7 +288,7 @@ export const ImportMappingPage: React.FC = () => {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setProcessing(false);
     }
@@ -326,13 +345,13 @@ export const ImportMappingPage: React.FC = () => {
       } else {
         const fallback = response.data.error || 'Analysis failed';
         setError(fallback);
-        message.error(fallback);
+        messageApi.error(fallback);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setProcessing(false);
     }
@@ -392,7 +411,7 @@ export const ImportMappingPage: React.FC = () => {
       } else {
         const failureMessage = response.data.message || 'Import execution failed';
         setConversation((prev) => {
-          const next = [
+          const next: Array<{ role: 'user' | 'assistant'; content: string }> = [
             ...prev,
             { role: 'assistant', content: `⚠️ ${failureMessage}` },
           ];
@@ -406,13 +425,13 @@ export const ImportMappingPage: React.FC = () => {
         if (response.data.thread_id) {
           setThreadId(response.data.thread_id);
         }
-        message.error(failureMessage);
+        messageApi.error(failureMessage);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Import execution failed';
       setError(errorMsg);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setProcessing(false);
     }
@@ -434,6 +453,115 @@ export const ImportMappingPage: React.FC = () => {
   const renderMappedFileView = () => {
     if (!file || file.status !== 'mapped') return null;
 
+    const summaryItems: DescriptionsProps['items'] = [
+      {
+        key: 'table-name',
+        label: 'Table Name',
+        children: <Tag color="blue">{file.mapped_table_name}</Tag>,
+      },
+      {
+        key: 'mapped-date',
+        label: 'Mapped Date',
+        children: formatDate(file.mapped_date),
+      },
+      {
+        key: 'rows-imported',
+        label: 'Rows Imported',
+        children: <Text strong>{file.mapped_rows?.toLocaleString() || 0}</Text>,
+      },
+      {
+        key: 'file-size',
+        label: 'File Size',
+        children: formatBytes(file.file_size),
+      },
+      {
+        key: 'upload-date',
+        label: 'Upload Date',
+        children: formatDate(file.upload_date),
+      },
+      {
+        key: 'status',
+        label: 'Status',
+        children: <Tag color="success">Mapped</Tag>,
+      },
+    ];
+
+    const historyItems: DescriptionsProps['items'] = importHistory
+      ? [
+          ...(importHistory.import_strategy
+            ? [
+                {
+                  key: 'import-strategy',
+                  label: 'Import Strategy',
+                  children: <Tag>{importHistory.import_strategy}</Tag>,
+                  span: 2,
+                } as const,
+              ]
+            : []),
+          {
+            key: 'total-rows',
+            label: 'Total Rows in File',
+            children:
+              importHistory.total_rows_in_file?.toLocaleString() || '-',
+          },
+          {
+            key: 'rows-inserted',
+            label: 'Rows Inserted',
+            children: importHistory.rows_inserted?.toLocaleString() || '-',
+          },
+          ...(importHistory.duplicates_found !== undefined &&
+          importHistory.duplicates_found > 0
+            ? [
+                {
+                  key: 'duplicates-found',
+                  label: 'Duplicates Found',
+                  children: (
+                    <Text type="warning">
+                      {importHistory.duplicates_found.toLocaleString()}
+                    </Text>
+                  ),
+                  span: 2,
+                } as const,
+              ]
+            : []),
+          ...(importHistory.data_validation_errors !== undefined &&
+          importHistory.data_validation_errors > 0
+            ? [
+                {
+                  key: 'validation-errors',
+                  label: 'Validation Errors',
+                  children: (
+                    <Text type="danger">
+                      {importHistory.data_validation_errors.toLocaleString()}
+                    </Text>
+                  ),
+                  span: 2,
+                } as const,
+              ]
+            : []),
+          ...(importHistory.duration_seconds
+            ? [
+                {
+                  key: 'processing-time',
+                  label: 'Processing Time',
+                  children: `${importHistory.duration_seconds.toFixed(2)}s`,
+                  span: 2,
+                } as const,
+              ]
+            : []),
+          {
+            key: 'import-id',
+            label: 'Import ID',
+            children: (
+              <Text code style={{ fontSize: '11px' }}>
+                {importHistory.import_id}
+              </Text>
+            ),
+            span: 2,
+          },
+        ]
+      : [];
+
     return (
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <Alert
@@ -446,62 +574,18 @@ export const ImportMappingPage: React.FC = () => {
 
         {/* Import Summary */}
         <Card title={<><InfoCircleOutlined /> Import Summary</>} size="small">
-          <Descriptions column={2} bordered size="small">
-            <Descriptions.Item label="Table Name">
-              <Tag color="blue">{file.mapped_table_name}</Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="Mapped Date">
-              {formatDate(file.mapped_date)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Rows Imported">
-              <Text strong>{file.mapped_rows?.toLocaleString() || 0}</Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="File Size">
-              {formatBytes(file.file_size)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Upload Date">
-              {formatDate(file.upload_date)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Status">
-              <Tag color="success">Mapped</Tag>
-            </Descriptions.Item>
-          </Descriptions>
+          <Descriptions column={2} bordered size="small" items={summaryItems} />
         </Card>
 
         {/* Import Details */}
         {importHistory && (
           <Card title={<><DatabaseOutlined /> Import Details</>} size="small" loading={loadingDetails}>
-            <Descriptions column={2} bordered size="small">
-              {importHistory.import_strategy && (
-                <Descriptions.Item label="Import Strategy" span={2}>
-                  <Tag>{importHistory.import_strategy}</Tag>
-                </Descriptions.Item>
-              )}
-              <Descriptions.Item label="Total Rows in File">
-                {importHistory.total_rows_in_file?.toLocaleString() || '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="Rows Inserted">
-                {importHistory.rows_inserted?.toLocaleString() || '-'}
-              </Descriptions.Item>
-              {importHistory.duplicates_found !== undefined && importHistory.duplicates_found > 0 && (
-                <Descriptions.Item label="Duplicates Found">
-                  <Text type="warning">{importHistory.duplicates_found.toLocaleString()}</Text>
-                </Descriptions.Item>
-              )}
-              {importHistory.data_validation_errors !== undefined && importHistory.data_validation_errors > 0 && (
-                <Descriptions.Item label="Validation Errors">
-                  <Text type="danger">{importHistory.data_validation_errors.toLocaleString()}</Text>
-                </Descriptions.Item>
-              )}
-              {importHistory.duration_seconds && (
-                <Descriptions.Item label="Processing Time">
-                  {importHistory.duration_seconds.toFixed(2)}s
-                </Descriptions.Item>
-              )}
-              <Descriptions.Item label="Import ID" span={2}>
-                <Text code style={{ fontSize: '11px' }}>{importHistory.import_id}</Text>
-              </Descriptions.Item>
-            </Descriptions>
+            <Descriptions
+              column={2}
+              bordered
+              size="small"
+              items={historyItems}
+            />
           </Card>
         )}
 
@@ -522,16 +606,19 @@ export const ImportMappingPage: React.FC = () => {
           >
             <Table
               dataSource={tableData.data}
-              columns={Object.keys(tableData.data[0] || {}).map(key => ({
-                title: key,
-                dataIndex: key,
-                key: key,
-                ellipsis: true,
-                width: 150,
-              }))}
+              columns={Object.keys(tableData.data[0] || {})
+                .filter((key) => key !== "__rowKey")
+                .map((key) => ({
+                  title: key,
+                  dataIndex: key,
+                  key,
+                  ellipsis: true,
+                  width: 150,
+                }))}
               pagination={false}
               scroll={{ x: 'max-content' }}
               size="small"
+              rowKey="__rowKey"
             />
             <Divider />
             <Text type="secondary">
@@ -608,6 +695,30 @@ export const ImportMappingPage: React.FC = () => {
       </div>
     );
   }
+
+  const breadcrumbItems: BreadcrumbProps['items'] = [
+    {
+      key: 'import',
+      title: (
+        <span
+          style={{ cursor: 'pointer' }}
+          onClick={() => navigate('/import')}
+        >
+          <HomeOutlined />
+          <span style={{ marginLeft: 8 }}>Import</span>
+        </span>
+      ),
+    },
+    {
+      key: 'file',
+      title: (
+        <span>
+          <FileOutlined />
+          <span style={{ marginLeft: 8 }}>{file.file_name}</span>
+        </span>
+      ),
+    },
+  ];
 
   const autoTabContent = (
     <div style={{ padding: '24px 0' }}>
@@ -855,18 +966,7 @@ export const ImportMappingPage: React.FC = () => {
 
   return (
     <div style={{ padding: '24px' }}>
-      <Breadcrumb style={{ marginBottom: 16 }}>
-        <Breadcrumb.Item>
-          <a onClick={() => navigate('/import')} style={{ cursor: 'pointer' }}>
-            <HomeOutlined />
-            <span style={{ marginLeft: 8 }}>Import</span>
-          </a>
-        </Breadcrumb.Item>
-        <Breadcrumb.Item>
-          <FileOutlined />
-          <span style={{ marginLeft: 8 }}>{file.file_name}</span>
-        </Breadcrumb.Item>
-      </Breadcrumb>
+      <Breadcrumb style={{ marginBottom: 16 }} items={breadcrumbItems} />
 
       <Button
         icon={<ArrowLeftOutlined />}

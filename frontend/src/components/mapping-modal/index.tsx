@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Modal, Tabs, Button, Space, Alert, Spin, Typography, message } from 'antd';
+import { App as AntdApp, Modal, Tabs, Button, Space, Alert, Spin, Typography } from 'antd';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../error-log-viewer';
@@ -28,6 +28,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDetails, setErrorDetails] = useState<Record<string, unknown> | null>(null);
+  const { message: messageApi } = AntdApp.useApp();
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -71,7 +72,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       });
 
       if (response.data.success) {
-        message.success('File mapped successfully!');
+        messageApi.success('File mapped successfully!');
         // Trigger parent refresh and close modal
         onSuccess();
         onClose();
@@ -84,7 +85,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       const errorMsg = error.response?.data?.detail || error.message || 'Processing failed';
       setError(errorMsg);
       setErrorDetails(error.response?.data?.error_details || null);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -126,7 +127,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -171,13 +172,13 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       } else {
         const fallback = response.data.error || 'Analysis failed';
         setError(fallback);
-        message.error(fallback);
+        messageApi.error(fallback);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -216,7 +217,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       );
 
       if (response.data.success) {
-        message.success('Import executed successfully!');
+        messageApi.success('Import executed successfully!');
         onSuccess();
         setThreadId(null);
         setCanExecute(false);
@@ -230,7 +231,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       } else {
         const failureMessage = response.data.message || 'Import execution failed';
         setConversation((prev) => {
-          const next = [
+          const next: Array<{ role: 'user' | 'assistant'; content: string }> = [
             ...prev,
             { role: 'assistant', content: `⚠️ ${failureMessage}` },
           ];
@@ -245,13 +246,13 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           setThreadId(response.data.thread_id);
         }
         setError(failureMessage);
-        message.error(failureMessage);
+        messageApi.error(failureMessage);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Import execution failed';
       setError(errorMsg);
-      message.error(errorMsg);
+      messageApi.error(errorMsg);
     } finally {
       setLoading(false);
     }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { Card, Table, Tabs, Badge, Button, Space, Popconfirm, message } from 'antd';
+import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Popconfirm } from 'antd';
 import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { FileUpload } from '../../components/file-upload';
@@ -29,6 +29,7 @@ export const ImportPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('all');
   const [totalCount, setTotalCount] = useState(0);
+  const { message: messageApi } = AntdApp.useApp();
 
   const fetchFiles = async (status?: string) => {
     setLoading(true);
@@ -55,7 +56,7 @@ export const ImportPage: React.FC = () => {
         setTotalCount(response.data.total_count);
       }
     } catch (error) {
-      message.error('Failed to fetch files');
+      messageApi.error('Failed to fetch files');
       console.error('Error fetching files:', error);
     } finally {
       setLoading(false);
@@ -83,11 +84,11 @@ export const ImportPage: React.FC = () => {
       });
 
       if (response.data.success) {
-        message.success(`${fileName} deleted successfully`);
+        messageApi.success(`${fileName} deleted successfully`);
         fetchFiles(activeTab);
       }
     } catch (error) {
-      message.error(`Failed to delete ${fileName}`);
+      messageApi.error(`Failed to delete ${fileName}`);
       console.error('Error deleting file:', error);
     }
   };
@@ -232,7 +233,7 @@ export const ImportPage: React.FC = () => {
       >
         <FileUpload
           onUploadSuccess={() => {
-            message.success('File uploaded successfully! Refreshing list...');
+            messageApi.success('File uploaded successfully! Refreshing list...');
             setTimeout(() => fetchFiles(activeTab), 1000);
           }}
           multiple={true}

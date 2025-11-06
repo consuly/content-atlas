@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Modal, Form, Input, InputNumber, Select, Button, Alert, Space, Typography, message } from 'antd';
+import { App as AntdApp, Modal, Form, Input, InputNumber, Select, Button, Alert, Space, Typography } from 'antd';
 import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import type { CreateKeyRequest, CreateKeyResponse } from './types';
@@ -27,6 +27,7 @@ export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [createdKey, setCreatedKey] = useState<CreateKeyResponse | null>(null);
   const [copied, setCopied] = useState(false);
+  const { message: messageApi } = AntdApp.useApp();
 
   const handleSubmit = async (values: CreateKeyRequest) => {
     setLoading(true);
@@ -45,11 +46,11 @@ export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({
       setCreatedKey(response.data);
       saveApiKeySecret(response.data.key_id, response.data.api_key, response.data.app_name);
       onKeyCreated?.(response.data);
-      message.success('API key created successfully!');
+      messageApi.success('API key created successfully!');
       // Refresh the list immediately after creation
       onSuccess();
     } catch (error) {
-      message.error('Failed to create API key');
+      messageApi.error('Failed to create API key');
       console.error('Error creating API key:', error);
     } finally {
       setLoading(false);
@@ -61,10 +62,10 @@ export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({
       try {
         await navigator.clipboard.writeText(createdKey.api_key);
         setCopied(true);
-        message.success('API key copied to clipboard!');
+        messageApi.success('API key copied to clipboard!');
         setTimeout(() => setCopied(false), 2000);
       } catch {
-        message.error('Failed to copy to clipboard');
+        messageApi.error('Failed to copy to clipboard');
       }
     }
   };

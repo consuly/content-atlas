@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Tabs, Badge, Button, Space, Popconfirm, message, Tooltip } from 'antd';
+import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Popconfirm, Tooltip } from 'antd';
 import {
   ReloadOutlined,
   DeleteOutlined,
@@ -26,6 +26,7 @@ export const ApiKeysPage: React.FC = () => {
   const [selectedKey, setSelectedKey] = useState<ApiKey | null>(null);
   const [recentlyCreatedKey, setRecentlyCreatedKey] = useState<CreateKeyResponse | null>(null);
   const [showRevealModal, setShowRevealModal] = useState(false);
+  const { message: messageApi } = AntdApp.useApp();
 
   const fetchKeys = async (status?: string) => {
     setLoading(true);
@@ -50,7 +51,7 @@ export const ApiKeysPage: React.FC = () => {
 
       setKeys(response.data.api_keys || []);
     } catch (error) {
-      message.error('Failed to fetch API keys');
+      messageApi.error('Failed to fetch API keys');
       console.error('Error fetching API keys:', error);
     } finally {
       setLoading(false);
@@ -70,10 +71,10 @@ export const ApiKeysPage: React.FC = () => {
         },
       });
 
-      message.success(`API key for ${appName} deleted successfully`);
+      messageApi.success(`API key for ${appName} deleted successfully`);
       fetchKeys(activeTab);
     } catch (error) {
-      message.error(`Failed to delete API key for ${appName}`);
+      messageApi.error(`Failed to delete API key for ${appName}`);
       console.error('Error deleting API key:', error);
     }
   };
@@ -91,10 +92,10 @@ export const ApiKeysPage: React.FC = () => {
         }
       );
 
-      message.success(`API key for ${appName} revoked successfully`);
+      messageApi.success(`API key for ${appName} revoked successfully`);
       fetchKeys(activeTab);
     } catch (error) {
-      message.error(`Failed to revoke API key for ${appName}`);
+      messageApi.error(`Failed to revoke API key for ${appName}`);
       console.error('Error revoking API key:', error);
     }
   };
