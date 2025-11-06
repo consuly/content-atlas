@@ -2,8 +2,8 @@ import hashlib
 import json
 from sqlalchemy import text, MetaData
 from sqlalchemy.engine import Engine
-from typing import List, Dict, Any, Tuple
-from decimal import Decimal
+from typing import List, Dict, Any, Tuple, Optional
+from decimal import Decimal, InvalidOperation
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
@@ -252,19 +252,45 @@ def coerce_value_for_sql_type(value: Any, sql_type: str) -> Any:
                 return None
 
     elif 'DECIMAL' in sql_type_upper or 'NUMERIC' in sql_type_upper:
-        # Convert to float for better psycopg2 compatibility
-        if isinstance(value, str):
-            try:
-                return float(value)
-            except (ValueError, TypeError):
+        if isinstance(value, bool):
+            return int(value)
+
+        decimal_value: Optional[Decimal] = None
+
+        if isinstance(value, Decimal):
+            decimal_value = value
+        elif isinstance(value, int):
+            return value
+        elif isinstance(value, float):
+            if math.isnan(value):
                 return None
-        elif isinstance(value, (int, float)):
-            return float(value)
+            decimal_value = Decimal(str(value))
+        elif isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return None
+            normalized = normalized.replace(',', '')
+            if normalized.startswith('$'):
+                normalized = normalized[1:]
+            if normalized.startswith('(') and normalized.endswith(')'):
+                normalized = f"-{normalized[1:-1]}"
+            try:
+                decimal_value = Decimal(normalized)
+            except InvalidOperation:
+                return None
         else:
             try:
-                return float(value)
-            except (ValueError, TypeError):
+                decimal_value = Decimal(str(value))
+            except (InvalidOperation, ValueError, TypeError):
                 return None
+
+        if decimal_value is None:
+            return None
+
+        if decimal_value == decimal_value.to_integral():
+            return int(decimal_value)
+
+        return decimal_value
 
     elif 'TEXT' in sql_type_upper or 'VARCHAR' in sql_type_upper or 'CHAR' in sql_type_upper:
         # Convert to string
