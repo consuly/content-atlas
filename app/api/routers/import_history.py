@@ -8,9 +8,17 @@ from typing import Optional
 from app.db.session import get_db
 from app.api.schemas.shared import (
     ImportHistoryListResponse, ImportHistoryRecord,
-    ImportHistoryDetailResponse, ImportStatisticsResponse
+    ImportHistoryDetailResponse, ImportStatisticsResponse,
+    ImportDuplicateRowsResponse, DuplicateDetailResponse,
+    DuplicateMergeRequest, DuplicateMergeResponse
 )
-from app.domain.imports.history import get_import_history, get_import_statistics
+from app.domain.imports.history import (
+    get_import_history,
+    get_import_statistics,
+    list_duplicate_rows,
+    get_duplicate_row_detail,
+    resolve_duplicate_row
+)
 
 router = APIRouter(prefix="/import-history", tags=["import-history"])
 
@@ -125,6 +133,100 @@ async def get_import_statistics_endpoint(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve import statistics: {str(e)}")
+
+
+@router.get("/{import_id}/duplicates", response_model=ImportDuplicateRowsResponse)
+async def get_import_duplicate_rows(
+    import_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve duplicate rows that were detected during an import.
+    """
+    if limit <= 0 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+    try:
+        records = get_import_history(import_id=import_id, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+
+        import_record = ImportHistoryRecord(**records[0])
+        duplicates = list_duplicate_rows(import_id, limit=limit, offset=offset)
+        total_count = import_record.duplicates_found or len(duplicates)
+
+        return ImportDuplicateRowsResponse(
+            success=True,
+            duplicates=duplicates,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve duplicate rows: {str(e)}")
+
+
+@router.get("/{import_id}/duplicates/{duplicate_id}", response_model=DuplicateDetailResponse)
+async def get_duplicate_row_detail_endpoint(
+    import_id: str,
+    duplicate_id: int,
+    db: Session = Depends(get_db)
+):
+    try:
+        detail = get_duplicate_row_detail(import_id, duplicate_id)
+        duplicate = detail["duplicate"]
+        existing_row = detail.get("existing_row")
+        return DuplicateDetailResponse(
+            success=True,
+            duplicate=duplicate,
+            existing_row=existing_row,
+            table_name=detail["table_name"],
+            uniqueness_columns=detail["uniqueness_columns"]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve duplicate detail: {str(exc)}")
+
+
+@router.post(
+    "/{import_id}/duplicates/{duplicate_id}/merge",
+    response_model=DuplicateMergeResponse
+)
+async def merge_duplicate_row_endpoint(
+    import_id: str,
+    duplicate_id: int,
+    request: DuplicateMergeRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        result = resolve_duplicate_row(
+            import_id=import_id,
+            duplicate_id=duplicate_id,
+            updates=request.updates or {},
+            resolved_by=request.resolved_by,
+            note=request.note
+        )
+        duplicate = result["duplicate"]
+        return DuplicateMergeResponse(
+            success=True,
+            duplicate=duplicate,
+            updated_columns=result.get("updated_columns", []),
+            existing_row=result.get("existing_row"),
+            resolution_details=result.get("resolution_details")
+        )
+    except ValueError as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to merge duplicate row: {str(exc)}")
 
 
 alias_router = APIRouter(tags=['import-history'])

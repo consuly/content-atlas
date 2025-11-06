@@ -29,7 +29,8 @@ from .history import (
     start_import_tracking, 
     complete_import_tracking,
     update_mapping_status,
-    record_mapping_errors_batch
+    record_mapping_errors_batch,
+    list_duplicate_rows
 )
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from .schema_mapper import analyze_schema_compatibility, transform_record
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 # Reduces overhead of chunk management while maintaining parallelism benefits
 CHUNK_SIZE = 20000
 MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
+DUPLICATE_PREVIEW_LIMIT = 20
 
 
 def _summarize_type_mismatches(mapping_errors: List[Any]) -> List[Dict[str, Any]]:
@@ -657,6 +659,17 @@ def execute_data_import(
         if type_mismatch_summary:
             metadata_payload = {"type_mismatch_summary": type_mismatch_summary}
 
+        duplicate_rows: List[Dict[str, Any]] = []
+        duplicate_total = duplicates_skipped
+        if duplicates_skipped > 0:
+            try:
+                duplicate_rows = list_duplicate_rows(
+                    import_id,
+                    limit=DUPLICATE_PREVIEW_LIMIT
+                )
+            except Exception as e:
+                logger.error("Failed to load duplicate rows for preview: %s", str(e))
+
         complete_import_tracking(
             import_id=import_id,
             status="success",
@@ -681,7 +694,10 @@ def execute_data_import(
             "mapping_errors": mapping_errors if mapping_errors else [],
             "type_mismatch_summary": type_mismatch_summary,
             "duration_seconds": duration,
-            "llm_followup": followup_message or None
+            "llm_followup": followup_message or None,
+            "duplicate_rows": duplicate_rows if duplicate_rows else None,
+            "duplicate_rows_count": duplicate_total if duplicate_total else None,
+            "import_id": import_id
         }
         
     except FileAlreadyImportedException as e:

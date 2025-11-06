@@ -8,6 +8,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from app.api.schemas.shared import MappingConfig
+from app.domain.imports.history import record_duplicate_rows
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,38 @@ def create_file_imports_table_if_not_exists(engine: Engine):
 
     with engine.begin() as conn:
         conn.execute(text(create_sql))
+
+
+def _get_active_import_id(engine: Engine, table_name: str) -> Tuple[str, bool]:
+    """
+    Retrieve the active import_id for a table. Returns a tuple of
+    (import_id, has_active_tracking).
+    """
+    import_id: Optional[str] = None
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT import_id FROM import_history
+            WHERE table_name = :table_name
+            AND status = 'in_progress'
+            ORDER BY import_timestamp DESC
+            LIMIT 1
+        """), {"table_name": table_name})
+        row = result.fetchone()
+        if row:
+            import_id = str(row[0])
+
+    if import_id:
+        return import_id, True
+
+    import uuid
+    temp_import_id = str(uuid.uuid4())
+    logger.warning(
+        "No active import tracking record found for table '%s'. "
+        "Using temporary import_id %s for metadata. Duplicate audit will be skipped.",
+        table_name,
+        temp_import_id,
+    )
+    return temp_import_id, False
 
 
 def create_table_if_not_exists(engine: Engine, config: MappingConfig):
@@ -622,17 +655,27 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
     else:
         print("DEBUG: no config provided")
 
+    # Determine import context upfront so we can attach metadata consistently
+    import_id, has_active_import = _get_active_import_id(engine, table_name)
+
     # Determine if we should use chunked processing
-    # Use chunks for large datasets to optimize memory and performance
-    # Increased to 20K for better performance (matches import_orchestrator.py)
     CHUNK_SIZE = 20000
     use_chunked_processing = len(records) > CHUNK_SIZE
     
     if use_chunked_processing:
         print(f"DEBUG: Using chunked processing with chunk size {CHUNK_SIZE} for {len(records)} records")
-        # Records passed to insert_records are already mapped (from import_orchestrator)
-        # They just need type coercion during insertion
-        inserted, duplicates = _insert_records_chunked(engine, table_name, records, config, file_content, file_name, CHUNK_SIZE, pre_mapped=False)
+        inserted, duplicates = _insert_records_chunked(
+            engine,
+            table_name,
+            records,
+            config,
+            file_content,
+            file_name,
+            CHUNK_SIZE,
+            import_id,
+            has_active_import,
+            pre_mapped=False
+        )
         return inserted, duplicates
     
     # For smaller datasets, use the standard approach
@@ -650,7 +693,8 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                 raise FileAlreadyImportedException(file_hash, table_name)
 
         # Row-level duplicate check (unless allow_duplicates is true)
-        duplicate_indices = []
+        duplicate_indices: List[int] = []
+        duplicate_entries: List[Dict[str, Any]] = []
         if not config.duplicate_check.allow_duplicates:
             print("DEBUG: Checking for row-level duplicates using database-side method")
             # Use a separate connection to see committed data
@@ -660,6 +704,24 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                 
                 if duplicates_found > 0:
                     print(f"DEBUG: Found {duplicates_found} duplicates, will skip them and insert only non-duplicates")
+                    duplicate_entries = [
+                        {
+                            "record_number": idx + 1,
+                            "record": records[idx].copy()
+                        }
+                        for idx in duplicate_indices
+                    ]
+                    if duplicate_entries and has_active_import:
+                        try:
+                            record_duplicate_rows(import_id, duplicate_entries)
+                        except Exception as e:
+                            logger.error("Failed to persist duplicate audit rows: %s", str(e))
+                    elif duplicate_entries:
+                        logger.warning(
+                            "Duplicate rows detected for table '%s' but no active import tracking record is available. "
+                            "Skipping duplicate audit persistence.",
+                            table_name
+                        )
                     # Filter out duplicate records
                     records = [rec for idx, rec in enumerate(records) if idx not in duplicate_indices]
                     print(f"DEBUG: After filtering: {len(records)} non-duplicate records remaining")
@@ -668,28 +730,6 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
         if not records:
             print(f"DEBUG: All {duplicates_found} records were duplicates, nothing to insert")
             return 0, duplicates_found
-
-    # Get import_id from import_history (should be set by import_orchestrator)
-    # For now, we'll need to get it from the context or create a temporary one
-    import_id = None
-    with engine.connect() as conn:
-        # Try to get the most recent import_id for this table
-        result = conn.execute(text("""
-            SELECT import_id FROM import_history 
-            WHERE table_name = :table_name 
-            AND status = 'in_progress'
-            ORDER BY import_timestamp DESC 
-            LIMIT 1
-        """), {"table_name": table_name})
-        row = result.fetchone()
-        if row:
-            import_id = str(row[0])
-    
-    if not import_id:
-        # Fallback: create a temporary import_id (shouldn't happen in normal flow)
-        import uuid
-        import_id = str(uuid.uuid4())
-        print(f"WARNING: No active import found, using temporary import_id: {import_id}")
 
     # Now perform the insert in a transaction
     # Get columns from first record, EXCLUDING any metadata that might already exist
@@ -879,10 +919,10 @@ def _check_chunk_for_duplicates(
 def _check_chunks_parallel(
     engine: Engine,
     table_name: str,
-    chunks: List[List[Dict[str, Any]]],
+    chunks: List[Tuple[int, List[Dict[str, Any]]]],
     config: MappingConfig,
     max_workers: int = 4
-) -> int:
+) -> Tuple[int, List[Dict[str, Any]]]:
     """
     Check multiple chunks for duplicates in parallel using database-side queries.
     
@@ -897,10 +937,7 @@ def _check_chunks_parallel(
         max_workers: Maximum number of parallel workers
     
     Returns:
-        Total number of duplicates found across all chunks
-    
-    Raises:
-        DuplicateDataException: If any duplicates are found
+        Tuple of (total_duplicates, duplicate_entries)
     """
     logger.info(f"Starting parallel duplicate check for {len(chunks)} chunks with {max_workers} workers")
     
@@ -909,11 +946,11 @@ def _check_chunks_parallel(
         uniqueness_columns = config.duplicate_check.uniqueness_columns
     else:
         # Use first chunk to determine columns
-        uniqueness_columns = list(chunks[0][0].keys()) if chunks and chunks[0] else []
+        uniqueness_columns = list(chunks[0][1][0].keys()) if chunks and chunks[0] and chunks[0][1] else []
     
     if not uniqueness_columns:
         logger.warning("No uniqueness columns specified, skipping duplicate check")
-        return 0
+        return 0, []
     
     # Quick check: does table exist and have data?
     with engine.connect() as conn:
@@ -925,25 +962,25 @@ def _check_chunks_parallel(
         
         if not table_exists:
             logger.info(f"Table '{table_name}' does not exist yet, no duplicates possible")
-            return 0
+            return 0, []
         
         count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
         row_count = count_result.scalar()
         
         if row_count == 0:
             logger.info(f"Table '{table_name}' is empty, no duplicates possible")
-            return 0
+            return 0, []
         
         logger.info(f"Table '{table_name}' has {row_count} existing rows, checking for duplicates")
     
     # Check chunks in parallel using database-side queries
     total_duplicates = 0
-    duplicate_chunks = []
+    duplicate_entries: List[Dict[str, Any]] = []
     
-    def check_chunk_db_side(chunk_num: int, chunk_records: List[Dict[str, Any]]) -> Tuple[int, int]:
+    def check_chunk_db_side(chunk_num: int, chunk_start: int, chunk_records: List[Dict[str, Any]]) -> Tuple[int, int, List[Dict[str, Any]]]:
         """Check a single chunk using database-side query."""
         if not chunk_records:
-            return (chunk_num, 0)
+            return (chunk_num, 0, [])
         
         logger.info(f"Checking chunk {chunk_num} for duplicates ({len(chunk_records)} records)")
         
@@ -962,6 +999,7 @@ def _check_chunks_parallel(
         # Check duplicates in batches to avoid query size limits
         batch_size = 1000
         chunk_duplicates = 0
+        chunk_duplicate_entries: List[Dict[str, Any]] = []
         
         with engine.connect() as conn:
             for batch_start in range(0, len(coerced_records), batch_size):
@@ -1000,44 +1038,59 @@ def _check_chunks_parallel(
                     logger.error(f"Error checking chunk {chunk_num} batch: {e}")
                     raise
         
+            if chunk_duplicates > 0:
+                duplicate_indices, _ = _check_for_duplicates_db_side(conn, table_name, chunk_records, config)
+                chunk_duplicate_entries = [
+                    {
+                        "record_number": chunk_start + idx + 1,
+                        "record": chunk_records[idx].copy()
+                    }
+                    for idx in duplicate_indices
+                ]
+        
         if chunk_duplicates > 0:
             logger.warning(f"Chunk {chunk_num}: Found {chunk_duplicates} total duplicates")
         else:
             logger.info(f"Chunk {chunk_num}: No duplicates found")
         
-        return (chunk_num, chunk_duplicates)
+        return (chunk_num, chunk_duplicates, chunk_duplicate_entries)
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all chunk checks
         future_to_chunk = {
-            executor.submit(check_chunk_db_side, chunk_num + 1, chunk_records): chunk_num
-            for chunk_num, chunk_records in enumerate(chunks)
+            executor.submit(check_chunk_db_side, chunk_index + 1, chunk_start, chunk_records): chunk_index
+            for chunk_index, (chunk_start, chunk_records) in enumerate(chunks)
         }
         
         # Collect results as they complete
         for future in as_completed(future_to_chunk):
             chunk_num = future_to_chunk[future]
             try:
-                result_chunk_num, duplicates_found = future.result()
+                result_chunk_num, duplicates_found, chunk_duplicates = future.result()
                 if duplicates_found > 0:
                     total_duplicates += duplicates_found
-                    duplicate_chunks.append(result_chunk_num)
+                    duplicate_entries.extend(chunk_duplicates)
             except Exception as e:
                 logger.error(f"Error checking chunk {chunk_num + 1}: {e}")
                 raise
     
-    # If duplicates found, raise exception
-    if total_duplicates > 0:
-        error_message = config.duplicate_check.error_message or \
-            f"Duplicate data detected. {total_duplicates} records overlap with existing data in {len(duplicate_chunks)} chunk(s)."
-        logger.error(f"Parallel duplicate check failed: {error_message}")
-        raise DuplicateDataException(table_name, total_duplicates, error_message)
-    
-    logger.info(f"Parallel duplicate check completed successfully - no duplicates found")
-    return 0
+    if total_duplicates == 0:
+        logger.info("Parallel duplicate check completed successfully - no duplicates found")
+    return total_duplicates, duplicate_entries
 
 
-def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig, file_content: bytes, file_name: str, chunk_size: int, pre_mapped: bool = False):
+def _insert_records_chunked(
+    engine: Engine,
+    table_name: str,
+    records: List[Dict[str, Any]],
+    config: MappingConfig,
+    file_content: bytes,
+    file_name: str,
+    chunk_size: int,
+    import_id: str,
+    has_active_import: bool,
+    pre_mapped: bool = False
+):
     """
     Insert records in chunks for better performance with large datasets.
     This approach uses two-phase parallel processing:
@@ -1052,12 +1105,13 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
         file_content: Original file content
         file_name: Original file name
         chunk_size: Size of each chunk
+        import_id: Active import tracking identifier
+        has_active_import: Whether an import_history row exists for import_id
         pre_mapped: If True, records are already mapped and type-coerced
     
     This provides significant speedup while maintaining data integrity.
     """
-    import uuid
-    
+
     total_records = len(records)
     print(f"DEBUG: _insert_records_chunked: Processing {total_records} {'pre-mapped' if pre_mapped else 'raw'} records in chunks of {chunk_size}")
     
@@ -1072,32 +1126,12 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
                 print("DEBUG: Raising FileAlreadyImportedException")
                 raise FileAlreadyImportedException(file_hash, table_name)
     
-    # Get import_id from import_history (should be set by import_orchestrator)
-    import_id = None
-    with engine.connect() as conn:
-        # Try to get the most recent import_id for this table
-        result = conn.execute(text("""
-            SELECT import_id FROM import_history 
-            WHERE table_name = :table_name 
-            AND status = 'in_progress'
-            ORDER BY import_timestamp DESC 
-            LIMIT 1
-        """), {"table_name": table_name})
-        row = result.fetchone()
-        if row:
-            import_id = str(row[0])
-    
-    if not import_id:
-        # Fallback: create a temporary import_id (shouldn't happen in normal flow)
-        import_id = str(uuid.uuid4())
-        print(f"WARNING: No active import found, using temporary import_id: {import_id}")
-    
-    # Split records into chunks
-    chunks = []
+    # Split records into chunks keeping track of their original offset
+    chunks: List[Tuple[int, List[Dict[str, Any]]]] = []
     for chunk_start in range(0, total_records, chunk_size):
         chunk_end = min(chunk_start + chunk_size, total_records)
         chunk_records = records[chunk_start:chunk_end]
-        chunks.append(chunk_records)
+        chunks.append((chunk_start, chunk_records))
     
     total_chunks = len(chunks)
     logger.info(f"Split {total_records} records into {total_chunks} chunks of {chunk_size}")
@@ -1111,12 +1145,30 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
             max_workers = min(4, os.cpu_count() or 2)
             logger.info(f"Using {max_workers} parallel workers for duplicate checking")
             
-            try:
-                _check_chunks_parallel(engine, table_name, chunks, config, max_workers)
-                logger.info("Phase 1: Parallel duplicate check completed - no duplicates found")
-            except DuplicateDataException as e:
-                logger.error(f"Phase 1: Duplicate check failed - {e.message}")
-                raise
+            total_duplicates, duplicate_entries = _check_chunks_parallel(
+                engine,
+                table_name,
+                chunks,
+                config,
+                max_workers
+            )
+            if total_duplicates > 0:
+                if duplicate_entries and has_active_import:
+                    try:
+                        record_duplicate_rows(import_id, duplicate_entries)
+                    except Exception as e:
+                        logger.error("Failed to persist duplicate audit rows: %s", str(e))
+                elif duplicate_entries:
+                    logger.warning(
+                        "Duplicate rows detected for table '%s' during chunked import but no active import tracking record is available. "
+                        "Skipping duplicate audit persistence.",
+                        table_name
+                    )
+                error_message = config.duplicate_check.error_message or \
+                    f"Duplicate data detected. {total_duplicates} records overlap with existing data."
+                logger.error(f"Phase 1: Duplicate check failed - {error_message}")
+                raise DuplicateDataException(table_name, total_duplicates, error_message)
+            logger.info("Phase 1: Parallel duplicate check completed - no duplicates found")
     
     # PHASE 2: Sequential insertion (I/O-intensive, avoids race conditions)
     logger.info("Phase 2: Starting sequential chunk insertion")
@@ -1139,12 +1191,11 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
     VALUES ({placeholders});
     """
     
-    for chunk_num, chunk_records in enumerate(chunks, start=1):
-        print(f"DEBUG: Inserting chunk {chunk_num}/{total_chunks} ({len(chunk_records)} records)")
+    for chunk_index, (chunk_start, chunk_records) in enumerate(chunks, start=1):
+        print(f"DEBUG: Inserting chunk {chunk_index}/{total_chunks} ({len(chunk_records)} records)")
         
-        # Prepare all records with type coercion and metadata
         coerced_chunk = []
-        chunk_start_row = (chunk_num - 1) * chunk_size + 1
+        chunk_start_row = chunk_start + 1
         
         for idx, record in enumerate(chunk_records):
             if pre_mapped:
@@ -1175,7 +1226,7 @@ def _insert_records_chunked(engine: Engine, table_name: str, records: List[Dict[
             conn.execute(text(insert_sql), coerced_chunk)
         
         total_inserted += len(chunk_records)
-        print(f"DEBUG: Inserted chunk {chunk_num}/{total_chunks} - Total inserted: {total_inserted}/{total_records}")
+        print(f"DEBUG: Inserted chunk {chunk_index}/{total_chunks} - Total inserted: {total_inserted}/{total_records}")
     
     # Record file import after all chunks are successfully inserted
     if config and config.duplicate_check and config.duplicate_check.check_file_level and file_content:

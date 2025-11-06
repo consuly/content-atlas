@@ -49,6 +49,10 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
             success=True,
             message="B2 data mapped and inserted successfully",
             records_processed=result["records_processed"],
+            duplicates_skipped=result.get("duplicates_skipped", 0),
+            duplicate_rows=result.get("duplicate_rows"),
+            duplicate_rows_count=result.get("duplicate_rows_count"),
+            import_id=result.get("import_id"),
             table_name=result["table_name"]
         )
 

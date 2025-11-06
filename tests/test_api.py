@@ -261,6 +261,12 @@ Bob Wilson,bob@example.com,35
         # Should have inserted only 1 record (Bob Wilson), skipped 1 duplicate (John Doe)
         assert result["records_processed"] == 1, f"Expected 1 record processed, got {result['records_processed']}"
         assert result["duplicates_skipped"] == 1, f"Expected 1 duplicate skipped, got {result['duplicates_skipped']}"
+        assert result.get("duplicate_rows_count") == 1
+        assert result.get("import_id"), "MapDataResponse should include import_id"
+        duplicate_preview = result.get("duplicate_rows") or []
+        assert len(duplicate_preview) == 1, f"Expected duplicate preview with 1 row, got {len(duplicate_preview)}"
+        assert duplicate_preview[0]["record"]["name"] == "John Doe"
+        assert duplicate_preview[0]["record"]["email"] == "john@example.com"
         
         # Verify the table has correct total count (2 from first upload + 1 from second = 3 total)
         try:
@@ -271,6 +277,61 @@ Bob Wilson,bob@example.com,35
                 assert total_count == 3, f"Expected 3 total records in table, got {total_count}"
         except Exception as e:
             print(f"Warning: Could not verify table count: {e}")
+
+        # Verify duplicate entry is stored for review
+        from app.domain.imports.history import get_import_history, list_duplicate_rows
+
+        history = get_import_history(table_name="test_row_duplicates", limit=1)
+        assert history, "Expected import history for test_row_duplicates"
+        latest_import = history[0]
+        assert latest_import["duplicates_found"] == 1, f"Expected duplicates_found=1, got {latest_import['duplicates_found']}"
+        
+        duplicate_rows = list_duplicate_rows(latest_import["import_id"])
+        assert len(duplicate_rows) == 1, f"Expected 1 duplicate row stored, got {len(duplicate_rows)}"
+        duplicate_record = duplicate_rows[0]["record"]
+        assert duplicate_record.get("name") == "John Doe"
+        assert duplicate_record.get("email") == "john@example.com"
+
+        # Verify duplicate endpoint
+        dup_response = client.get(f"/import-history/{latest_import['import_id']}/duplicates")
+        print("duplicates endpoint:", dup_response.status_code, dup_response.text)
+        assert dup_response.status_code == 200
+        dup_data = dup_response.json()
+        assert dup_data["success"] is True
+        assert dup_data["total_count"] == 1
+        assert len(dup_data["duplicates"]) == 1
+        assert dup_data["duplicates"][0]["record"]["email"] == "john@example.com"
+
+        duplicate_id = dup_data["duplicates"][0]["id"]
+
+        detail_resp = client.get(f"/import-history/{latest_import['import_id']}/duplicates/{duplicate_id}")
+        assert detail_resp.status_code == 200, detail_resp.text
+        detail_data = detail_resp.json()
+        assert detail_data["duplicate"]["record"]["name"] == "John Doe"
+        assert detail_data["existing_row"] is not None
+
+        merge_payload = {
+            "updates": {
+                "email": detail_data["duplicate"]["record"]["email"]
+            },
+            "note": "Resolved in test"
+        }
+        merge_resp = client.post(
+            f"/import-history/{latest_import['import_id']}/duplicates/{duplicate_id}/merge",
+            json=merge_payload
+        )
+        assert merge_resp.status_code == 200, merge_resp.text
+        merge_data = merge_resp.json()
+        assert merge_data["success"] is True
+        assert "email" in merge_data["updated_columns"]
+
+        # After merge, duplicates should be cleared
+        dup_after_merge = client.get(f"/import-history/{latest_import['import_id']}/duplicates").json()
+        assert dup_after_merge["total_count"] == 0
+        assert dup_after_merge["duplicates"] == []
+
+        updated_history = get_import_history(import_id=latest_import["import_id"], limit=1)
+        assert updated_history[0]["duplicates_found"] == 0
 
 
 def test_force_import_bypasses_duplicates():
