@@ -4,6 +4,7 @@ import { App as AntdApp, Modal, Tabs, Button, Space, Alert, Spin, Typography } f
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../error-log-viewer';
+import { formatUserFacingError } from '../../utils/errorMessages';
 
 const { Text, Paragraph } = Typography;
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -29,6 +30,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [errorDetails, setErrorDetails] = useState<Record<string, unknown> | null>(null);
   const { message: messageApi } = AntdApp.useApp();
+  const friendlyError = error ? formatUserFacingError(error) : null;
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -85,7 +87,8 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       const errorMsg = error.response?.data?.detail || error.message || 'Processing failed';
       setError(errorMsg);
       setErrorDetails(error.response?.data?.error_details || null);
-      messageApi.error(errorMsg);
+      const parsedError = formatUserFacingError(errorMsg);
+      messageApi.error(parsedError.summary);
     } finally {
       setLoading(false);
     }
@@ -127,7 +130,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      messageApi.error(errorMsg);
+      messageApi.error(formatUserFacingError(errorMsg).summary);
     } finally {
       setLoading(false);
     }
@@ -172,13 +175,13 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       } else {
         const fallback = response.data.error || 'Analysis failed';
         setError(fallback);
-        messageApi.error(fallback);
+        messageApi.error(formatUserFacingError(fallback).summary);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      messageApi.error(errorMsg);
+      messageApi.error(formatUserFacingError(errorMsg).summary);
     } finally {
       setLoading(false);
     }
@@ -246,17 +249,17 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           setThreadId(response.data.thread_id);
         }
         setError(failureMessage);
-        messageApi.error(failureMessage);
-      }
-    } catch (err) {
-      const error = err as AxiosError<{ detail?: string }>;
-      const errorMsg = error.response?.data?.detail || error.message || 'Import execution failed';
-      setError(errorMsg);
-      messageApi.error(errorMsg);
-    } finally {
-      setLoading(false);
+        messageApi.error(formatUserFacingError(failureMessage).summary);
     }
-  };
+  } catch (err) {
+    const error = err as AxiosError<{ detail?: string }>;
+    const errorMsg = error.response?.data?.detail || error.message || 'Import execution failed';
+    setError(errorMsg);
+    messageApi.error(formatUserFacingError(errorMsg).summary);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleModalClose = () => {
     // Reset state
@@ -326,10 +329,18 @@ export const MappingModal: React.FC<MappingModalProps> = ({
         style={{ marginBottom: 24 }}
       />
 
-      {error && (
+      {friendlyError && (
         <Alert
           message="Error"
-          description={error}
+          description={
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Text>{friendlyError.summary}</Text>
+              {friendlyError.note && (
+                <Text type="secondary">{friendlyError.note}</Text>
+              )}
+              <Text strong>{friendlyError.action}</Text>
+            </Space>
+          }
           type="error"
           showIcon
           closable
