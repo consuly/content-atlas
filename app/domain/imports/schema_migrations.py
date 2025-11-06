@@ -1,8 +1,9 @@
 """
 Schema migration helpers invoked by LLM-driven import flows.
 
-Currently supports column replacement operations where the assistant requests
-that an existing column be superseded by a new column with a different type.
+Currently supports column replacement, addition, rename, and drop operations
+requested by the assistant to resolve schema mismatches discovered during
+imports.
 """
 
 from __future__ import annotations
@@ -30,6 +31,106 @@ def _default_using_expression(old_column: str, new_type: str) -> str:
     quoted_old = _quote(old_column)
     new_type_upper = new_type.upper()
     return f"CAST({quoted_old} AS {new_type_upper})"
+
+
+def _apply_add_column(
+    conn,
+    table_name: str,
+    migration: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Apply a single add_column migration.
+
+    Expected payload:
+    {
+        "action": "add_column",
+        "new_column": {
+            "name": "budget_text",
+            "type": "TEXT",
+            "nullable": true,
+            "default": null,
+            "copy_from": "budget",
+            "copy_data": true,
+            "using_expression": "CAST(\"budget\" AS TEXT)"
+        }
+    }
+    """
+    new_column_spec = migration.get("new_column") or {}
+    column_name = new_column_spec.get("name")
+    column_type = new_column_spec.get("type")
+
+    if not column_name or not column_type:
+        raise SchemaMigrationError(
+            "add_column migration requires 'new_column' with 'name' and 'type'"
+        )
+
+    nullable = new_column_spec.get("nullable", True)
+    default_value = new_column_spec.get("default")
+    copy_from = new_column_spec.get("copy_from")
+    using_expression = new_column_spec.get("using_expression")
+    copy_data = new_column_spec.get(
+        "copy_data", bool(copy_from) or bool(using_expression)
+    )
+
+    inspector = inspect(conn)
+    existing_columns = {
+        col["name"]: col for col in inspector.get_columns(table_name)
+    }
+
+    result: Dict[str, Any] = {
+        "action": "add_column",
+        "new_column": column_name,
+        "status": "pending",
+    }
+
+    if column_name in existing_columns:
+        result["status"] = "already_applied"
+        return result
+
+    clauses = [column_type]
+    if default_value is not None:
+        clauses.append(f"DEFAULT {default_value}")
+    if not nullable:
+        clauses.append("NOT NULL")
+
+    add_sql = (
+        f'ALTER TABLE {_quote(table_name)} '
+        f'ADD COLUMN {_quote(column_name)} {" ".join(clauses)}'
+    )
+    logger.info(
+        "Schema migration: adding column %s to %s as %s",
+        column_name,
+        table_name,
+        column_type,
+    )
+    conn.execute(text(add_sql))
+
+    if copy_data:
+        if using_expression:
+            expression = using_expression
+        elif copy_from:
+            expression = _default_using_expression(copy_from, column_type)
+        else:
+            raise SchemaMigrationError(
+                "add_column migration set 'copy_data' but did not provide "
+                "'copy_from' or 'using_expression'"
+            )
+
+        update_sql = (
+            f'UPDATE {_quote(table_name)} '
+            f'SET {_quote(column_name)} = {expression} '
+            f'WHERE {_quote(column_name)} IS NULL'
+        )
+        logger.info(
+            "Schema migration: populating %s on table %s using expression %s",
+            column_name,
+            table_name,
+            expression,
+        )
+        conn.execute(text(update_sql))
+
+    result["status"] = "applied"
+    return result
 
 
 def _apply_replace_column(
@@ -170,6 +271,126 @@ def _apply_replace_column(
     return result
 
 
+def _apply_rename_column(
+    conn,
+    table_name: str,
+    migration: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Apply a single rename_column migration.
+
+    Expected payload:
+    {
+        "action": "rename_column",
+        "old_column": "budget_text",
+        "new_name": "budget_notes"
+    }
+    """
+    old_column = migration.get("old_column")
+    new_name = migration.get("new_name")
+
+    if not old_column or not new_name:
+        raise SchemaMigrationError(
+            "rename_column migration requires 'old_column' and 'new_name'"
+        )
+
+    inspector = inspect(conn)
+    existing_columns = {
+        col["name"]: col for col in inspector.get_columns(table_name)
+    }
+
+    result: Dict[str, Any] = {
+        "action": "rename_column",
+        "old_column": old_column,
+        "new_name": new_name,
+        "status": "pending",
+    }
+
+    old_exists = old_column in existing_columns
+    new_exists = new_name in existing_columns
+
+    if new_exists and not old_exists:
+        result["status"] = "already_applied"
+        return result
+
+    if not old_exists:
+        raise SchemaMigrationError(
+            f"Cannot rename column '{old_column}' in table '{table_name}': "
+            "column does not exist"
+        )
+
+    if new_exists:
+        raise SchemaMigrationError(
+            f"Cannot rename column '{old_column}' to '{new_name}' in table "
+            f"'{table_name}': destination column already exists"
+        )
+
+    rename_sql = (
+        f'ALTER TABLE {_quote(table_name)} '
+        f'RENAME COLUMN {_quote(old_column)} TO {_quote(new_name)}'
+    )
+    logger.info(
+        "Schema migration: renaming %s to %s on table %s",
+        old_column,
+        new_name,
+        table_name,
+    )
+    conn.execute(text(rename_sql))
+
+    result["status"] = "applied"
+    return result
+
+
+def _apply_drop_column(
+    conn,
+    table_name: str,
+    migration: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Apply a single drop_column migration.
+
+    Expected payload:
+    {
+        "action": "drop_column",
+        "column": "budget_legacy"
+    }
+    """
+    column_name = migration.get("column")
+    if not column_name:
+        raise SchemaMigrationError(
+            "drop_column migration requires 'column'"
+        )
+
+    inspector = inspect(conn)
+    existing_columns = {
+        col["name"]: col for col in inspector.get_columns(table_name)
+    }
+
+    result: Dict[str, Any] = {
+        "action": "drop_column",
+        "column": column_name,
+        "status": "pending",
+    }
+
+    if column_name not in existing_columns:
+        result["status"] = "already_applied"
+        return result
+
+    drop_sql = (
+        f'ALTER TABLE {_quote(table_name)} '
+        f'DROP COLUMN {_quote(column_name)}'
+    )
+    logger.info(
+        "Schema migration: dropping column %s from table %s",
+        column_name,
+        table_name,
+    )
+    conn.execute(text(drop_sql))
+
+    result["status"] = "applied"
+    return result
+
+
 def apply_schema_migrations(
     engine: Engine,
     table_name: str,
@@ -178,9 +399,10 @@ def apply_schema_migrations(
     """
     Apply a sequence of schema migrations against the specified table.
 
-    Currently supports the ``replace_column`` action. The function is designed
-    to be idempotent – rerunning the same migration list should not raise
-    errors once the desired state has been achieved.
+    Currently supports ``replace_column``, ``add_column``, ``rename_column``,
+    and ``drop_column`` actions. The function is designed to be idempotent –
+    rerunning the same migration list should not raise errors once the desired
+    state has been achieved.
     """
     if not migrations:
         return []
@@ -204,10 +426,18 @@ def apply_schema_migrations(
             if action == "replace_column":
                 result = _apply_replace_column(conn, table_name, migration)
                 results.append(result)
+            elif action == "add_column":
+                result = _apply_add_column(conn, table_name, migration)
+                results.append(result)
+            elif action == "rename_column":
+                result = _apply_rename_column(conn, table_name, migration)
+                results.append(result)
+            elif action == "drop_column":
+                result = _apply_drop_column(conn, table_name, migration)
+                results.append(result)
             else:
                 raise SchemaMigrationError(
                     f"Unsupported schema migration action: {action}"
                 )
 
     return results
-

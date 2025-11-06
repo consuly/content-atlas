@@ -12,6 +12,7 @@ import json
 import re
 import numpy as np
 from dataclasses import dataclass
+from uuid import uuid4
 from langchain.tools import tool, ToolRuntime
 from langchain_core.tools import InjectedToolArg
 from langchain.agents import create_agent, AgentState
@@ -1682,9 +1683,9 @@ def analyze_file_for_import(
             interactive_mode=interactive_mode
         )
         
-        # Use default thread if none provided
+        # Use unique thread per invocation unless caller provides one explicitly
         if thread_id is None:
-            thread_id = "default"
+            thread_id = f"analysis-{uuid4()}"
         
         # Create config with thread_id for conversation continuity
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
