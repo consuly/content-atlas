@@ -4,12 +4,14 @@ import time
 import urllib.parse
 import json
 import pytest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from app.main import app
 from app.db.session import get_db
 
 client = TestClient(app)
+REQUEST_TIMEOUT = 5  # seconds
 
 
 def test_root():
@@ -44,19 +46,21 @@ def test_api_endpoints_exist():
 def test_async_endpoints_exist():
     """Test that async endpoints exist."""
     # Test async task endpoint
-    response = client.get("/tasks/test-task-id")
+    response = client.get("/tasks/test-task-id", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 404  # Task not found (expected)
 
     # Test async processing endpoint (endpoint accepts request and queues it)
-    response = client.post("/map-b2-data-async", json={
-        "file_name": "test.xlsx",
-        "mapping": {
-            "table_name": "test",
-            "db_schema": {"id": "INTEGER"},
-            "mappings": {},
-            "rules": {}
-        }
-    })
+    with patch("app.api.routers.tasks.process_b2_data_async") as mock_process:
+        mock_process.return_value = None  # prevent actual background execution
+        response = client.post("/map-b2-data-async", timeout=REQUEST_TIMEOUT, json={
+            "file_name": "test.xlsx",
+            "mapping": {
+                "table_name": "test",
+                "db_schema": {"id": "INTEGER"},
+                "mappings": {},
+                "rules": {}
+            }
+        })
     # Endpoint exists and accepts the request (will process in background)
     assert response.status_code == 200
     data = response.json()
@@ -74,6 +78,7 @@ def test_response_structure():
     assert "not found" in data["detail"].lower()
 
 
+@pytest.mark.b2
 def test_map_b2_data_real_file():
     """Test mapping a large Excel file end-to-end using local test file."""
     import io
