@@ -4,6 +4,8 @@ import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Res
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
+import { ErrorLogViewer } from '../../components/error-log-viewer';
+import { formatUserFacingError } from '../../utils/errorMessages';
 
 const { Text, Paragraph } = Typography;
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -288,7 +290,7 @@ export const ImportMappingPage: React.FC = () => {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      messageApi.error(errorMsg);
+      messageApi.error(formatUserFacingError(errorMsg).summary);
     } finally {
       setProcessing(false);
     }
@@ -345,13 +347,13 @@ export const ImportMappingPage: React.FC = () => {
       } else {
         const fallback = response.data.error || 'Analysis failed';
         setError(fallback);
-        messageApi.error(fallback);
+        messageApi.error(formatUserFacingError(fallback).summary);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Analysis failed';
       setError(errorMsg);
-      messageApi.error(errorMsg);
+      messageApi.error(formatUserFacingError(errorMsg).summary);
     } finally {
       setProcessing(false);
     }
@@ -410,6 +412,7 @@ export const ImportMappingPage: React.FC = () => {
         setThreadId(null);
       } else {
         const failureMessage = response.data.message || 'Import execution failed';
+        setError(failureMessage);
         setConversation((prev) => {
           const next: Array<{ role: 'user' | 'assistant'; content: string }> = [
             ...prev,
@@ -425,13 +428,13 @@ export const ImportMappingPage: React.FC = () => {
         if (response.data.thread_id) {
           setThreadId(response.data.thread_id);
         }
-        messageApi.error(failureMessage);
+        messageApi.error(formatUserFacingError(failureMessage).summary);
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Import execution failed';
       setError(errorMsg);
-      messageApi.error(errorMsg);
+      messageApi.error(formatUserFacingError(errorMsg).summary);
     } finally {
       setProcessing(false);
     }
@@ -731,15 +734,9 @@ export const ImportMappingPage: React.FC = () => {
       />
 
       {error && !result && (
-        <Alert
-          message="Error"
-          description={error}
-          type="error"
-          showIcon
-          closable
-          onClose={() => setError(null)}
-          style={{ marginBottom: 24 }}
-        />
+        <div style={{ marginBottom: 24 }}>
+          <ErrorLogViewer error={error} showRetry={false} />
+        </div>
       )}
 
       {!result && (
@@ -779,15 +776,9 @@ export const ImportMappingPage: React.FC = () => {
       />
 
       {error && !result && (
-        <Alert
-          message="Error"
-          description={error}
-          type="error"
-          showIcon
-          closable
-          onClose={() => setError(null)}
-          style={{ marginBottom: 24 }}
-        />
+        <div style={{ marginBottom: 24 }}>
+          <ErrorLogViewer error={error} showRetry={false} />
+        </div>
       )}
 
       {!result && conversation.length === 0 && (
@@ -988,20 +979,7 @@ export const ImportMappingPage: React.FC = () => {
 
             {file.error_message && (
               <Card title="Error Details" size="small" type="inner">
-                <Paragraph>
-                  <Text strong>Error Message:</Text>
-                </Paragraph>
-                <Paragraph style={{ 
-                  backgroundColor: '#fff2f0', 
-                  padding: '12px', 
-                  borderRadius: '4px',
-                  border: '1px solid #ffccc7',
-                  fontFamily: 'monospace',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word'
-                }}>
-                  {file.error_message}
-                </Paragraph>
+                <ErrorLogViewer error={file.error_message} showRetry={false} />
               </Card>
             )}
             <Space>
