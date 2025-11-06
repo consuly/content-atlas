@@ -1,6 +1,8 @@
+import csv
 import re
 import time
-from typing import Dict, List, Any, Optional
+from io import StringIO
+from typing import Any, Dict, List, Optional, Sequence
 from typing_extensions import TypedDict, NotRequired
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -586,21 +588,18 @@ def _attempt_fallback_response(user_prompt: str) -> Optional[tuple[Optional[str]
     except Exception:
         return None
 
-    csv_lines = ["advertiser,revenue"]
+    formatted_rows: List[List[str]] = []
     summary_lines = []
     for idx, row in enumerate(rows, 1):
         advertiser_value = "" if row[0] is None else str(row[0])
         revenue_value = "" if row[1] is None else str(row[1])
-        csv_lines.append(f"{advertiser_value},{revenue_value}")
+        formatted_rows.append([advertiser_value, revenue_value])
         summary_lines.append(f"{idx}. {advertiser_value}: {revenue_value}")
-
-    if len(csv_lines) == 1:
-        csv_lines.append(",")
 
     final_response = "Top advertisers by revenue:\n" + "\n".join(summary_lines) if summary_lines else \
         "No advertiser revenue data was available."
 
-    data_csv = "\n".join(csv_lines)
+    data_csv = _serialize_rows_to_csv(["advertiser", "revenue"], formatted_rows)
     rows_returned = max(0, len(rows))
 
     return (
@@ -610,3 +609,22 @@ def _attempt_fallback_response(user_prompt: str) -> Optional[tuple[Optional[str]
         rows_returned,
         final_response
     )
+
+
+def _serialize_rows_to_csv(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    """
+    Serialize table rows into a CSV string with the given header.
+
+    Using csv.writer ensures commas and quotes inside values are escaped so
+    downstream parsers do not see spurious columns.
+    """
+    buffer = StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(headers)
+
+    if rows:
+        writer.writerows(rows)
+    else:
+        writer.writerow(["" for _ in headers])
+
+    return buffer.getvalue().rstrip("\n")
