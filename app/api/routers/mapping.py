@@ -1,6 +1,7 @@
 """
 Mapping detection endpoints for analyzing file structure and suggesting configurations.
 """
+import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.orm import Session
 import hashlib
@@ -13,6 +14,8 @@ from app.integrations.b2 import download_file_from_b2
 from app.domain.imports.mapper import detect_mapping_from_file
 
 router = APIRouter(tags=["mapping"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/detect-mapping", response_model=DetectB2MappingResponse)
@@ -37,6 +40,7 @@ async def detect_mapping_endpoint(
     - Number of rows sampled
     """
     try:
+        logger.info("Received /detect-mapping request for file '%s'", getattr(file, "filename", "unknown"))
         # Read file content
         file_content = await file.read()
         
@@ -64,7 +68,11 @@ async def detect_mapping_endpoint(
         for key in expired_keys:
             del records_cache[key]
         
-        print(f"DEBUG: Cached {len(records)} RAW records for file hash {file_hash[:8]}...")
+        logger.info(
+            "Cached %d raw records for file hash %s...",
+            len(records),
+            file_hash[:8],
+        )
 
         return DetectB2MappingResponse(
             success=True,
@@ -75,6 +83,7 @@ async def detect_mapping_endpoint(
         )
 
     except Exception as e:
+        logger.exception("Failed to detect mapping for uploaded file: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -105,6 +114,14 @@ async def detect_b2_mapping_endpoint(request: DetectB2MappingRequest):
             file_content, request.file_name
         )
 
+        logger.info(
+            "Detected mapping for B2 file '%s': type=%s columns=%d rows=%d",
+            request.file_name,
+            file_type,
+            len(columns_found),
+            rows_sampled,
+        )
+
         return DetectB2MappingResponse(
             success=True,
             file_type=file_type,
@@ -114,4 +131,5 @@ async def detect_b2_mapping_endpoint(request: DetectB2MappingRequest):
         )
 
     except Exception as e:
+        logger.exception("Failed to detect mapping for B2 file '%s': %s", request.file_name, e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://user:password@localhost:5432/data_mapper"
     debug: bool = True
     date_default_dayfirst: bool = False
+    log_level: str = "INFO"
+    map_stage_timeout_seconds: int = 600
+    b2_max_retries: int = 3
     
     # Authentication
     secret_key: str = "your-secret-key-change-in-production"
