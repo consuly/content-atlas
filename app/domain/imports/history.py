@@ -5,13 +5,16 @@ This module provides functionality to track all data imports with detailed metad
 enabling traceability, auditing, and rollback capabilities.
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy import text
-from datetime import datetime
+from sqlalchemy.exc import ProgrammingError
+from datetime import datetime, timezone
 import uuid
 import json
 from app.db.session import get_engine
 from app.api.schemas.shared import MappingConfig
+from decimal import Decimal
+from datetime import date
 import logging
 
 logger = logging.getLogger(__name__)
@@ -123,11 +126,43 @@ def create_import_history_table():
     CREATE INDEX IF NOT EXISTS idx_mapping_errors_type ON mapping_errors(error_type);
     CREATE INDEX IF NOT EXISTS idx_mapping_errors_field ON mapping_errors(source_field);
     """
+
+    create_import_duplicates_sql = """
+    CREATE TABLE IF NOT EXISTS import_duplicates (
+        id SERIAL PRIMARY KEY,
+        import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
+        record_number INTEGER,
+        record_data JSONB NOT NULL,
+        detected_at TIMESTAMP DEFAULT NOW(),
+        resolved_at TIMESTAMP,
+        resolved_by VARCHAR(255),
+        resolution_details JSONB
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_import_duplicates_import ON import_duplicates(import_id);
+    """
     
     try:
         with engine.begin() as conn:
             conn.execute(text(create_import_history_sql))
             conn.execute(text(create_mapping_errors_sql))
+            conn.execute(text(create_import_duplicates_sql))
+            conn.execute(text("""
+                ALTER TABLE import_duplicates
+                ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP;
+            """))
+            conn.execute(text("""
+                ALTER TABLE import_duplicates
+                ADD COLUMN IF NOT EXISTS resolved_by VARCHAR(255);
+            """))
+            conn.execute(text("""
+                ALTER TABLE import_duplicates
+                ADD COLUMN IF NOT EXISTS resolution_details JSONB;
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_import_duplicates_resolved
+                ON import_duplicates(import_id, resolved_at);
+            """))
         logger.info("import_history and mapping_errors tables created/verified successfully")
     except Exception as e:
         logger.error(f"Error creating tables: {str(e)}")
@@ -502,6 +537,360 @@ def complete_import_tracking(
         raise
 
 
+def record_duplicate_rows(import_id: str, duplicates: List[Dict[str, Any]]) -> None:
+    """
+    Persist duplicate records detected during an import so they can be reviewed later.
+    """
+    if not duplicates:
+        return
+
+    engine = get_engine()
+    payload = []
+
+    for entry in duplicates:
+        record_number = entry.get("record_number")
+        record = entry.get("record", {})
+        safe_record = _make_json_safe(record)
+        # Store as JSON string to avoid DB adapter issues
+        safe_record_json = json.dumps(safe_record)
+        payload.append({
+            "import_id": import_id,
+            "record_number": record_number,
+            "record_data": safe_record_json
+        })
+
+    insert_sql = text("""
+        INSERT INTO import_duplicates (import_id, record_number, record_data)
+        VALUES (:import_id, :record_number, :record_data)
+    """)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(insert_sql, payload)
+    except Exception as e:
+        logger.error(f"Error recording duplicate rows for import {import_id}: {str(e)}")
+        raise
+
+
+def list_duplicate_rows(
+    import_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    include_resolved: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve duplicate rows that were detected for an import.
+    """
+    engine = get_engine()
+    where_clause = "import_id = :import_id"
+    if not include_resolved:
+        where_clause += " AND resolved_at IS NULL"
+    query = text(f"""
+        SELECT id, record_number, record_data, detected_at, resolved_at, resolved_by, resolution_details
+        FROM import_duplicates
+        WHERE {where_clause}
+        ORDER BY COALESCE(record_number, 0), detected_at
+        LIMIT :limit OFFSET :offset
+    """)
+
+    duplicates: List[Dict[str, Any]] = []
+    with engine.connect() as conn:
+        try:
+            results = conn.execute(query, {
+                "import_id": import_id,
+                "limit": limit,
+                "offset": offset
+            })
+        except ProgrammingError as exc:
+            if "resolved_at" in str(exc):
+                logger.warning("Missing resolved columns detected; recreating import tracking tables")
+                create_import_history_table()
+                results = conn.execute(query, {
+                    "import_id": import_id,
+                    "limit": limit,
+                    "offset": offset
+                })
+            else:
+                raise
+
+        for row in results:
+            record_data = row[2]
+            if isinstance(record_data, str):
+                try:
+                    record_data = json.loads(record_data)
+                except json.JSONDecodeError:
+                    record_data = {}
+            if not isinstance(record_data, dict):
+                record_data = {}
+            record_data = _make_json_safe(record_data)
+
+            resolution_details = row[6]
+            if isinstance(resolution_details, str):
+                try:
+                    resolution_details = json.loads(resolution_details)
+                except json.JSONDecodeError:
+                    resolution_details = None
+            if resolution_details is not None and not isinstance(resolution_details, dict):
+                resolution_details = {"value": resolution_details}
+            if resolution_details is not None:
+                resolution_details = _make_json_safe(resolution_details)
+            duplicates.append({
+                "id": row[0],
+                "record_number": row[1],
+                "record": record_data,
+                "detected_at": row[3].isoformat() if row[3] else None,
+                "resolved_at": row[4].isoformat() if row[4] else None,
+                "resolved_by": row[5],
+                "resolution_details": resolution_details
+            })
+    return duplicates
+
+
+def _load_mapping_config(mapping_config_data: Optional[Dict[str, Any]]) -> Optional[MappingConfig]:
+    if not mapping_config_data:
+        return None
+    try:
+        return MappingConfig.model_validate(mapping_config_data)
+    except Exception as exc:
+        logger.warning("Failed to load mapping config for duplicate merge: %s", exc)
+        return None
+
+
+def _get_uniqueness_columns(mapping_config: Optional[MappingConfig], record: Dict[str, Any]) -> List[str]:
+    if mapping_config and mapping_config.duplicate_check and mapping_config.duplicate_check.uniqueness_columns:
+        return mapping_config.duplicate_check.uniqueness_columns
+    # Default to all record columns, excluding metadata
+    return [col for col in record.keys() if not col.startswith("_")]
+
+
+def _fetch_existing_row(
+    conn,
+    table_name: str,
+    record: Dict[str, Any],
+    uniqueness_columns: List[str]
+) -> Optional[Tuple[int, Dict[str, Any]]]:
+    if not uniqueness_columns:
+        return None
+    conditions = []
+    params: Dict[str, Any] = {}
+    for idx, col in enumerate(uniqueness_columns):
+        if col not in record:
+            continue
+        param_name = f"p_{idx}"
+        conditions.append(f'"{col}" IS NULL' if record[col] is None else f'"{col}" = :{param_name}')
+        if record[col] is not None:
+            params[param_name] = record[col]
+
+    if not conditions:
+        return None
+
+    where_clause = " AND ".join(conditions)
+    query = text(f'SELECT * FROM "{table_name}" WHERE {where_clause} LIMIT 1')
+    result = conn.execute(query, params).mappings().fetchone()
+    if not result:
+        return None
+
+    row_dict = dict(result)
+    row_id = row_dict.get("_row_id")
+    return row_id, row_dict
+
+
+def get_duplicate_row_detail(import_id: str, duplicate_id: int) -> Dict[str, Any]:
+    """
+    Retrieve detailed information for a specific duplicate row, including the
+    matching existing row (if found).
+    """
+    engine = get_engine()
+
+    try:
+        with engine.connect() as conn:
+            dup_query = text("""
+                SELECT id, record_number, record_data, detected_at, resolved_at, resolved_by, resolution_details
+                FROM import_duplicates
+                WHERE import_id = :import_id AND id = :duplicate_id
+            """)
+            dup_row = conn.execute(dup_query, {
+                "import_id": import_id,
+                "duplicate_id": duplicate_id
+            }).fetchone()
+
+            if not dup_row:
+                raise ValueError("Duplicate record not found")
+
+            record_data = dup_row[2]
+            if isinstance(record_data, str):
+                try:
+                    record_data = json.loads(record_data)
+                except json.JSONDecodeError:
+                    record_data = {}
+            record_data = _make_json_safe(record_data)
+            resolution_details = dup_row[6]
+            if isinstance(resolution_details, str):
+                try:
+                    resolution_details = json.loads(resolution_details)
+                except json.JSONDecodeError:
+                    resolution_details = None
+            if resolution_details is not None:
+                resolution_details = _make_json_safe(resolution_details)
+
+            duplicate_record = {
+                "id": dup_row[0],
+                "record_number": dup_row[1],
+                "record": record_data,
+                "detected_at": dup_row[3].isoformat() if dup_row[3] else None,
+                "resolved_at": dup_row[4].isoformat() if dup_row[4] else None,
+                "resolved_by": dup_row[5],
+                "resolution_details": resolution_details
+            }
+
+            import_records = get_import_history(import_id=import_id, limit=1)
+            if not import_records:
+                raise ValueError("Import history not found for duplicate")
+
+            history_record = import_records[0]
+            table_name = history_record["table_name"]
+            mapping_config = _load_mapping_config(history_record.get("mapping_config"))
+
+            uniqueness_columns = _get_uniqueness_columns(mapping_config, duplicate_record["record"])
+
+            existing_row_info = _fetch_existing_row(
+                conn,
+                table_name,
+                duplicate_record["record"],
+                uniqueness_columns
+            )
+
+            existing_row_payload = None
+            if existing_row_info:
+                row_id, row_values = existing_row_info
+                cleaned_record = {
+                    key: _make_json_safe(value)
+                    for key, value in row_values.items()
+                    if not key.startswith("_")
+                }
+                existing_row_payload = {
+                    "row_id": row_id,
+                    "record": cleaned_record
+                }
+
+            return {
+                "duplicate": duplicate_record,
+                "existing_row": existing_row_payload,
+                "table_name": table_name,
+                "uniqueness_columns": uniqueness_columns
+            }
+    except Exception as e:
+        logger.error("Error retrieving duplicate detail: %s", e)
+        raise
+
+
+def resolve_duplicate_row(
+    import_id: str,
+    duplicate_id: int,
+    updates: Dict[str, Any],
+    resolved_by: Optional[str] = None,
+    note: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Apply updates from a duplicate record to the existing row and mark the
+    duplicate as resolved.
+    """
+    engine = get_engine()
+
+    detail = get_duplicate_row_detail(import_id, duplicate_id)
+    duplicate_record = detail["duplicate"]
+    existing_row = detail["existing_row"]
+
+    if duplicate_record.get("resolved_at"):
+        raise ValueError("Duplicate record already resolved")
+
+    valid_updates: Dict[str, Any] = {
+        column: value
+        for column, value in updates.items()
+        if column in duplicate_record["record"]
+    }
+
+    with engine.begin() as conn:
+        if existing_row is None:
+            raise ValueError("No existing row found to merge into")
+
+        row_id = existing_row["row_id"]
+        table_name = detail["table_name"]
+
+        # Prepare update statement
+        set_clauses = []
+        params: Dict[str, Any] = {"row_id": row_id}
+        for column, value in valid_updates.items():
+            if column.startswith("_"):
+                continue
+            param_name = f"set_{column}"
+            set_clauses.append(f'"{column}" = :{param_name}')
+            params[param_name] = value
+
+        updated_columns: List[str] = list(valid_updates.keys())
+        if set_clauses:
+            update_sql = text(f'''
+                UPDATE "{table_name}"
+                SET {", ".join(set_clauses)}
+                WHERE _row_id = :row_id
+            ''')
+            conn.execute(update_sql, params)
+
+        resolution_details = {
+            "updated_columns": updated_columns,
+            "note": note
+        }
+
+        conn.execute(text("""
+            UPDATE import_duplicates
+            SET resolved_at = NOW(),
+                resolved_by = :resolved_by,
+                resolution_details = :resolution_details
+            WHERE id = :duplicate_id
+        """), {
+            "resolved_by": resolved_by,
+            "resolution_details": json.dumps(resolution_details),
+            "duplicate_id": duplicate_id
+        })
+
+        resolved_timestamp = datetime.now(timezone.utc)
+        duplicate_record["resolved_at"] = resolved_timestamp.isoformat()
+        duplicate_record["resolved_by"] = resolved_by
+        duplicate_record["resolution_details"] = resolution_details
+
+        refreshed_row = conn.execute(text(f'''
+            SELECT * FROM "{table_name}"
+            WHERE _row_id = :row_id
+        '''), {"row_id": row_id}).mappings().fetchone()
+
+        remaining = conn.execute(text("""
+            SELECT COUNT(*) FROM import_duplicates
+            WHERE import_id = :import_id AND resolved_at IS NULL
+        """), {"import_id": import_id}).scalar() or 0
+
+        conn.execute(text("""
+            UPDATE import_history
+            SET duplicates_found = :remaining
+            WHERE import_id = :import_id
+        """), {"remaining": remaining, "import_id": import_id})
+
+        cleaned_record = {
+            key: _make_json_safe(value)
+            for key, value in dict(refreshed_row).items()
+            if not key.startswith("_")
+        } if refreshed_row else {}
+
+        return {
+            "duplicate": duplicate_record,
+            "updated_columns": updated_columns,
+            "existing_row": {
+                "row_id": row_id,
+                "record": cleaned_record
+            },
+            "resolution_details": resolution_details
+        }
+
+
 def get_import_history(
     import_id: Optional[str] = None,
     table_name: Optional[str] = None,
@@ -603,6 +992,34 @@ def get_import_history(
     except Exception as e:
         logger.error(f"Error retrieving import history: {str(e)}")
         raise
+
+
+def _make_json_safe(value: Any) -> Any:
+    """
+    Convert Python objects into JSON-serialisable structures, preserving
+    as much fidelity as possible.
+    """
+    if isinstance(value, dict):
+        return {key: _make_json_safe(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_make_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_make_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [_make_json_safe(item) for item in value]
+    if isinstance(value, Decimal):
+        # Keep integers as ints, otherwise convert to string to avoid precision loss
+        if value == value.to_integral():
+            return int(value)
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode(errors="ignore")
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return value
+    # Fallback to string representation for unsupported types
+    return str(value)
 
 
 def get_import_statistics(

@@ -962,6 +962,11 @@ async def execute_interactive_import_endpoint(
                 success=True,
                 message="Import executed successfully",
                 records_processed=execution_result["records_processed"],
+                duplicates_skipped=execution_result.get("duplicates_skipped", 0),
+                duplicate_rows=execution_result.get("duplicate_rows"),
+                duplicate_rows_count=execution_result.get("duplicate_rows_count"),
+                import_id=execution_result.get("import_id"),
+                llm_followup=execution_result.get("llm_followup"),
                 table_name=execution_result["table_name"]
             )
 

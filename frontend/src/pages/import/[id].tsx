@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider } from 'antd';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
-import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../../components/error-log-viewer';
 import { formatUserFacingError } from '../../utils/errorMessages';
 
 const { Text, Paragraph } = Typography;
+const { TextArea } = Input;
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const DUPLICATE_PREVIEW_LIMIT = 20;
 
 interface UploadedFile {
   id: string;
@@ -52,6 +54,32 @@ interface ImportHistory {
   mapping_config?: Record<string, unknown>;
 }
 
+interface DuplicateRowData {
+  id: number;
+  record_number?: number | null;
+  record: Record<string, unknown>;
+  detected_at?: string | null;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  resolution_details?: Record<string, unknown> | null;
+}
+
+interface DuplicateRowsState {
+  rows: DuplicateRowData[];
+  total: number;
+}
+
+interface DuplicateExistingRow {
+  row_id: number;
+  record: Record<string, unknown>;
+}
+
+interface DuplicateDetail {
+  duplicate: DuplicateRowData;
+  existing_row: DuplicateExistingRow | null;
+  uniqueness_columns: string[];
+}
+
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -91,6 +119,16 @@ export const ImportMappingPage: React.FC = () => {
   const [tableData, setTableData] = useState<TableData | null>(null);
   const [importHistory, setImportHistory] = useState<ImportHistory | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [duplicateData, setDuplicateData] = useState<DuplicateRowsState | null>(null);
+  const [loadingDuplicates, setLoadingDuplicates] = useState(false);
+  const [mergeModalVisible, setMergeModalVisible] = useState(false);
+  const [mergeDetail, setMergeDetail] = useState<DuplicateDetail | null>(null);
+  const [mergeSelections, setMergeSelections] = useState<Record<string, boolean>>({});
+  const [mergeNote, setMergeNote] = useState('');
+  const [mergeDetailLoading, setMergeDetailLoading] = useState(false);
+  const [selectedDuplicateRowIds, setSelectedDuplicateRowIds] = useState<number[]>([]);
+  const [bulkMergeLoading, setBulkMergeLoading] = useState(false);
+  const [mergeLoading, setMergeLoading] = useState(false);
 
   const fetchFileDetails = useCallback(async () => {
     if (!id) return;
@@ -120,6 +158,7 @@ export const ImportMappingPage: React.FC = () => {
 
   const fetchMappedFileDetails = useCallback(async (tableName: string) => {
     setLoadingDetails(true);
+    setDuplicateData(null);
     try {
       const token = localStorage.getItem('refine-auth');
       
@@ -173,6 +212,233 @@ export const ImportMappingPage: React.FC = () => {
     }
   }, []);
 
+  const fetchDuplicateRows = useCallback(async (importId: string) => {
+    setLoadingDuplicates(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.get(`${API_URL}/import-history/${importId}/duplicates`, {
+        params: { limit: DUPLICATE_PREVIEW_LIMIT },
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+      });
+
+      if (response.data.success) {
+        setDuplicateData({
+          rows: response.data.duplicates as DuplicateRowData[],
+          total: response.data.total_count ?? (response.data.duplicates?.length ?? 0),
+        });
+      } else {
+        setDuplicateData(null);
+      }
+    } catch (err) {
+      console.error('Error fetching duplicate rows:', err);
+      messageApi.warning('Duplicates were detected, but we could not retrieve the preview.');
+      setDuplicateData(null);
+    } finally {
+      setLoadingDuplicates(false);
+    }
+  }, [messageApi]);
+
+  const resetMergeState = () => {
+    setMergeDetail(null);
+    setMergeSelections({});
+    setMergeNote('');
+  };
+
+  const openMergeModal = useCallback(
+    async (duplicateId: number) => {
+      if (!importHistory) return;
+      setMergeDetailLoading(true);
+      resetMergeState();
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const response = await axios.get(
+          `${API_URL}/import-history/${importHistory.import_id}/duplicates/${duplicateId}`,
+          {
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        );
+
+        if (response.data.success) {
+          const detailData = response.data as {
+            duplicate: DuplicateRowData;
+            existing_row: DuplicateExistingRow | null;
+            uniqueness_columns: string[];
+          };
+
+          const defaultSelections: Record<string, boolean> = {};
+          const duplicateRecord = detailData.duplicate.record;
+          const existingRecord = detailData.existing_row?.record ?? {};
+          Object.keys(duplicateRecord).forEach((column) => {
+            if (column.startsWith('_')) {
+              defaultSelections[column] = false;
+              return;
+            }
+            const incomingValue = duplicateRecord[column];
+            const existingValue = existingRecord[column];
+            defaultSelections[column] =
+              existingValue !== incomingValue &&
+              !(existingValue === null && incomingValue === undefined);
+          });
+
+          setMergeDetail({
+            duplicate: detailData.duplicate,
+            existing_row: detailData.existing_row,
+            uniqueness_columns: detailData.uniqueness_columns,
+          });
+          setMergeSelections(defaultSelections);
+          setMergeModalVisible(true);
+        } else {
+          messageApi.error('Failed to load duplicate details');
+        }
+      } catch (error) {
+        console.error('Error loading duplicate detail:', error);
+        messageApi.error('Failed to load duplicate details');
+      } finally {
+        setMergeDetailLoading(false);
+      }
+    },
+    [API_URL, importHistory, messageApi]
+  );
+
+  const handleMergeSelectionChange = (column: string, checked: boolean) => {
+    setMergeSelections((prev) => ({
+      ...prev,
+      [column]: checked,
+    }));
+  };
+
+  const handleMergeSubmit = async () => {
+    if (!mergeDetail || !importHistory) return;
+    const selectedUpdates: Record<string, unknown> = {};
+    Object.entries(mergeSelections).forEach(([column, useIncoming]) => {
+      if (useIncoming) {
+        selectedUpdates[column] = mergeDetail.duplicate.record[column];
+      }
+    });
+
+    setMergeLoading(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.post(
+        `${API_URL}/import-history/${importHistory.import_id}/duplicates/${mergeDetail.duplicate.id}/merge`,
+        {
+          updates: selectedUpdates,
+          note: mergeNote || undefined,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+
+      if (response.data.success) {
+        messageApi.success('Duplicate merged successfully');
+        setMergeModalVisible(false);
+        resetMergeState();
+        if (file?.mapped_table_name) {
+          await fetchMappedFileDetails(file.mapped_table_name);
+        } else if (importHistory.import_id) {
+          await fetchDuplicateRows(importHistory.import_id);
+        }
+      } else {
+        messageApi.error('Failed to merge duplicate');
+      }
+    } catch (error) {
+      console.error('Error merging duplicate:', error);
+      messageApi.error('Failed to merge duplicate');
+    } finally {
+      setMergeLoading(false);
+    }
+  };
+
+  const handleSelectAllDuplicates = useCallback(() => {
+    if (!duplicateData?.rows) return;
+    const selectableIds = duplicateData.rows
+      .filter((row) => typeof row.id === 'number' && !row.resolved_at)
+      .map((row) => row.id as number);
+    setSelectedDuplicateRowIds(selectableIds);
+  }, [duplicateData]);
+
+  const handleClearDuplicateSelection = useCallback(() => {
+    setSelectedDuplicateRowIds([]);
+  }, []);
+
+  const handleBulkDuplicateMerge = useCallback(async () => {
+    if (!importHistory || selectedDuplicateRowIds.length === 0 || !duplicateData?.rows) return;
+
+    setBulkMergeLoading(true);
+    const token = localStorage.getItem('refine-auth');
+    let successCount = 0;
+
+    for (const duplicateId of selectedDuplicateRowIds) {
+      const row = duplicateData.rows.find(
+        (duplicate) => duplicate.id === duplicateId && !duplicate.resolved_at
+      );
+      if (!row) {
+        continue;
+      }
+
+      const updates: Record<string, unknown> = {};
+      Object.entries(row.record || {}).forEach(([column, value]) => {
+        if (!column.startsWith('_')) {
+          updates[column] = value;
+        }
+      });
+
+      if (Object.keys(updates).length === 0) {
+        continue;
+      }
+
+      try {
+        await axios.post(
+          `${API_URL}/import-history/${importHistory.import_id}/duplicates/${duplicateId}/merge`,
+          { updates },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        );
+        successCount += 1;
+      } catch (error) {
+        console.error('Error merging duplicate:', error);
+        messageApi.error(
+          `Failed to map duplicate ${row.record_number ?? duplicateId}. Aborting remaining merges.`
+        );
+        break;
+      }
+    }
+
+    if (successCount > 0) {
+      messageApi.success(
+        `Mapped ${successCount} duplicate${successCount > 1 ? 's' : ''} successfully`
+      );
+      if (file?.mapped_table_name) {
+        await fetchMappedFileDetails(file.mapped_table_name);
+      }
+      await fetchDuplicateRows(importHistory.import_id);
+    }
+
+    setSelectedDuplicateRowIds([]);
+    setBulkMergeLoading(false);
+  }, [
+    API_URL,
+    duplicateData,
+    fetchDuplicateRows,
+    fetchMappedFileDetails,
+    file?.mapped_table_name,
+    importHistory,
+    messageApi,
+    selectedDuplicateRowIds,
+  ]);
+
   useEffect(() => {
     fetchFileDetails();
   }, [fetchFileDetails]);
@@ -189,6 +455,18 @@ export const ImportMappingPage: React.FC = () => {
       fetchMappedFileDetails(file.mapped_table_name);
     }
   }, [file, fetchMappedFileDetails]);
+
+  useEffect(() => {
+    if (importHistory?.import_id && (importHistory.duplicates_found ?? 0) > 0) {
+      fetchDuplicateRows(importHistory.import_id);
+    } else {
+      setDuplicateData(null);
+    }
+  }, [importHistory?.import_id, importHistory?.duplicates_found, fetchDuplicateRows]);
+
+  useEffect(() => {
+    setSelectedDuplicateRowIds([]);
+  }, [duplicateData]);
 
   useEffect(() => {
     if (file && file.status !== 'failed' && showInteractiveRetry) {
@@ -453,6 +731,30 @@ export const ImportMappingPage: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
+  const renderDuplicateValue = (value: unknown): React.ReactNode => {
+    if (value === null || value === undefined) {
+      return <Text type="secondary">-</Text>;
+    }
+    if (Array.isArray(value) || typeof value === 'object') {
+      try {
+        const asJson = JSON.stringify(value);
+        return (
+          <Text code style={{ maxWidth: 220 }} ellipsis={{ tooltip: asJson }}>
+            {asJson}
+          </Text>
+        );
+      } catch (err) {
+        return String(value);
+      }
+    }
+    const textValue = String(value);
+    return (
+      <Text style={{ maxWidth: 200 }} ellipsis={{ tooltip: textValue }}>
+        {textValue}
+      </Text>
+    );
+  };
+
   const renderMappedFileView = () => {
     if (!file || file.status !== 'mapped') return null;
 
@@ -565,6 +867,106 @@ export const ImportMappingPage: React.FC = () => {
         ]
       : [];
 
+    const duplicateRows = duplicateData?.rows ?? [];
+    const duplicateKeys = new Set<string>();
+    duplicateRows.forEach((row) => {
+      Object.keys(row.record || {}).forEach((key) => {
+        if (!key.startsWith('_')) {
+          duplicateKeys.add(key);
+        }
+      });
+    });
+
+    const resolvedDuplicateIds = new Set(
+      duplicateRows
+        .filter((row) => typeof row.id === 'number' && !!row.resolved_at)
+        .map((row) => row.id as number)
+    );
+    const selectableDuplicateIds = duplicateRows
+      .filter((row) => typeof row.id === 'number' && !row.resolved_at)
+      .map((row) => row.id as number);
+
+    const duplicateTableData = duplicateRows.map((row, index) => ({
+      key: row.id ?? `duplicate-${index}`,
+      duplicate_id: row.id,
+      record_number: row.record_number ?? '-',
+      detected_at: row.detected_at,
+      record: row.record || {},
+    }));
+
+    const duplicateTableColumns =
+      duplicateRows.length > 0
+        ? [
+            {
+              title: 'Actions',
+              key: 'actions',
+              fixed: 'left' as const,
+              width: 120,
+              render: (_: unknown, row: (typeof duplicateTableData)[number]) => (
+                <Button
+                  type="link"
+                  icon={<MergeCellsOutlined />}
+                  onClick={() => openMergeModal(row.duplicate_id)}
+                >
+                  Merge
+                </Button>
+              ),
+            },
+            {
+              title: '#',
+              dataIndex: 'record_number',
+              key: 'record_number',
+              width: 70,
+            },
+            ...Array.from(duplicateKeys).map((key) => ({
+              title: key,
+              key,
+              ellipsis: true,
+              width: 180,
+              render: (_: unknown, row: (typeof duplicateTableData)[number]) =>
+                renderDuplicateValue(row.record?.[key]),
+            })),
+            {
+              title: 'Detected At',
+              dataIndex: 'detected_at',
+              key: 'detected_at',
+              width: 200,
+              render: (value: string | null | undefined) =>
+                value ? formatDate(value) : '-',
+            },
+          ]
+        : [];
+
+    const duplicateRowSelection =
+      duplicateTableColumns.length > 0
+        ? {
+            selectedRowKeys: duplicateTableData
+              .filter(
+                (row) =>
+                  typeof row.duplicate_id === 'number' &&
+                  selectedDuplicateRowIds.includes(row.duplicate_id)
+              )
+              .map((row) => row.key),
+            onChange: (
+              _selectedRowKeys: React.Key[],
+              selectedRows: (typeof duplicateTableData)[number][]
+            ) => {
+              const ids = selectedRows
+                .map((row) => row.duplicate_id)
+                .filter((id): id is number => typeof id === 'number');
+              setSelectedDuplicateRowIds(ids);
+            },
+            getCheckboxProps: (record: (typeof duplicateTableData)[number]) => ({
+              disabled:
+                !record.duplicate_id ||
+                resolvedDuplicateIds.has(record.duplicate_id) ||
+                bulkMergeLoading,
+            }),
+          }
+        : undefined;
+
+    const duplicatesTotal = duplicateData?.total ?? importHistory?.duplicates_found ?? 0;
+
     return (
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <Alert
@@ -591,6 +993,166 @@ export const ImportMappingPage: React.FC = () => {
             />
           </Card>
         )}
+
+        {duplicatesTotal > 0 && (
+          <Card
+            title={
+              <>
+                <InfoCircleOutlined /> Duplicate Rows Skipped
+              </>
+            }
+            size="small"
+            loading={loadingDuplicates}
+          >
+            {duplicateTableColumns.length > 0 ? (
+              <>
+                <Space style={{ marginBottom: 12 }} wrap>
+                  <Button
+                    onClick={handleSelectAllDuplicates}
+                    disabled={selectableDuplicateIds.length === 0 || bulkMergeLoading}
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    onClick={handleClearDuplicateSelection}
+                    disabled={selectedDuplicateRowIds.length === 0 || bulkMergeLoading}
+                  >
+                    Clear Selection
+                  </Button>
+                  <Button
+                    type="primary"
+                    onClick={handleBulkDuplicateMerge}
+                    disabled={selectedDuplicateRowIds.length === 0}
+                    loading={bulkMergeLoading}
+                  >
+                    Map Selected ({selectedDuplicateRowIds.length})
+                  </Button>
+                </Space>
+                <Table
+                  dataSource={duplicateTableData}
+                  columns={duplicateTableColumns}
+                  rowSelection={duplicateRowSelection}
+                  pagination={false}
+                  size="small"
+                  scroll={{ x: 'max-content' }}
+                />
+                <Divider />
+                <Text type="secondary">
+                  Showing {duplicateTableData.length} of {duplicatesTotal}{' '}
+                  duplicate rows
+                </Text>
+              </>
+            ) : (
+              <Text type="secondary">
+                Duplicate rows were detected, but no preview data is available.
+              </Text>
+            )}
+          </Card>
+        )}
+        <Modal
+          open={mergeModalVisible}
+          title={
+            <Space>
+              <MergeCellsOutlined />
+              <span>Merge Duplicate Row</span>
+            </Space>
+          }
+          onCancel={() => {
+            setMergeModalVisible(false);
+            resetMergeState();
+          }}
+          onOk={handleMergeSubmit}
+          okButtonProps={{
+            loading: mergeLoading,
+            disabled: mergeDetailLoading || !mergeDetail || !mergeDetail.existing_row,
+          }}
+          cancelButtonProps={{
+            disabled: mergeLoading,
+          }}
+          width={780}
+        >
+          {mergeDetailLoading ? (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <Spin />
+            </div>
+          ) : mergeDetail ? (
+            <>
+              {!mergeDetail.existing_row && (
+                <Alert
+                  type="warning"
+                  message="Matching row not found"
+                  description="We could not find a matching row in the destination table for this duplicate. No merge is possible."
+                  style={{ marginBottom: 16 }}
+                />
+              )}
+              {mergeDetail.existing_row && (
+                <>
+                  <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+                    Matching row identified using uniqueness columns:{' '}
+                    {mergeDetail.uniqueness_columns.join(', ')}
+                  </Text>
+                  <Text strong style={{ marginBottom: 12, display: 'block' }}>
+                    Select which values to apply from the duplicate row:
+                  </Text>
+                  <Table
+                    dataSource={Object.keys(mergeDetail.duplicate.record)
+                      .filter((column) => !column.startsWith('_'))
+                      .map((column) => ({
+                        key: column,
+                        column,
+                        existing: mergeDetail.existing_row?.record?.[column],
+                        incoming: mergeDetail.duplicate.record[column],
+                        selected: mergeSelections[column] ?? false,
+                      }))}
+                    pagination={false}
+                    size="small"
+                    rowKey="column"
+                    columns={[
+                      {
+                        title: 'Column',
+                        dataIndex: 'column',
+                        key: 'column',
+                        width: 160,
+                      },
+                      {
+                        title: 'Existing Value',
+                        dataIndex: 'existing',
+                        key: 'existing',
+                        render: (value: unknown) => renderDuplicateValue(value),
+                      },
+                      {
+                        title: 'Incoming Value',
+                        dataIndex: 'incoming',
+                        key: 'incoming',
+                        render: (value: unknown) => renderDuplicateValue(value),
+                      },
+                      {
+                        title: 'Use Incoming',
+                        key: 'selected',
+                        width: 140,
+                        render: (_: unknown, row: { column: string; selected: boolean }) => (
+                          <Switch
+                            checked={!!mergeSelections[row.column]}
+                            onChange={(checked) => handleMergeSelectionChange(row.column, checked)}
+                          />
+                        ),
+                      },
+                    ]}
+                  />
+                  <Divider />
+                  <TextArea
+                    value={mergeNote}
+                    onChange={(event) => setMergeNote(event.target.value)}
+                    placeholder="Optional note about this merge"
+                    rows={3}
+                  />
+                </>
+              )}
+            </>
+          ) : (
+            <Text type="secondary">Select a duplicate row to merge.</Text>
+          )}
+        </Modal>
 
         {/* Data Preview */}
         {tableData && tableData.data.length > 0 && (

@@ -47,12 +47,53 @@ class MapDataRequest(BaseModel):
     mapping: MappingConfig
 
 
+class DuplicateRow(BaseModel):
+    """Represents a row that was skipped because it was a duplicate."""
+    id: int
+    record_number: Optional[int] = None
+    record: Dict[str, Any]
+    detected_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    resolution_details: Optional[Dict[str, Any]] = None
+
+
+class DuplicateExistingRow(BaseModel):
+    row_id: int
+    record: Dict[str, Any]
+
+
+class DuplicateDetailResponse(BaseModel):
+    success: bool
+    duplicate: DuplicateRow
+    existing_row: Optional[DuplicateExistingRow] = None
+    table_name: str
+    uniqueness_columns: List[str]
+
+
+class DuplicateMergeRequest(BaseModel):
+    updates: Dict[str, Any] = Field(default_factory=dict)
+    resolved_by: Optional[str] = None
+    note: Optional[str] = None
+
+
+class DuplicateMergeResponse(BaseModel):
+    success: bool
+    duplicate: DuplicateRow
+    updated_columns: List[str]
+    existing_row: Optional[DuplicateExistingRow] = None
+    resolution_details: Optional[Dict[str, Any]] = None
+
+
 class MapDataResponse(BaseModel):
     success: bool
     message: str
     records_processed: int
     duplicates_skipped: int = 0
     table_name: str
+    import_id: Optional[str] = None
+    duplicate_rows: Optional[List[DuplicateRow]] = None
+    duplicate_rows_count: Optional[int] = None
     llm_followup: Optional[str] = None
     needs_user_input: Optional[bool] = None
     can_execute: Optional[bool] = None
@@ -258,9 +299,15 @@ class ImportStatisticsResponse(BaseModel):
     total_rows_inserted: int
     total_duplicates_found: int
     avg_duration_seconds: float
-    tables_affected: int
-    unique_users: int
-    period_days: int
+
+
+class ImportDuplicateRowsResponse(BaseModel):
+    """Response containing duplicate rows for an import."""
+    success: bool
+    duplicates: List[DuplicateRow]
+    total_count: int
+    limit: int
+    offset: int
 
 
 class TableLineageResponse(BaseModel):
