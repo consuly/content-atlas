@@ -26,6 +26,71 @@ def _quote(identifier: str) -> str:
     return f'"{identifier}"'
 
 
+def _normalize_replace_column_payload(
+    migration: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Support legacy replace_column payloads by expanding shorthand keys."""
+
+    normalized = {**migration}
+    new_column_spec = dict(normalized.get("new_column") or {})
+
+    column_alias = normalized.get("column_name")
+    final_target_name = normalized.get("final_column_name")
+
+    if column_alias and "old_column" not in normalized:
+        normalized["old_column"] = column_alias
+
+        if "name" not in new_column_spec:
+            preferred_suffix = (
+                "_text"
+                if str(normalized.get("new_type", ""))
+                .upper()
+                .startswith("TEXT")
+                else "_replacement"
+            )
+            new_column_spec["name"] = (
+                normalized.get("new_column_name")
+                or f"{column_alias}{preferred_suffix}"
+            )
+
+        if "type" not in new_column_spec:
+            new_type = normalized.get("new_type")
+            if not new_type:
+                raise SchemaMigrationError(
+                    "replace_column legacy payload requires 'new_type'"
+                )
+            new_column_spec["type"] = new_type
+
+        if "rename_old_column_to" not in new_column_spec:
+            new_column_spec["rename_old_column_to"] = (
+                normalized.get("rename_old_column_to")
+                or f"{column_alias}_legacy"
+            )
+
+        if "drop_old_column" not in new_column_spec:
+            new_column_spec["drop_old_column"] = normalized.get(
+                "drop_old_column", False
+            )
+
+        if "copy_data" not in new_column_spec:
+            new_column_spec["copy_data"] = normalized.get("copy_data", True)
+
+        if (
+            "using_expression" not in new_column_spec
+            and normalized.get("using_expression")
+        ):
+            new_column_spec["using_expression"] = normalized["using_expression"]
+
+        if final_target_name is None:
+            final_target_name = column_alias
+
+    if final_target_name is not None and "final_name" not in new_column_spec:
+        new_column_spec["final_name"] = final_target_name
+
+    normalized["new_column"] = new_column_spec
+    return normalized
+
+
 def _default_using_expression(old_column: str, new_type: str) -> str:
     """Build a generic USING expression suitable for multiple SQL dialects."""
     quoted_old = _quote(old_column)
@@ -147,6 +212,7 @@ def _apply_replace_column(
         "old_column": "amount",
         "new_column": {
             "name": "amount_text",
+            "final_name": "amount",  # optional rename after swap
             "type": "TEXT",
             "copy_data": true,
             "rename_old_column_to": "amount_legacy",
@@ -154,20 +220,28 @@ def _apply_replace_column(
             "using_expression": "CAST(\"amount\" AS TEXT)"
         }
     }
+
+    Legacy payloads such as
+    {"action": "replace_column", "column_name": "amount", "new_type": "TEXT"}
+    are normalized automatically into the richer structure above.
     """
-    old_column = migration.get("old_column")
+    migration = _normalize_replace_column_payload(migration)
+    original_old_column = migration.get("old_column")
     new_column_spec = migration.get("new_column") or {}
-    new_column_name = new_column_spec.get("name")
+    temp_new_column_name = new_column_spec.get("name")
+    final_new_column_name = (
+        new_column_spec.get("final_name") or temp_new_column_name
+    )
     new_column_type = new_column_spec.get("type")
 
-    if not old_column or not new_column_name or not new_column_type:
+    if not original_old_column or not temp_new_column_name or not new_column_type:
         raise SchemaMigrationError(
             "replace_column migration requires 'old_column' and "
             "'new_column' with 'name' and 'type'"
         )
 
     rename_old_to = new_column_spec.get(
-        "rename_old_column_to", f"{old_column}_legacy"
+        "rename_old_column_to", f"{original_old_column}_legacy"
     )
     drop_old_column = new_column_spec.get("drop_old_column", False)
     copy_data = new_column_spec.get("copy_data", True)
@@ -180,34 +254,42 @@ def _apply_replace_column(
 
     result: Dict[str, Any] = {
         "action": "replace_column",
-        "old_column": old_column,
-        "new_column": new_column_name,
+        "old_column": original_old_column,
+        "new_column": final_new_column_name,
         "status": "pending",
     }
 
-    old_exists = old_column in existing_columns
-    new_exists = new_column_name in existing_columns
+    old_exists = original_old_column in existing_columns
+    temp_new_exists = temp_new_column_name in existing_columns
+    final_new_exists = (
+        final_new_column_name in existing_columns
+        if final_new_column_name
+        else False
+    )
     legacy_exists = rename_old_to in existing_columns
+    already_applied = (temp_new_exists or final_new_exists) and (
+        not old_exists or legacy_exists
+    )
 
-    if new_exists and (not old_exists or legacy_exists):
+    if already_applied:
         # Migration appears to have run already.
         result["status"] = "already_applied"
         return result
 
     if not old_exists:
         raise SchemaMigrationError(
-            f"Cannot replace column '{old_column}' in table '{table_name}': "
+            f"Cannot replace column '{original_old_column}' in table '{table_name}': "
             "column does not exist"
         )
 
-    if not new_exists:
+    if not temp_new_exists:
         add_sql = (
             f'ALTER TABLE {_quote(table_name)} '
-            f'ADD COLUMN {_quote(new_column_name)} {new_column_type}'
+            f'ADD COLUMN {_quote(temp_new_column_name)} {new_column_type}'
         )
         logger.info(
             "Schema migration: adding column %s to %s as %s",
-            new_column_name,
+            temp_new_column_name,
             table_name,
             new_column_type,
         )
@@ -215,18 +297,18 @@ def _apply_replace_column(
 
     if copy_data:
         expr = using_expression or _default_using_expression(
-            old_column, new_column_type
+            original_old_column, new_column_type
         )
         update_sql = (
             f'UPDATE {_quote(table_name)} '
-            f'SET {_quote(new_column_name)} = '
-            f'CASE WHEN {_quote(new_column_name)} IS NULL THEN {expr} '
-            f'ELSE {_quote(new_column_name)} END'
+            f'SET {_quote(temp_new_column_name)} = '
+            f'CASE WHEN {_quote(temp_new_column_name)} IS NULL THEN {expr} '
+            f'ELSE {_quote(temp_new_column_name)} END'
         )
         logger.info(
             "Schema migration: copying data from %s to %s on table %s",
-            old_column,
-            new_column_name,
+            original_old_column,
+            temp_new_column_name,
             table_name,
         )
         conn.execute(text(update_sql))
@@ -234,38 +316,63 @@ def _apply_replace_column(
     if drop_old_column:
         drop_sql = (
             f'ALTER TABLE {_quote(table_name)} '
-            f'DROP COLUMN {_quote(old_column)}'
+            f'DROP COLUMN {_quote(original_old_column)}'
         )
         logger.info(
             "Schema migration: dropping old column %s from table %s",
-            old_column,
+            original_old_column,
             table_name,
         )
         conn.execute(text(drop_sql))
     else:
         # Rename legacy column to keep data but make room for new mapping.
-        if rename_old_to and rename_old_to != old_column:
+        if rename_old_to and rename_old_to != original_old_column:
             if rename_old_to in existing_columns:
                 logger.info(
                     "Schema migration: legacy column name %s already exists, "
                     "skipping rename of %s on table %s",
                     rename_old_to,
-                    old_column,
+                    original_old_column,
                     table_name,
                 )
             else:
                 rename_sql = (
                     f'ALTER TABLE {_quote(table_name)} '
-                    f'RENAME COLUMN {_quote(old_column)} '
+                    f'RENAME COLUMN {_quote(original_old_column)} '
                     f'TO {_quote(rename_old_to)}'
                 )
                 logger.info(
                     "Schema migration: renaming %s to %s on table %s",
-                    old_column,
+                    original_old_column,
                     rename_old_to,
                     table_name,
                 )
                 conn.execute(text(rename_sql))
+
+    if final_new_column_name and final_new_column_name != temp_new_column_name:
+        inspector = inspect(conn)
+        current_columns = {
+            col["name"]: col for col in inspector.get_columns(table_name)
+        }
+        if final_new_column_name in current_columns:
+            raise SchemaMigrationError(
+                f"Cannot rename column '{temp_new_column_name}' to "
+                f"'{final_new_column_name}' in table '{table_name}': "
+                "destination column already exists"
+            )
+
+        rename_sql = (
+            f'ALTER TABLE {_quote(table_name)} '
+            f'RENAME COLUMN {_quote(temp_new_column_name)} '
+            f'TO {_quote(final_new_column_name)}'
+        )
+        logger.info(
+            "Schema migration: renaming %s to %s on table %s",
+            temp_new_column_name,
+            final_new_column_name,
+            table_name,
+        )
+        conn.execute(text(rename_sql))
 
     result["status"] = "applied"
     return result

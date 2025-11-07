@@ -259,11 +259,11 @@ class ExecuteRecommendedImportRequest(BaseModel):
 class ImportHistoryRecord(BaseModel):
     """Single import history record"""
     import_id: str
-    import_timestamp: datetime
-    file_name: str
-    file_hash: str
+    import_timestamp: Optional[datetime] = None
+    file_name: Optional[str] = None
+    file_hash: Optional[str] = None
     table_name: str
-    source_type: str
+    source_type: Optional[str] = None
     source_path: Optional[str] = None
     user_id: Optional[str] = None
     status: str
