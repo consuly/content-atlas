@@ -83,6 +83,130 @@ def test_replace_column_creates_new_text_column_and_renames_old():
     ]
 
 
+def test_replace_column_legacy_payload_converts_type_and_preserves_name():
+    engine = create_engine("sqlite:///:memory:")
+    table_name = "client_data"
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f'''
+                CREATE TABLE "{table_name}" (
+                    id INTEGER PRIMARY KEY,
+                    company_linkedin_id INTEGER
+                )
+                '''
+            )
+        )
+        conn.execute(
+            text(
+                f'''
+                INSERT INTO "{table_name}" (id, company_linkedin_id)
+                VALUES (1, 71678219), (2, NULL)
+                '''
+            )
+        )
+
+    migrations = [
+        {
+            "action": "replace_column",
+            "column_name": "company_linkedin_id",
+            "new_type": "TEXT",
+        }
+    ]
+
+    results = apply_schema_migrations(engine, table_name, migrations)
+    assert results == [
+        {
+            "action": "replace_column",
+            "old_column": "company_linkedin_id",
+            "new_column": "company_linkedin_id",
+            "status": "applied",
+        }
+    ]
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f'''
+                SELECT company_linkedin_id, company_linkedin_id_legacy
+                FROM "{table_name}"
+                ORDER BY id
+                '''
+            )
+        ).fetchall()
+
+    assert rows == [("71678219", 71678219), (None, None)]
+
+    results_repeat = apply_schema_migrations(engine, table_name, migrations)
+    assert results_repeat == [
+        {
+            "action": "replace_column",
+            "old_column": "company_linkedin_id",
+            "new_column": "company_linkedin_id",
+            "status": "already_applied",
+        }
+    ]
+
+
+def test_replace_column_final_name_renames_new_column():
+    engine = create_engine("sqlite:///:memory:")
+    table_name = "client_data"
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f'''
+                CREATE TABLE "{table_name}" (
+                    id INTEGER PRIMARY KEY,
+                    budget INTEGER
+                )
+                '''
+            )
+        )
+        conn.execute(
+            text(
+                f'''
+                INSERT INTO "{table_name}" (id, budget)
+                VALUES (1, 500)
+                '''
+            )
+        )
+
+    migrations = [
+        {
+            "action": "replace_column",
+            "old_column": "budget",
+            "new_column": {
+                "name": "budget_text",
+                "final_name": "budget",
+                "type": "TEXT",
+                "rename_old_column_to": "budget_numeric",
+            },
+        }
+    ]
+
+    apply_schema_migrations(engine, table_name, migrations)
+
+    with engine.connect() as conn:
+        columns = [
+            row[1]
+            for row in conn.execute(
+                text(f'PRAGMA table_info("{table_name}")')
+            ).fetchall()
+        ]
+        rows = conn.execute(
+            text(
+                f'''
+                SELECT budget, budget_numeric
+                FROM "{table_name}"
+                '''
+            )
+        ).fetchall()
+
+    assert "budget_text" not in columns
+    assert "budget" in columns
+    assert rows == [("500", 500)]
 def test_add_column_creates_new_column_and_populates_from_existing():
     engine = create_engine("sqlite:///:memory:")
     table_name = "client_data"

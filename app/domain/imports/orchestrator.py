@@ -6,6 +6,7 @@ ensuring consistent behavior across all API endpoints and reducing code duplicat
 """
 
 from typing import Dict, Any, List, Optional, Tuple
+from collections.abc import Mapping, Sequence
 from sqlalchemy import text, inspect
 import time
 import logging
@@ -43,6 +44,37 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 20000
 MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
 DUPLICATE_PREVIEW_LIMIT = 20
+
+
+def _records_look_like_mappings(records: Any, sample_size: int = 5) -> bool:
+    """
+    Ensure we only attempt to map structures that behave like dictionaries.
+
+    Accepts any Mapping implementation or objects exposing .get(), ignoring
+    None placeholders. This prevents cryptic AttributeErrors when cached
+    rows were stored as raw strings/lists instead of parsed records.
+    """
+    if records is None:
+        return False
+    if isinstance(records, (str, bytes)):
+        return False
+    if isinstance(records, Sequence):
+        if not records:
+            return True
+        checked = 0
+        for record in records:
+            if record is None:
+                continue
+            if isinstance(record, Mapping):
+                checked += 1
+            elif hasattr(record, "get") and callable(getattr(record, "get")):
+                checked += 1
+            else:
+                return False
+            if checked >= sample_size:
+                break
+        return True
+    return False
 
 
 def _summarize_type_mismatches(mapping_errors: List[Any]) -> List[Dict[str, Any]]:
@@ -466,7 +498,8 @@ def execute_data_import(
         
         # Process file (or use cached records)
         parse_start = time.time()
-        if pre_parsed_records is not None:
+        used_cached_records = pre_parsed_records is not None
+        if used_cached_records:
             # Use cached records - skip file parsing
             records = pre_parsed_records
             parse_time = 0.0  # No parsing time since we used cache
@@ -476,6 +509,26 @@ def execute_data_import(
             records = process_file_content(file_content, file_type)
             parse_time = time.time() - parse_start
             logger.info(f"Parsed {len(records)} records in {parse_time:.2f}s")
+
+        if used_cached_records and not _records_look_like_mappings(records):
+            logger.warning(
+                "Cached records are not dict-like for file '%s'; reprocessing raw bytes",
+                file_name
+            )
+            reparse_start = time.time()
+            records = process_file_content(file_content, file_type)
+            parse_time = time.time() - reparse_start
+            logger.info(
+                "Fallback parsing loaded %d records after cache validation failure",
+                len(records)
+            )
+            used_cached_records = False
+
+        if not _records_look_like_mappings(records):
+            raise ValueError(
+                "Parsed records are not structured as column dictionaries. "
+                "Double-check the file format and header configuration."
+            )
         
         total_rows = len(records)
         

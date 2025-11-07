@@ -4,7 +4,7 @@ Auto-import execution logic for LLM-analyzed files.
 This module handles the execution of import strategies recommended by the LLM agent.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from sqlalchemy import text, inspect
 from app.domain.imports.mapper import detect_mapping_from_file
 from app.db.models import create_table_if_not_exists, insert_records, calculate_file_hash
@@ -52,6 +52,81 @@ _TYPE_ALIAS_MAP = {
 }
 
 _SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "TIMESTAMP", "DATE", "BOOLEAN"}
+
+
+def _normalize_existing_column_type(sqlalchemy_type: Any) -> str:
+    """
+    Map a SQLAlchemy-reflected column type to the limited set we use elsewhere.
+    """
+    type_str = str(sqlalchemy_type).upper()
+
+    if "TIMESTAMP" in type_str or "DATETIME" in type_str:
+        return "TIMESTAMP"
+    if type_str == "DATE" or type_str.endswith(" DATE"):
+        return "DATE"
+    if "BOOL" in type_str:
+        return "BOOLEAN"
+    if any(token in type_str for token in ("INT", "SERIAL")):
+        return "INTEGER"
+    if any(token in type_str for token in ("DECIMAL", "NUMERIC", "REAL", "DOUBLE", "FLOAT", "MONEY")):
+        return "DECIMAL"
+    return "TEXT"
+
+
+def _load_existing_table_schema(engine, table_name: str) -> Dict[str, str]:
+    """
+    Read the current table schema and return a mapping of column -> normalized SQL type.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table(table_name):
+        return {}
+
+    schema: Dict[str, str] = {}
+    for column in inspector.get_columns(table_name):
+        schema[column["name"]] = _normalize_existing_column_type(column["type"])
+    return schema
+
+
+def _extract_columns_from_migrations(migrations: List[Dict[str, Any]]) -> Set[str]:
+    """Return the set of column names already modified by caller-provided migrations."""
+    targeted: Set[str] = set()
+    for migration in migrations or []:
+        if not migration:
+            continue
+        action = migration.get("action")
+        if action == "replace_column":
+            if migration.get("column_name"):
+                targeted.add(migration["column_name"])
+            elif migration.get("old_column"):
+                targeted.add(migration["old_column"])
+    return targeted
+
+
+def _build_alignment_migrations(
+    existing_schema: Dict[str, str],
+    desired_schema: Dict[str, str],
+    already_targeted: Set[str],
+) -> List[Dict[str, Any]]:
+    """Generate replace_column migrations for columns whose types need to change."""
+    migrations: List[Dict[str, Any]] = []
+    for column, desired_type in (desired_schema or {}).items():
+        if not desired_type:
+            continue
+        existing_type = existing_schema.get(column)
+        if not existing_type:
+            continue
+        if existing_type == desired_type:
+            continue
+        if column in already_targeted:
+            continue
+        migrations.append(
+            {
+                "action": "replace_column",
+                "column_name": column,
+                "new_type": desired_type,
+            }
+        )
+    return migrations
 
 
 def _is_numeric_like(value: Any) -> bool:
@@ -343,6 +418,8 @@ def execute_llm_import_decision(
         # and use its schema instead of creating a new one
         engine = get_engine()
         table_exists = False
+        existing_table_schema: Dict[str, str] = {}
+        final_table_schema: Dict[str, str] = {}
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT EXISTS (
@@ -352,8 +429,28 @@ def execute_llm_import_decision(
                 )
             """), {"table_name": target_table})
             table_exists = result.scalar()
+
+        if table_exists:
+            existing_table_schema = _load_existing_table_schema(engine, target_table)
+            final_table_schema = dict(existing_table_schema)
+        else:
+            final_table_schema = dict(db_schema)
         
         schema_migrations = llm_decision.get("schema_migrations") or []
+        if table_exists:
+            already_targeted = _extract_columns_from_migrations(schema_migrations)
+            auto_alignment = _build_alignment_migrations(
+                existing_table_schema,
+                db_schema,
+                already_targeted,
+            )
+            if auto_alignment:
+                logger.info(
+                    "AUTO-IMPORT: Generated %d schema alignment migration(s) for table '%s'",
+                    len(auto_alignment),
+                    target_table,
+                )
+                schema_migrations = schema_migrations + auto_alignment
         if schema_migrations:
             if table_exists:
                 try:
@@ -380,13 +477,16 @@ def execute_llm_import_decision(
                     target_table,
                 )
 
+        if table_exists:
+            final_table_schema = _load_existing_table_schema(engine, target_table)
+
         if table_exists and strategy in ["MERGE_EXACT", "ADAPT_DATA"]:
             logger.info(f"AUTO-IMPORT: Table '{target_table}' exists, will merge into it")
             # For merging, we only need the mappings, not the schema
             # The existing table schema will be used
             mapping_config = MappingConfig(
                 table_name=target_table,
-                db_schema={},  # Empty - will use existing table schema
+                db_schema=final_table_schema or existing_table_schema or {},
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules={"column_transformations": column_transformations} if column_transformations else {},
                 unique_columns=unique_columns,  # For duplicate detection (legacy)
@@ -449,6 +549,10 @@ def execute_llm_import_decision(
             "strategy_executed": strategy,
             "table_name": target_table,
             "records_processed": result["records_processed"],
+            "duplicates_skipped": result.get("duplicates_skipped", 0),
+            "duplicate_rows": result.get("duplicate_rows"),
+            "duplicate_rows_count": result.get("duplicate_rows_count"),
+            "import_id": result.get("import_id"),
             "mapping_errors": result.get("mapping_errors", []),
             "type_mismatch_summary": result.get("type_mismatch_summary", []),
             "llm_followup": result.get("llm_followup"),

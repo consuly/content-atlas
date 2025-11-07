@@ -572,6 +572,16 @@ def record_duplicate_rows(import_id: str, duplicates: List[Dict[str, Any]]) -> N
         raise
 
 
+def _needs_duplicate_resolution_columns(exc: ProgrammingError) -> bool:
+    """
+    Detect whether a ProgrammingError was caused by missing duplicate resolution columns.
+    Older databases may not have the resolved_* columns yet.
+    """
+    message = str(exc).lower()
+    indicators = ("resolved_at", "resolved_by", "resolution_details")
+    return any(indicator in message for indicator in indicators)
+
+
 def list_duplicate_rows(
     import_id: str,
     limit: int = 100,
@@ -602,8 +612,9 @@ def list_duplicate_rows(
                 "offset": offset
             })
         except ProgrammingError as exc:
-            if "resolved_at" in str(exc):
-                logger.warning("Missing resolved columns detected; recreating import tracking tables")
+            if _needs_duplicate_resolution_columns(exc):
+                logger.warning("Missing duplicate resolution columns detected; ensuring schema is up to date")
+                conn.rollback()
                 create_import_history_table()
                 results = conn.execute(query, {
                     "import_id": import_id,
@@ -709,10 +720,22 @@ def get_duplicate_row_detail(import_id: str, duplicate_id: int) -> Dict[str, Any
                 FROM import_duplicates
                 WHERE import_id = :import_id AND id = :duplicate_id
             """)
-            dup_row = conn.execute(dup_query, {
-                "import_id": import_id,
-                "duplicate_id": duplicate_id
-            }).fetchone()
+            try:
+                dup_row = conn.execute(dup_query, {
+                    "import_id": import_id,
+                    "duplicate_id": duplicate_id
+                }).fetchone()
+            except ProgrammingError as exc:
+                if _needs_duplicate_resolution_columns(exc):
+                    logger.warning("Missing duplicate resolution columns detected; ensuring schema is up to date")
+                    conn.rollback()
+                    create_import_history_table()
+                    dup_row = conn.execute(dup_query, {
+                        "import_id": import_id,
+                        "duplicate_id": duplicate_id
+                    }).fetchone()
+                else:
+                    raise
 
             if not dup_row:
                 raise ValueError("Duplicate record not found")

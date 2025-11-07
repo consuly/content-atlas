@@ -80,6 +80,14 @@ interface DuplicateDetail {
   uniqueness_columns: string[];
 }
 
+type AutoRecoveryOutcome =
+  | { recovered: true }
+  | {
+      recovered: false;
+      reason: 'no_plan' | 'analysis_failed' | 'execution_failed' | 'exception';
+      errorMessage?: string;
+    };
+
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -474,12 +482,111 @@ export const ImportMappingPage: React.FC = () => {
     }
   }, [file, showInteractiveRetry]);
 
+  const attemptAutoRecoveryWithLLM = useCallback(
+    async (failureMessage: string): Promise<AutoRecoveryOutcome> => {
+      if (!id) {
+        return {
+          recovered: false,
+          reason: 'analysis_failed',
+          errorMessage: failureMessage,
+        };
+      }
+
+      const token = localStorage.getItem('refine-auth');
+      messageApi.info('Auto Process failed. Asking the AI assistant for a fix...');
+
+      try {
+        const analysisResponse = await axios.post(
+          `${API_URL}/analyze-file-interactive`,
+          {
+            file_id: id,
+            max_iterations: 5,
+            previous_error_message: failureMessage,
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        );
+
+        if (!analysisResponse.data.success) {
+          const fallbackMessage =
+            analysisResponse.data.error || 'Interactive recovery failed';
+          messageApi.error(fallbackMessage);
+          return {
+            recovered: false,
+            reason: 'analysis_failed',
+            errorMessage: fallbackMessage,
+          };
+        }
+
+        if (!analysisResponse.data.can_execute) {
+          messageApi.warning(
+            'The AI assistant could not determine an automatic recovery plan.'
+          );
+          return { recovered: false, reason: 'no_plan' };
+        }
+
+        messageApi.info('AI assistant proposed a fix. Executing automatically...');
+
+        const executeResponse = await axios.post(
+          `${API_URL}/execute-interactive-import`,
+          {
+            file_id: id,
+            thread_id: analysisResponse.data.thread_id,
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        );
+
+        if (executeResponse.data.success) {
+          setResult({
+            success: true,
+            table_name: executeResponse.data.table_name,
+            rows_imported: executeResponse.data.rows_imported,
+            execution_time: executeResponse.data.execution_time,
+          });
+          await fetchFileDetails();
+          messageApi.success('AI recovery completed the import.');
+          return { recovered: true };
+        }
+
+        const executionMessage =
+          executeResponse.data.message || 'AI recovery execution failed';
+        messageApi.error(executionMessage);
+        return {
+          recovered: false,
+          reason: 'execution_failed',
+          errorMessage: executionMessage,
+        };
+      } catch (err) {
+        const error = err as AxiosError<{ detail?: string }>;
+        const errorMsg =
+          error.response?.data?.detail || error.message || 'AI recovery failed';
+        messageApi.error(errorMsg);
+        return {
+          recovered: false,
+          reason: 'exception',
+          errorMessage: errorMsg,
+        };
+      }
+    },
+    [fetchFileDetails, id, messageApi]
+  );
+
   const handleAutoProcess = async () => {
     if (!id) return;
     
     setProcessing(true);
     setError(null);
     setResult(null);
+    let autoError: string | null = null;
 
     try {
       const token = localStorage.getItem('refine-auth');
@@ -504,22 +611,38 @@ export const ImportMappingPage: React.FC = () => {
         });
         // Refetch file details to get updated status and trigger detailed view
         await fetchFileDetails();
+        setProcessing(false);
+        return;
       } else {
-        setResult({
-          success: false,
-          error: response.data.error || 'Processing failed',
-        });
+        autoError = response.data.error || 'Processing failed';
       }
     } catch (err) {
       const error = err as AxiosError<{ detail?: string }>;
       const errorMsg = error.response?.data?.detail || error.message || 'Processing failed';
+      autoError = errorMsg;
+    }
+
+    if (autoError) {
+      const recoveryOutcome = await attemptAutoRecoveryWithLLM(autoError);
+      if (recoveryOutcome.recovered) {
+        setProcessing(false);
+        return;
+      }
+
+      const recoverySuffix =
+        recoveryOutcome.reason === 'no_plan'
+          ? ' The AI assistant could not determine a recovery plan.'
+          : recoveryOutcome.errorMessage
+            ? ` AI recovery attempt failed: ${recoveryOutcome.errorMessage}`
+            : '';
+
       setResult({
         success: false,
-        error: errorMsg,
+        error: `${autoError}${recoverySuffix}`,
       });
-    } finally {
-      setProcessing(false);
     }
+
+    setProcessing(false);
   };
 
   const handleInteractiveStart = async (options?: { previousError?: string }) => {
