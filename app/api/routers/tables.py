@@ -1,7 +1,10 @@
 """
 Table management endpoints for querying and inspecting database tables.
 """
-from fastapi import APIRouter, HTTPException, Depends
+import json
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -64,28 +67,51 @@ async def query_table(
     table_name: str,
     limit: int = 100,
     offset: int = 0,
+    search: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_order: str = "asc",
+    filters: Optional[str] = Query(
+        default=None,
+        description='JSON list of filters: [{"column":"status","operator":"eq","value":"Active"}]',
+    ),
     db: Session = Depends(get_db)
 ):
     """
-    Query table data with pagination.
-    
-    Retrieves data from a specific table with pagination support.
-    Excludes internal metadata columns (those starting with underscore).
-    
-    Parameters:
-    - table_name: Name of the table to query
-    - limit: Maximum number of rows to return (default: 100)
-    - offset: Number of rows to skip (default: 0)
-    
-    Returns:
-    - Table data
-    - Total row count
-    - Pagination info
+    Query table data with pagination, optional search, sorting, and filtering.
     """
     try:
+        limit = min(limit, 500)
+        operator_map = {"eq": "=", "neq": "!=", "contains": "ILIKE"}
+
+        parsed_filters: List[Dict[str, Any]] = []
+        if filters:
+            try:
+                raw_filters = json.loads(filters)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid filters format. Must be valid JSON.")
+
+            if isinstance(raw_filters, dict):
+                raw_filters = [raw_filters]
+            if not isinstance(raw_filters, list):
+                raise HTTPException(status_code=400, detail="Filters must be provided as a list.")
+
+            for filter_obj in raw_filters:
+                if not isinstance(filter_obj, dict):
+                    raise HTTPException(status_code=400, detail="Each filter must be an object.")
+
+                column = filter_obj.get("column")
+                operator = (filter_obj.get("operator") or "eq").lower()
+                value = filter_obj.get("value")
+
+                if not column or value is None:
+                    raise HTTPException(status_code=400, detail="Filters require 'column' and 'value'.")
+                if operator not in operator_map:
+                    raise HTTPException(status_code=400, detail=f"Unsupported operator '{operator}'.")
+
+                parsed_filters.append({"column": column, "operator": operator, "value": value})
+
         engine = get_engine()
         with engine.connect() as conn:
-            # Validate table exists
             table_check = conn.execute(text("""
                 SELECT table_name FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_name = :table_name
@@ -94,31 +120,84 @@ async def query_table(
             if not table_check.fetchone():
                 raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-            # Get total row count
-            count_result = conn.execute(text(f"SELECT COUNT(*) FROM \"{table_name}\""))
-            total_rows = count_result.scalar()
-
-            # Get column names excluding metadata columns (those starting with _)
             columns_result = conn.execute(text("""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
-                AND column_name NOT LIKE '\\_%'
+                AND column_name NOT LIKE '\\_%' ESCAPE '\\'
                 ORDER BY ordinal_position
             """), {"table_name": table_name})
             
             user_columns = [row[0] for row in columns_result]
+            if not user_columns:
+                return TableDataResponse(
+                    success=True,
+                    table_name=table_name,
+                    data=[],
+                    total_rows=0,
+                    limit=limit,
+                    offset=offset
+                )
+
+            if sort_by and sort_by not in user_columns:
+                raise HTTPException(status_code=400, detail=f"Invalid sort column '{sort_by}'.")
+
             columns_sql = ', '.join([f'"{col}"' for col in user_columns])
 
-            # Get paginated data (excluding metadata columns)
-            data_result = conn.execute(text(f"""
-                SELECT {columns_sql} FROM \"{table_name}\"
-                ORDER BY _row_id
-                LIMIT :limit OFFSET :offset
-            """), {"limit": limit, "offset": offset})
+            where_clauses: List[str] = []
+            query_params: Dict[str, Any] = {}
 
+            for idx, filter_obj in enumerate(parsed_filters):
+                column = filter_obj["column"]
+                if column not in user_columns:
+                    raise HTTPException(status_code=400, detail=f"Invalid filter column '{column}'.")
+
+                operator = filter_obj["operator"]
+                value = filter_obj["value"]
+                param_name = f"filter_{idx}"
+
+                if operator == "contains":
+                    where_clauses.append(f'CAST("{column}" AS TEXT) ILIKE :{param_name}')
+                    query_params[param_name] = f"%{value}%"
+                else:
+                    sql_operator = operator_map[operator]
+                    where_clauses.append(f'"{column}" {sql_operator} :{param_name}')
+                    query_params[param_name] = value
+
+            if search:
+                query_params["search_value"] = f"%{search}%"
+                search_conditions = [
+                    f'CAST("{column}" AS TEXT) ILIKE :search_value'
+                    for column in user_columns
+                ]
+                where_clauses.append(f"({' OR '.join(search_conditions)})")
+
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+            order_fragment = 'ORDER BY "_row_id"'
+            if sort_by:
+                direction = "DESC" if sort_order.lower() == "desc" else "ASC"
+                order_fragment = f'ORDER BY "{sort_by}" {direction}'
+
+            count_sql = f'SELECT COUNT(*) FROM "{table_name}" {where_sql}'
+            total_rows = conn.execute(text(count_sql), query_params).scalar()
+
+            data_sql = f"""
+                SELECT {columns_sql} FROM "{table_name}"
+                {where_sql}
+                {order_fragment}
+                LIMIT :limit OFFSET :offset
+            """
+            data_params = dict(query_params)
+            data_params.update({"limit": limit, "offset": offset})
+
+            data_result = conn.execute(text(data_sql), data_params)
             columns = data_result.keys()
-            data = [dict(zip(columns, row)) for row in data_result]
+            raw_rows = [dict(zip(columns, row)) for row in data_result]
+            data = [
+                {key: value for key, value in row.items() if not key.startswith('_')}
+                for row in raw_rows
+            ]
 
         return TableDataResponse(
             success=True,
@@ -166,6 +245,7 @@ async def get_table_schema(table_name: str, db: Session = Depends(get_db)):
                 SELECT column_name, data_type, is_nullable
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
+                AND column_name NOT LIKE '\\_%' ESCAPE '\\'
                 ORDER BY ordinal_position
             """), {"table_name": table_name})
 
@@ -224,6 +304,7 @@ async def get_table_stats(table_name: str, db: Session = Depends(get_db)):
                 SELECT column_name, data_type
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
+                AND column_name NOT LIKE '\\_%' ESCAPE '\\'
                 AND column_name != 'id'  -- Exclude auto-generated id column
                 ORDER BY ordinal_position
             """), {"table_name": table_name})
