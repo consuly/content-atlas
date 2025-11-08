@@ -30,6 +30,7 @@ import { ImportPage } from "./pages/import";
 import { ImportMappingPage } from "./pages/import/[id]";
 import { QueryPage } from "./pages/query";
 import { ApiKeysPage } from "./pages/api-keys";
+import { TableViewerPage } from "./pages/tables/[tableName]";
 function App() {
   return (
     <BrowserRouter>
@@ -98,6 +99,9 @@ function App() {
                     <Route path="/import">
                       <Route index element={<ImportPage />} />
                       <Route path=":id" element={<ImportMappingPage />} />
+                    </Route>
+                    <Route path="/tables">
+                      <Route path=":tableName" element={<TableViewerPage />} />
                     </Route>
                     <Route path="/query">
                       <Route index element={

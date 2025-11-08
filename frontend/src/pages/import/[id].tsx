@@ -1284,9 +1284,13 @@ export const ImportMappingPage: React.FC = () => {
             size="small"
             loading={loadingDetails}
             extra={
-              <Button 
-                type="link" 
-                onClick={() => window.open(`/tables/${file.mapped_table_name}`, '_blank')}
+              <Button
+                type="link"
+                onClick={() =>
+                  file?.mapped_table_name &&
+                  navigate(`/tables/${encodeURIComponent(file.mapped_table_name)}`)
+                }
+                disabled={!file?.mapped_table_name}
               >
                 View Full Table
               </Button>
@@ -1324,9 +1328,13 @@ export const ImportMappingPage: React.FC = () => {
           >
             Query This Data
           </Button>
-          <Button 
+          <Button
             icon={<EyeOutlined />}
-            onClick={() => window.open(`/tables/${file.mapped_table_name}`, '_blank')}
+            onClick={() =>
+              file?.mapped_table_name &&
+              navigate(`/tables/${encodeURIComponent(file.mapped_table_name)}`)
+            }
+            disabled={!file?.mapped_table_name}
           >
             View Full Table
           </Button>
