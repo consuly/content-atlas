@@ -77,6 +77,11 @@ def create_uploaded_files_table():
             mapped_rows INTEGER,
             user_id VARCHAR(255),
             error_message TEXT,
+            active_job_id UUID,
+            active_job_status VARCHAR(50),
+            active_job_stage VARCHAR(50),
+            active_job_progress INTEGER,
+            active_job_started_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
@@ -91,6 +96,30 @@ def create_uploaded_files_table():
         conn.execute(text(enable_extension_sql))
         for ddl in table_ddl_statements:
             conn.execute(text(ddl))
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS active_job_id UUID;
+        """))
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS active_job_status VARCHAR(50);
+        """))
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS active_job_stage VARCHAR(50);
+        """))
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS active_job_progress INTEGER;
+        """))
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS active_job_started_at TIMESTAMP;
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_uploaded_files_active_job
+            ON uploaded_files(active_job_id);
+        """))
 
     global _table_initialized
     _table_initialized = True
@@ -148,7 +177,16 @@ def insert_uploaded_file(
                 "file_size": row[4],
                 "content_type": row[5],
                 "upload_date": row[6].isoformat() if row[6] else None,
-                "status": row[7]
+                "status": row[7],
+                "mapped_table_name": None,
+                "mapped_date": None,
+                "mapped_rows": None,
+                "error_message": None,
+                "active_job_id": None,
+                "active_job_status": None,
+                "active_job_stage": None,
+                "active_job_progress": None,
+                "active_job_started_at": None,
             }
 
     return _run_with_table_retry(_insert)
@@ -181,7 +219,9 @@ def get_uploaded_files(
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
         content_type, upload_date, status, mapped_table_name,
-        mapped_date, mapped_rows, error_message
+        mapped_date, mapped_rows, error_message,
+        active_job_id, active_job_status, active_job_stage,
+        active_job_progress, active_job_started_at
     FROM uploaded_files
     WHERE {where_sql}
     ORDER BY upload_date DESC
@@ -206,7 +246,12 @@ def get_uploaded_files(
                     "mapped_table_name": row[8],
                     "mapped_date": row[9].isoformat() if row[9] else None,
                     "mapped_rows": row[10],
-                    "error_message": row[11]
+                    "error_message": row[11],
+                    "active_job_id": str(row[12]) if row[12] else None,
+                    "active_job_status": row[13],
+                    "active_job_stage": row[14],
+                    "active_job_progress": row[15],
+                    "active_job_started_at": row[16].isoformat() if row[16] else None,
                 })
 
             return files
@@ -223,7 +268,9 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
         content_type, upload_date, status, mapped_table_name,
-        mapped_date, mapped_rows, error_message
+        mapped_date, mapped_rows, error_message,
+        active_job_id, active_job_status, active_job_stage,
+        active_job_progress, active_job_started_at
     FROM uploaded_files
     WHERE id = :file_id
     """
@@ -248,7 +295,12 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
                 "mapped_table_name": row[8],
                 "mapped_date": row[9].isoformat() if row[9] else None,
                 "mapped_rows": row[10],
-                "error_message": row[11]
+                "error_message": row[11],
+                "active_job_id": str(row[12]) if row[12] else None,
+                "active_job_status": row[13],
+                "active_job_stage": row[14],
+                "active_job_progress": row[15],
+                "active_job_started_at": row[16].isoformat() if row[16] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -262,7 +314,10 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
     query_sql = """
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
-        content_type, upload_date, status
+        content_type, upload_date, status, mapped_table_name,
+        mapped_date, mapped_rows, error_message,
+        active_job_id, active_job_status, active_job_stage,
+        active_job_progress, active_job_started_at
     FROM uploaded_files
     WHERE file_name = :file_name
     ORDER BY upload_date DESC
@@ -285,7 +340,16 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
                 "file_size": row[4],
                 "content_type": row[5],
                 "upload_date": row[6].isoformat() if row[6] else None,
-                "status": row[7]
+                "status": row[7],
+                "mapped_table_name": row[8],
+                "mapped_date": row[9].isoformat() if row[9] else None,
+                "mapped_rows": row[10],
+                "error_message": row[11],
+                "active_job_id": str(row[12]) if row[12] else None,
+                "active_job_status": row[13],
+                "active_job_stage": row[14],
+                "active_job_progress": row[15],
+                "active_job_started_at": row[16].isoformat() if row[16] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -299,7 +363,10 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
     query_sql = """
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
-        content_type, upload_date, status
+        content_type, upload_date, status, mapped_table_name,
+        mapped_date, mapped_rows, error_message,
+        active_job_id, active_job_status, active_job_stage,
+        active_job_progress, active_job_started_at
     FROM uploaded_files
     WHERE file_hash = :file_hash
     ORDER BY upload_date DESC
@@ -322,7 +389,16 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
                 "file_size": row[4],
                 "content_type": row[5],
                 "upload_date": row[6].isoformat() if row[6] else None,
-                "status": row[7]
+                "status": row[7],
+                "mapped_table_name": row[8],
+                "mapped_date": row[9].isoformat() if row[9] else None,
+                "mapped_rows": row[10],
+                "error_message": row[11],
+                "active_job_id": str(row[12]) if row[12] else None,
+                "active_job_status": row[13],
+                "active_job_stage": row[14],
+                "active_job_progress": row[15],
+                "active_job_started_at": row[16].isoformat() if row[16] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -333,7 +409,8 @@ def update_file_status(
     status: str,
     mapped_table_name: Optional[str] = None,
     mapped_rows: Optional[int] = None,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
+    expected_active_job_id: Optional[str] = None
 ) -> bool:
     """Update the status of an uploaded file."""
     ensure_uploaded_files_table()
@@ -360,6 +437,9 @@ def update_file_status(
     SET {", ".join(update_parts)}
     WHERE id = :file_id
     """
+    if expected_active_job_id:
+        update_sql += " AND active_job_id = :expected_active_job_id"
+        params["expected_active_job_id"] = expected_active_job_id
 
     def _update() -> bool:
         with engine.connect() as conn:
@@ -368,6 +448,123 @@ def update_file_status(
             return result.rowcount > 0
 
     return _run_with_table_retry(_update)
+
+
+def assign_active_job_state(
+    file_id: str,
+    job_id: str,
+    job_status: str,
+    job_stage: str,
+    progress: Optional[int] = None
+) -> bool:
+    """Attach a job to an uploaded file and mark it as mapping."""
+    ensure_uploaded_files_table()
+    engine = get_engine()
+
+    update_sql = """
+    UPDATE uploaded_files
+    SET active_job_id = :job_id,
+        active_job_status = :job_status,
+        active_job_stage = :job_stage,
+        active_job_progress = :progress,
+        active_job_started_at = NOW(),
+        status = 'mapping',
+        error_message = NULL,
+        updated_at = NOW()
+    WHERE id = :file_id
+    """
+    params = {
+        "file_id": file_id,
+        "job_id": job_id,
+        "job_status": job_status,
+        "job_stage": job_stage,
+        "progress": progress if progress is not None else 0,
+    }
+
+    def _assign() -> bool:
+        with engine.connect() as conn:
+            result = conn.execute(text(update_sql), params)
+            conn.commit()
+            return result.rowcount > 0
+
+    return _run_with_table_retry(_assign)
+
+
+def update_active_job_state(
+    file_id: str,
+    job_id: str,
+    job_status: Optional[str] = None,
+    job_stage: Optional[str] = None,
+    progress: Optional[int] = None,
+    error_message: Optional[str] = None
+) -> bool:
+    """Update the metadata for the active job on a file."""
+    ensure_uploaded_files_table()
+    engine = get_engine()
+
+    update_parts = ["updated_at = NOW()"]
+    params = {"file_id": file_id, "job_id": job_id}
+
+    if job_status is not None:
+        update_parts.append("active_job_status = :job_status")
+        params["job_status"] = job_status
+
+    if job_stage is not None:
+        update_parts.append("active_job_stage = :job_stage")
+        params["job_stage"] = job_stage
+
+    if progress is not None:
+        update_parts.append("active_job_progress = :progress")
+        params["progress"] = progress
+
+    if error_message is not None:
+        update_parts.append("error_message = :error_message")
+        params["error_message"] = error_message
+
+    if len(update_parts) == 1:
+        return False
+
+    update_sql = f"""
+    UPDATE uploaded_files
+    SET {", ".join(update_parts)}
+    WHERE id = :file_id AND active_job_id = :job_id
+    """
+
+    def _update() -> bool:
+        with engine.connect() as conn:
+            result = conn.execute(text(update_sql), params)
+            conn.commit()
+            return result.rowcount > 0
+
+    return _run_with_table_retry(_update)
+
+
+def clear_active_job_state(
+    file_id: str,
+    job_id: str
+) -> bool:
+    """Remove the active job metadata from a file after completion."""
+    ensure_uploaded_files_table()
+    engine = get_engine()
+
+    update_sql = """
+    UPDATE uploaded_files
+    SET active_job_id = NULL,
+        active_job_status = NULL,
+        active_job_stage = NULL,
+        active_job_progress = NULL,
+        active_job_started_at = NULL,
+        updated_at = NOW()
+    WHERE id = :file_id AND active_job_id = :job_id
+    """
+
+    def _clear() -> bool:
+        with engine.connect() as conn:
+            result = conn.execute(text(update_sql), {"file_id": file_id, "job_id": job_id})
+            conn.commit()
+            return result.rowcount > 0
+
+    return _run_with_table_retry(_clear)
 
 
 def delete_uploaded_file(file_id: str) -> bool:

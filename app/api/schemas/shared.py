@@ -4,6 +4,21 @@ from enum import Enum
 from datetime import datetime
 
 
+RESERVED_SYSTEM_TABLES = {
+    # Import + mapping infrastructure
+    "file_imports",
+    "table_metadata",
+    "import_history",
+    "mapping_errors",
+    "uploaded_files",
+    "import_duplicates",
+    "import_jobs",
+    # Core platform tables
+    "users",
+    "api_keys",
+}
+
+
 class DuplicateCheckConfig(BaseModel):
     """Configuration for duplicate checking behavior"""
     enabled: bool = True
@@ -41,6 +56,21 @@ class MappingConfig(BaseModel):
     unique_columns: Optional[List[str]] = None
     check_duplicates: bool = True  # Legacy field for backward compatibility
     duplicate_check: DuplicateCheckConfig = DuplicateCheckConfig()  # New structured config
+
+    @validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+        """Disallow mapping into system tables or blank names."""
+        if not value:
+            raise ValueError("table_name is required")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("table_name cannot be blank")
+        if normalized.lower() in RESERVED_SYSTEM_TABLES:
+            raise ValueError(
+                f"table_name '{normalized}' is reserved for internal use. "
+                "Choose a different table name."
+            )
+        return normalized
 
 
 class MapDataRequest(BaseModel):
@@ -101,6 +131,7 @@ class MapDataResponse(BaseModel):
     thread_id: Optional[str] = None
     mapping_errors: Optional[List[MappingErrorDetail]] = None
     type_mismatch_summary: Optional[List[TypeMismatchSummary]] = None
+    job_id: Optional[str] = None
 
 
 class MapB2DataRequest(BaseModel):
@@ -237,6 +268,7 @@ class AnalyzeFileResponse(BaseModel):
     iterations_used: int = 0
     max_iterations: int = 5
     error: Optional[str] = None
+    job_id: Optional[str] = None
 
 
 class AnalyzeB2FileRequest(BaseModel):
@@ -333,6 +365,11 @@ class UploadedFileInfo(BaseModel):
     mapped_date: Optional[datetime] = None
     mapped_rows: Optional[int] = None
     error_message: Optional[str] = None
+    active_job_id: Optional[str] = None
+    active_job_status: Optional[str] = None
+    active_job_stage: Optional[str] = None
+    active_job_progress: Optional[int] = None
+    active_job_started_at: Optional[datetime] = None
 
 
 class UploadFileResponse(BaseModel):
@@ -407,6 +444,40 @@ class CompleteUploadResponse(BaseModel):
     file: UploadedFileInfo
 
 
+class ImportJobInfo(BaseModel):
+    """Metadata about a long-running import job."""
+    id: str
+    file_id: str
+    status: str
+    stage: Optional[str] = None
+    progress: Optional[int] = None
+    retry_attempt: int = 1
+    error_message: Optional[str] = None
+    trigger_source: Optional[str] = None
+    analysis_mode: Optional[str] = None
+    conflict_mode: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    metadata: Optional[Dict[str, Any]] = None
+    result_metadata: Optional[Dict[str, Any]] = None
+
+
+class ImportJobResponse(BaseModel):
+    """Response wrapper for a single import job."""
+    success: bool
+    job: ImportJobInfo
+
+
+class ImportJobListResponse(BaseModel):
+    """Response wrapper for a list of import jobs."""
+    success: bool
+    jobs: List[ImportJobInfo]
+    total_count: int
+    limit: int
+    offset: int
+
+
 class AnalyzeFileInteractiveRequest(BaseModel):
     """Request for interactive file analysis with conversation"""
     file_id: str
@@ -429,6 +500,7 @@ class AnalyzeFileInteractiveResponse(BaseModel):
     iterations_used: int = 0
     max_iterations: int = 5
     error: Optional[str] = None
+    job_id: Optional[str] = None
 
 
 class ExecuteInteractiveImportRequest(BaseModel):

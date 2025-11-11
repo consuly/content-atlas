@@ -100,6 +100,7 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
             "import_history",
             "mapping_errors",
             "import_duplicates",
+            "import_jobs",
             "uploaded_files",
         ):
             conn.execute(text(f'DELETE FROM "{table}"'))

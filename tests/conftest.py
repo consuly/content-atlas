@@ -6,12 +6,18 @@ database initialization to ensure system tables exist before tests run.
 """
 
 import os
+
+# Force database bootstrap unless the user explicitly exports SKIP_DB_INIT=1.
+os.environ.setdefault("SKIP_DB_INIT", "0")
+
 import pytest
+from sqlalchemy.exc import OperationalError
 from app.db.session import get_engine
 from app.db.metadata import create_table_metadata_table
 from app.domain.imports.history import create_import_history_table
 from app.domain.uploads.uploaded_files import create_uploaded_files_table
 from app.db.models import create_file_imports_table_if_not_exists
+from app.domain.imports.jobs import ensure_import_jobs_table
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -36,6 +42,12 @@ def initialize_test_database():
     print("PYTEST SETUP: Initializing system tables for test session")
     print("="*80)
     
+    if os.getenv("SKIP_DB_INIT") == "1":
+        print("  SKIP_DB_INIT=1 detected; skipping database bootstrap for tests")
+        print("="*80 + "\n")
+        yield
+        return
+    
     try:
         if os.getenv("SKIP_DB_INIT") == "1":
             print("  SKIP_DB_INIT=1 detected; skipping database bootstrap for fast unit test run")
@@ -54,6 +66,9 @@ def initialize_test_database():
         
         print("  Creating uploaded_files table...")
         create_uploaded_files_table()
+
+        print("  Creating import_jobs table...")
+        ensure_import_jobs_table()
         
         print("  Creating file_imports table...")
         create_file_imports_table_if_not_exists(engine)
@@ -61,6 +76,11 @@ def initialize_test_database():
         print("  ✓ All system tables initialized successfully")
         print("="*80 + "\n")
         
+    except OperationalError as exc:
+        print(f"  WARNING: Database unavailable, skipping system table init: {exc}")
+        print("="*80 + "\n")
+        yield
+        return
     except Exception as e:
         print(f"  ERROR: Failed to initialize system tables: {e}")
         print("="*80 + "\n")

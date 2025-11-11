@@ -65,7 +65,7 @@ def get_user_created_tables(engine: Engine) -> List[str]:
                 'spatial_ref_sys', 'geography_columns', 'geometry_columns', 
                 'raster_columns', 'raster_overviews',
                 'file_imports', 'table_metadata', 'import_history', 
-                'uploaded_files', 'users', 'api_keys', 'mapping_errors'
+                'uploaded_files', 'users', 'api_keys', 'mapping_errors', 'import_jobs'
             )
             AND table_name NOT LIKE 'pg_%'
             ORDER BY table_name
@@ -164,7 +164,7 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
     
     This function:
     1. Drops all user-created tables
-    2. Drops tracking tables (file_imports, table_metadata, import_history, uploaded_files)
+    2. Drops tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
        - These will be recreated on startup with the latest schema
     3. Deletes all files from B2 storage
     4. Preserves the users table
@@ -217,7 +217,8 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
                 'uploaded_files',
                 'file_imports',
                 'table_metadata',
-                'import_history'
+                'import_history',
+                'import_jobs'
             ]
             for table_name in tracking_tables_to_drop:
                 try:

@@ -14,6 +14,7 @@ The following system tables are protected from LLM access:
 - `uploaded_files` - Records uploaded file information
 - `users` - User account information
 - `file_imports` - File import tracking with hashes
+- `import_jobs` - Tracks background import job progress and metadata
 
 ## Implementation
 
@@ -96,6 +97,7 @@ To protect additional tables:
        'uploaded_files',
        'users',
        'file_imports',
+       'import_jobs',
        'your_new_table'  # Add here
    }
    ```

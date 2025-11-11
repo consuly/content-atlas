@@ -4,6 +4,7 @@ FastAPI application entry point.
 This module initializes the FastAPI application, configures middleware,
 and registers all API routers.
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from .core.logging_config import configure_logging
 # Import routers
 from .api.routers import (
     imports, mapping, tables, tasks, query, analysis,
-    import_history, uploads, auth, api_keys, public_api
+    import_history, uploads, auth, api_keys, public_api, jobs
 )
 
 # Backwards-compatible exports used by tests and legacy modules.
@@ -28,12 +29,18 @@ configure_logging(settings.log_level)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown events."""
+    if os.getenv("SKIP_DB_INIT") == "1":
+        print("SKIP_DB_INIT=1 detected; skipping database bootstrap during startup")
+        yield
+        return
+
     # Startup: Initialize database tables
     try:
         from .domain.uploads.uploaded_files import create_uploaded_files_table
         from .core.api_key_auth import init_api_key_tables
         from .db.metadata import create_table_metadata_table
         from .domain.imports.history import create_import_history_table
+        from .domain.imports.jobs import ensure_import_jobs_table
         from .core.security import init_auth_tables
         
         print("Initializing database tables...")
@@ -42,6 +49,9 @@ async def lifespan(app: FastAPI):
         
         create_import_history_table()
         print("✓ import_history table ready")
+        
+        ensure_import_jobs_table()
+        print("✓ import_jobs table ready")
         
         create_uploaded_files_table()
         # Success message printed inside function
@@ -99,6 +109,7 @@ app.include_router(uploads.router)
 app.include_router(auth.router)
 app.include_router(api_keys.router)
 app.include_router(public_api.router)
+app.include_router(jobs.router)
 
 
 @app.get("/")

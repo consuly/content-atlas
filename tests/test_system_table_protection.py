@@ -16,7 +16,8 @@ def test_protected_tables_constant():
         'table_metadata',
         'uploaded_files',
         'users',
-        'file_imports'
+        'file_imports',
+        'import_jobs',
     }
     assert PROTECTED_SYSTEM_TABLES == expected_tables
 

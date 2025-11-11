@@ -29,7 +29,8 @@ PROTECTED_SYSTEM_TABLES = {
     'table_metadata',
     'uploaded_files',
     'users',
-    'file_imports'
+    'file_imports',
+    'import_jobs',
 }
 
 
@@ -528,7 +529,7 @@ def _attempt_fallback_response(user_prompt: str) -> Optional[tuple[Optional[str]
                 WHERE table_schema = 'public'
                   AND table_name NOT LIKE 'pg_%'
                   AND table_name NOT LIKE 'test\\_%' ESCAPE '\\'
-                  AND table_name NOT IN ('file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'uploaded_files', 'users')
+                  AND table_name NOT IN ('file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'uploaded_files', 'users', 'import_jobs')
             """))
 
             table_columns: Dict[str, List[tuple[str, str]]] = {}

@@ -142,7 +142,7 @@ def test_llm_sequential_file_merge():
     # Filter to only user data tables (exclude system and test tables)
     user_tables_1 = [
         t for t in tables_data_1['tables']
-        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'import_duplicates']
+        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'import_duplicates', 'import_jobs']
         and not t['table_name'].startswith('test_')
         and not t['table_name'].startswith('uploads')
     ]
@@ -222,7 +222,7 @@ def test_llm_sequential_file_merge():
     # Filter to only user data tables (exclude system and test tables)
     user_tables_2 = [
         t for t in tables_data_2['tables'] 
-        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'import_duplicates'] 
+        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'import_duplicates', 'import_jobs'] 
         and not t['table_name'].startswith('test_')
         and not t['table_name'].startswith('uploads')
     ]

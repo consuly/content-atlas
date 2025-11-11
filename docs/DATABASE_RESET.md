@@ -19,6 +19,7 @@ The database reset functionality allows you to quickly clear all data and start 
   - `file_imports` - File import history
   - `table_metadata` - Table metadata records
   - `import_history` - Import operation logs
+  - `import_jobs` - Background import job tracking
   - `uploaded_files` - Uploaded file tracking
 - **B2 Storage files** - All files in the `uploads/` folder
 
@@ -94,7 +95,7 @@ Environment: DEVELOPMENT
 
 ⚠️  WARNING: This will reset the following:
    • All user-created data tables (contacts, products, etc.)
-   • Tracking tables (file_imports, table_metadata, import_history, uploaded_files)
+   • Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
    • All files in B2 storage (uploads folder)
 
 ✓  The following will be PRESERVED:
