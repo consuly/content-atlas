@@ -24,6 +24,7 @@ from app.domain.imports.processors.xml_processor import process_xml
 from app.domain.queries.analyzer import analyze_file_for_import as _analyze_file_for_import, sample_file_data
 from app.integrations.auto_import import execute_llm_import_decision
 from app.domain.uploads.uploaded_files import get_uploaded_file_by_id, update_file_status
+from app.domain.imports.jobs import create_import_job, update_import_job, complete_import_job
 from app.domain.imports.history import get_import_history, list_duplicate_rows
 from app.core.config import settings
 
@@ -646,6 +647,7 @@ class InteractiveSessionState:
     max_iterations: int = 5
     last_error: Optional[str] = None
     status: str = "pending"
+    job_id: Optional[str] = None
 
     def metadata_copy(self) -> Dict[str, Any]:
         """Return a safe copy of file metadata for the agent to mutate."""
@@ -769,7 +771,15 @@ def _handle_interactive_execution_failure(
         conversation_role="assistant"
     )
 
-    return MapDataResponse(
+    if session.job_id:
+        update_import_job(
+            session.job_id,
+            status="waiting_user",
+            stage="analysis",
+            error_message=error_message
+        )
+
+    response = MapDataResponse(
         success=False,
         message=f"Import execution failed: {error_message}",
         records_processed=0,
@@ -780,6 +790,9 @@ def _handle_interactive_execution_failure(
         llm_decision=followup.llm_decision,
         thread_id=session.thread_id
     )
+    if session.job_id:
+        response.job_id = session.job_id
+    return response
 
 
 def _handle_client_list_special_case(
@@ -847,12 +860,24 @@ def _handle_client_list_special_case(
         )
 
         if file_id:
-            update_file_status_fn(
-                file_id,
-                'mapped',
-                mapped_table_name=mapping_config.table_name,
-                mapped_rows=result['records_processed']
-            )
+            if job_id:
+                complete_import_job(
+                    job_id,
+                    success=True,
+                    result_metadata={
+                        "table_name": mapping_config.table_name,
+                        "records_processed": result["records_processed"]
+                    },
+                    mapped_table_name=mapping_config.table_name,
+                    mapped_rows=result["records_processed"]
+                )
+            else:
+                update_file_status(
+                    file_id,
+                    "mapped",
+                    mapped_table_name=mapping_config.table_name,
+                    mapped_rows=result["records_processed"]
+                )
 
         llm_response = (
             "✅ AUTO-EXECUTION COMPLETED:\n"
@@ -906,6 +931,7 @@ async def analyze_file_endpoint(
     - max_iterations: Maximum LLM iterations (1-10)
     """
     try:
+        job_id: Optional[str] = None
         # Validate input: must provide either file or file_id
         if not file and not file_id:
             raise HTTPException(status_code=400, detail="Must provide either 'file' or 'file_id'")
@@ -919,9 +945,26 @@ async def analyze_file_endpoint(
             file_record = get_uploaded_file_by_id(file_id)
             if not file_record:
                 raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+            if analysis_mode == AnalysisMode.AUTO_ALWAYS:
+                try:
+                    job = create_import_job(
+                        file_id=file_id,
+                        trigger_source="auto_process",
+                        analysis_mode=analysis_mode.value,
+                        conflict_mode=conflict_resolution.value,
+                        metadata={"source": "analyze-file", "mode": analysis_mode.value}
+                    )
+                    job_id = job["id"]
+                except Exception as job_exc:
+                    logger.warning("Unable to create import job for file %s: %s", file_id, job_exc)
             
             # Update status to 'mapping'
-            update_file_status(file_id, "mapping")
+            update_file_status(
+                file_id,
+                "mapping",
+                expected_active_job_id=job_id if job_id else None
+            )
             
             file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
             file_name = file_record["file_name"]
@@ -968,6 +1011,8 @@ async def analyze_file_endpoint(
         if marketing_response is not None:
             analysis_id = str(uuid.uuid4())
             analysis_storage[analysis_id] = marketing_response
+            if job_id:
+                marketing_response.job_id = job_id
             return marketing_response
 
         # Deterministic handling for known client list fixtures (used in integration tests)
@@ -985,6 +1030,8 @@ async def analyze_file_endpoint(
         if special_response is not None:
             analysis_id = str(uuid.uuid4())
             analysis_storage[analysis_id] = special_response
+            if job_id:
+                special_response.job_id = job_id
             return special_response
         
         # Smart sampling
@@ -1030,6 +1077,8 @@ async def analyze_file_endpoint(
             max_iterations=max_iterations,
             can_auto_execute=False  # Will be set below based on analysis_mode
         )
+        if job_id:
+            response.job_id = job_id
         
         # Determine can_auto_execute based on analysis_mode
         if analysis_mode == AnalysisMode.AUTO_ALWAYS:
@@ -1058,12 +1107,25 @@ async def analyze_file_endpoint(
                 if execution_result["success"]:
                     # Update file status to 'mapped' if file_id was provided
                     if file_id:
-                        update_file_status(
-                            file_id,
-                            "mapped",
-                            mapped_table_name=execution_result["table_name"],
-                            mapped_rows=execution_result["records_processed"]
-                        )
+                        if job_id:
+                            complete_import_job(
+                                job_id,
+                                success=True,
+                                result_metadata={
+                                    "table_name": execution_result["table_name"],
+                                    "records_processed": execution_result["records_processed"]
+                                },
+                                mapped_table_name=execution_result["table_name"],
+                                mapped_rows=execution_result["records_processed"]
+                            )
+                            job_id = None
+                        else:
+                            update_file_status(
+                                file_id,
+                                "mapped",
+                                mapped_table_name=execution_result["table_name"],
+                                mapped_rows=execution_result["records_processed"]
+                            )
                     
                     # Update response with execution results
                     response.can_auto_execute = True
@@ -1102,7 +1164,21 @@ async def analyze_file_endpoint(
                             else error_msg
                         )
                         if file_id:
-                            update_file_status(file_id, "failed", error_message=fallback_error)
+                            if job_id:
+                                update_import_job(
+                                    job_id,
+                                    status="waiting_user",
+                                    stage="analysis",
+                                    error_message=fallback_error
+                                )
+                                update_file_status(
+                                    file_id,
+                                    "mapping",
+                                    error_message=fallback_error,
+                                    expected_active_job_id=job_id
+                                )
+                            else:
+                                update_file_status(file_id, "failed", error_message=fallback_error)
 
                         response.llm_response += f"\n\n❌ AUTO-EXECUTION FAILED:\n"
                         response.llm_response += f"- Error: {error_msg}\n"
@@ -1140,7 +1216,15 @@ async def analyze_file_endpoint(
                         else error_msg
                     )
                     if file_id:
-                        update_file_status(file_id, "failed", error_message=final_error)
+                        if job_id:
+                            complete_import_job(
+                                job_id,
+                                success=False,
+                                error_message=final_error
+                            )
+                            job_id = None
+                        else:
+                            update_file_status(file_id, "failed", error_message=final_error)
 
                     response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {error_msg}\n"
                     if auto_retry_details and auto_retry_details.get("error"):
@@ -1335,17 +1419,27 @@ async def analyze_file_interactive_endpoint(
     db: Session = Depends(get_db)
 ):
     try:
+        job_id: Optional[str] = None
         # Existing interactive session - continue conversation
         if request.thread_id:
             session = _get_interactive_session(request.thread_id)
             if session.file_id != request.file_id:
                 raise HTTPException(status_code=400, detail="Thread does not belong to the requested file")
             session.max_iterations = request.max_iterations
-            return _run_interactive_session_step(
+            response = _run_interactive_session_step(
                 session,
                 user_message=request.user_message,
                 conversation_role="user"
             )
+            if session.job_id:
+                update_import_job(
+                    session.job_id,
+                    status="ready_to_execute" if response.can_execute else "waiting_user",
+                    stage="planning" if response.can_execute else "analysis",
+                    error_message=session.last_error
+                )
+                response.job_id = session.job_id
+            return response
 
         if request.user_message:
             raise HTTPException(status_code=400, detail="Start the interactive analysis before sending messages")
@@ -1353,6 +1447,22 @@ async def analyze_file_interactive_endpoint(
         file_record = get_uploaded_file_by_id(request.file_id)
         if not file_record:
             raise HTTPException(status_code=404, detail=f"File {request.file_id} not found")
+
+        job_id = file_record.get("active_job_id")
+        if job_id:
+            update_import_job(job_id, status="running", stage="analysis")
+        else:
+            try:
+                job = create_import_job(
+                    file_id=request.file_id,
+                    trigger_source="interactive_manual",
+                    analysis_mode="interactive",
+                    conflict_mode=ConflictResolutionMode.ASK_USER.value,
+                    metadata={"source": "analyze-file-interactive"}
+                )
+                job_id = job["id"]
+            except Exception as job_exc:
+                logger.warning("Unable to create interactive import job for %s: %s", request.file_id, job_exc)
 
         file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
         file_type = detect_file_type(file_record["file_name"])
@@ -1395,7 +1505,8 @@ async def analyze_file_interactive_endpoint(
             thread_id=thread_id,
             file_metadata=file_metadata,
             sample=sample,
-            max_iterations=request.max_iterations
+            max_iterations=request.max_iterations,
+            job_id=job_id
         )
 
         if request.previous_error_message:
@@ -1408,7 +1519,7 @@ async def analyze_file_interactive_endpoint(
             session.status = "awaiting_user"
             _store_interactive_session(session)
 
-            return AnalyzeFileInteractiveResponse(
+            response = AnalyzeFileInteractiveResponse(
                 success=True,
                 thread_id=thread_id,
                 llm_message=special_response.llm_response,
@@ -1420,6 +1531,15 @@ async def analyze_file_interactive_endpoint(
                 iterations_used=special_response.iterations_used,
                 max_iterations=request.max_iterations
             )
+            if job_id:
+                update_import_job(
+                    job_id,
+                    status="waiting_user",
+                    stage="analysis",
+                    error_message=session.last_error
+                )
+                response.job_id = job_id
+            return response
 
         marketing_interactive = _maybe_bootstrap_marketing_agency_session(
             session=session,
@@ -1427,14 +1547,31 @@ async def analyze_file_interactive_endpoint(
             previous_error_message=request.previous_error_message
         )
         if marketing_interactive is not None:
+            if job_id:
+                update_import_job(
+                    job_id,
+                    status="ready_to_execute" if marketing_interactive.can_execute else "waiting_user",
+                    stage="planning" if marketing_interactive.can_execute else "analysis",
+                    error_message=session.last_error
+                )
+                marketing_interactive.job_id = job_id
             return marketing_interactive
 
         _store_interactive_session(session)
 
-        return _run_interactive_session_step(
+        response = _run_interactive_session_step(
             session,
             user_message=None
         )
+        if job_id:
+            update_import_job(
+                job_id,
+                status="ready_to_execute" if response.can_execute else "waiting_user",
+                stage="planning" if response.can_execute else "analysis",
+                error_message=session.last_error
+            )
+            response.job_id = job_id
+        return response
 
     except HTTPException:
         raise
@@ -1463,6 +1600,10 @@ async def execute_interactive_import_endpoint(
         if not file_record:
             raise HTTPException(status_code=404, detail=f"File {request.file_id} not found")
 
+        job_id = session.job_id or file_record.get("active_job_id")
+        if job_id:
+            update_import_job(job_id, status="running", stage="execution")
+
         file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
         file_type = detect_file_type(file_record["file_name"])
 
@@ -1477,7 +1618,11 @@ async def execute_interactive_import_endpoint(
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
 
-        update_file_status(request.file_id, "mapping")
+        update_file_status(
+            request.file_id,
+            "mapping",
+            expected_active_job_id=job_id if job_id else None
+        )
 
         try:
             execution_result = execute_llm_import_decision(
@@ -1487,16 +1632,38 @@ async def execute_interactive_import_endpoint(
                 llm_decision=session.llm_decision
             )
         except Exception as exc:
-            update_file_status(request.file_id, "failed", error_message=str(exc))
-            return _handle_interactive_execution_failure(session, str(exc))
+            error_text = str(exc)
+            if job_id:
+                update_file_status(
+                    request.file_id,
+                    "mapping",
+                    error_message=error_text,
+                    expected_active_job_id=job_id
+                )
+            else:
+                update_file_status(request.file_id, "failed", error_message=error_text)
+            return _handle_interactive_execution_failure(session, error_text)
 
         if execution_result["success"]:
-            update_file_status(
-                request.file_id,
-                "mapped",
-                mapped_table_name=execution_result["table_name"],
-                mapped_rows=execution_result["records_processed"]
-            )
+            if job_id:
+                complete_import_job(
+                    job_id,
+                    success=True,
+                    result_metadata={
+                        "table_name": execution_result["table_name"],
+                        "records_processed": execution_result["records_processed"]
+                    },
+                    mapped_table_name=execution_result["table_name"],
+                    mapped_rows=execution_result["records_processed"]
+                )
+                job_id = None
+            else:
+                update_file_status(
+                    request.file_id,
+                    "mapped",
+                    mapped_table_name=execution_result["table_name"],
+                    mapped_rows=execution_result["records_processed"]
+                )
 
             session.status = "completed"
             interactive_sessions.pop(request.thread_id, None)
@@ -1526,7 +1693,7 @@ async def execute_interactive_import_endpoint(
                         audit_err,
                     )
 
-            return MapDataResponse(
+            success_response = MapDataResponse(
                 success=True,
                 message="Import executed successfully",
                 records_processed=execution_result["records_processed"],
@@ -1537,9 +1704,20 @@ async def execute_interactive_import_endpoint(
                 llm_followup=execution_result.get("llm_followup"),
                 table_name=execution_result["table_name"]
             )
+            if job_id:
+                success_response.job_id = job_id
+            return success_response
 
         error_msg = execution_result.get('error', 'Unknown error')
-        update_file_status(request.file_id, "failed", error_message=error_msg)
+        if job_id:
+            update_file_status(
+                request.file_id,
+                "mapping",
+                error_message=error_msg,
+                expected_active_job_id=job_id
+            )
+        else:
+            update_file_status(request.file_id, "failed", error_message=error_msg)
         return _handle_interactive_execution_failure(session, error_msg)
 
     except HTTPException:

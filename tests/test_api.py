@@ -3,10 +3,12 @@ import re
 import time
 import urllib.parse
 import json
+import uuid
 import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+os.environ["SKIP_DB_INIT"] = "1"
 from app.main import app
 from app.db.session import get_db
 
@@ -67,6 +69,86 @@ def test_async_endpoints_exist():
     assert "task_id" in data
     assert "status" in data
     assert data["status"] == "pending"
+
+
+def test_import_job_endpoints_expose_active_job_state(monkeypatch):
+    """Ensure import job APIs surface job metadata without requiring a live worker."""
+    job_id = str(uuid.uuid4())
+    file_id = str(uuid.uuid4())
+    job_record = {
+        "id": job_id,
+        "file_id": file_id,
+        "status": "running",
+        "stage": "analysis",
+        "progress": 10,
+        "retry_attempt": 1,
+        "error_message": None,
+        "trigger_source": "unit_test",
+        "analysis_mode": "auto_always",
+        "conflict_mode": "llm_decide",
+        "metadata": {"source": "pytest"},
+        "result_metadata": None,
+        "created_at": None,
+        "updated_at": None,
+        "completed_at": None,
+    }
+
+    monkeypatch.setattr(
+        "app.api.routers.jobs.get_import_job",
+        lambda requested_id: job_record if requested_id == job_id else None,
+    )
+
+    def fake_list(file_id: str | None = None, limit: int = 50, offset: int = 0):
+        assert file_id == job_record["file_id"]
+        return [job_record], 1
+
+    monkeypatch.setattr("app.api.routers.jobs.list_import_jobs", fake_list)
+
+    job_response = client.get(f"/import-jobs/{job_id}")
+    assert job_response.status_code == 200
+    assert job_response.json()["job"]["id"] == job_id
+
+    list_response = client.get(f"/import-jobs?file_id={file_id}")
+    assert list_response.status_code == 200
+    jobs_for_file = list_response.json()["jobs"]
+    assert len(jobs_for_file) == 1
+    assert jobs_for_file[0]["stage"] == "analysis"
+
+
+def test_uploaded_file_endpoints_include_job_metadata(monkeypatch):
+    """Uploaded file responses should surface active job fields for the UI."""
+    file_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    uploaded_file = {
+        "id": file_id,
+        "file_name": "sample.csv",
+        "b2_file_id": "b2-test",
+        "b2_file_path": "uploads/sample.csv",
+        "file_size": 42,
+        "content_type": "text/csv",
+        "upload_date": None,
+        "status": "mapping",
+        "mapped_table_name": None,
+        "mapped_date": None,
+        "mapped_rows": None,
+        "error_message": None,
+        "active_job_id": job_id,
+        "active_job_status": "running",
+        "active_job_stage": "analysis",
+        "active_job_progress": 15,
+        "active_job_started_at": None,
+    }
+
+    monkeypatch.setattr(
+        "app.api.routers.uploads.get_uploaded_file_by_id",
+        lambda requested_id: uploaded_file if requested_id == file_id else None,
+    )
+
+    detail_response = client.get(f"/uploaded-files/{file_id}")
+    assert detail_response.status_code == 200
+    payload = detail_response.json()["file"]
+    assert payload["active_job_id"] == job_id
+    assert payload["active_job_stage"] == "analysis"
 
 
 def test_response_structure():

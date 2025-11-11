@@ -194,7 +194,7 @@ python reset_dev_db.py --yes
 
 This will:
 - Drop all user-created data tables
-- Clear tracking tables (file_imports, table_metadata, import_history, uploaded_files)
+- Clear tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
 - Delete all files from B2 storage
 - **Preserve** user accounts
 

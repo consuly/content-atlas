@@ -79,7 +79,7 @@ async def public_list_tables_endpoint(
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
-                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'api_keys')
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'api_keys', 'import_jobs')
                 AND table_name NOT LIKE 'pg_%'
                 AND table_name NOT LIKE 'test\_%' ESCAPE '\\'
                 ORDER BY table_name

@@ -11,7 +11,7 @@ Usage:
 
 What gets reset:
     - All user-created data tables (contacts, products, etc.)
-    - Tracking tables (file_imports, table_metadata, import_history, uploaded_files)
+    - Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
     - All files in B2 storage under "uploads/" folder
 
 What is preserved:
@@ -35,7 +35,7 @@ def print_warning():
     """Print what will be reset."""
     print("\n⚠️  WARNING: This will reset the following:")
     print("   • All user-created data tables (contacts, products, etc.)")
-    print("   • Tracking tables (file_imports, table_metadata, import_history, uploaded_files)")
+    print("   • Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)")
     print("     - These will be dropped and recreated with the latest schema on startup")
     print("   • All files in B2 storage (uploads folder)")
     print("\n✓  The following will be PRESERVED:")

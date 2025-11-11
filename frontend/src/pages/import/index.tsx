@@ -19,6 +19,11 @@ interface UploadedFile {
   mapped_date?: string;
   mapped_rows?: number;
   error_message?: string;
+  active_job_id?: string;
+  active_job_status?: string;
+  active_job_stage?: string;
+  active_job_progress?: number;
+  active_job_started_at?: string;
 }
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -114,7 +119,8 @@ export const ImportPage: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (file: UploadedFile) => {
+    const { status } = file;
     const statusConfig: Record<string, { status: 'success' | 'processing' | 'error' | 'default'; text: string }> = {
       uploaded: { status: 'processing', text: 'Uploaded' },
       mapping: { status: 'processing', text: 'Mapping' },
@@ -123,7 +129,10 @@ export const ImportPage: React.FC = () => {
     };
 
     const config = statusConfig[status] || { status: 'default' as const, text: status };
-    return <Badge status={config.status} text={config.text} />;
+    const extra = file.active_job_status
+      ? ` (${file.active_job_stage ?? file.active_job_status})`
+      : '';
+    return <Badge status={config.status} text={`${config.text}${extra}`} />;
   };
 
   const columns: ColumnsType<UploadedFile> = [
@@ -150,10 +159,9 @@ export const ImportPage: React.FC = () => {
     },
     {
       title: 'Status',
-      dataIndex: 'status',
       key: 'status',
-      width: 120,
-      render: (status: string) => getStatusBadge(status),
+      width: 160,
+      render: (_: string, record: UploadedFile) => getStatusBadge(record),
     },
     {
       title: 'Table',

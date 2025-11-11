@@ -229,7 +229,6 @@ export const MappingModal: React.FC<MappingModalProps> = ({
         // Small delay to ensure backend has updated file status
         setTimeout(() => {
           navigate(`/import/${fileId}`, { replace: true });
-          window.location.reload();
         }, 500);
       } else {
         const failureMessage = response.data.message || 'Import execution failed';

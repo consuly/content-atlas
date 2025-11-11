@@ -25,6 +25,11 @@ interface UploadedFile {
   mapped_date?: string;
   mapped_rows?: number;
   error_message?: string;
+  active_job_id?: string;
+  active_job_status?: string;
+  active_job_stage?: string;
+  active_job_progress?: number;
+  active_job_started_at?: string;
 }
 
 interface ProcessingResult {
@@ -88,6 +93,18 @@ type AutoRecoveryOutcome =
       errorMessage?: string;
     };
 
+interface ImportJobInfo {
+  id: string;
+  file_id: string;
+  status: string;
+  stage?: string | null;
+  progress?: number | null;
+  error_message?: string | null;
+  trigger_source?: string | null;
+  analysis_mode?: string | null;
+  conflict_mode?: string | null;
+}
+
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -99,6 +116,7 @@ export const ImportMappingPage: React.FC = () => {
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ProcessingResult | null>(null);
+  const [jobInfo, setJobInfo] = useState<ImportJobInfo | null>(null);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -163,6 +181,29 @@ export const ImportMappingPage: React.FC = () => {
       setLoading(false);
     }
   }, [id]);
+
+  const fetchJobDetails = useCallback(
+    async (jobId: string): Promise<ImportJobInfo | null> => {
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const response = await axios.get(`${API_URL}/import-jobs/${jobId}`, {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        if (response.data?.success && response.data.job) {
+          const job: ImportJobInfo = response.data.job;
+          setJobInfo(job);
+          return job;
+        }
+      } catch (error) {
+        console.error('Failed to fetch job info', error);
+      }
+      return null;
+    },
+    []
+  );
 
   const fetchMappedFileDetails = useCallback(async (tableName: string) => {
     setLoadingDetails(true);
@@ -481,6 +522,40 @@ export const ImportMappingPage: React.FC = () => {
       setShowInteractiveRetry(false);
     }
   }, [file, showInteractiveRetry]);
+
+  useEffect(() => {
+    if (!file?.active_job_id) {
+      setJobInfo(null);
+      return;
+    }
+
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    const pollJob = async () => {
+      const job = await fetchJobDetails(file.active_job_id!);
+      if (!job || cancelled) {
+        return;
+      }
+
+      if (job.status === 'succeeded' || job.status === 'failed') {
+        if (interval) {
+          clearInterval(interval);
+        }
+        await fetchFileDetails();
+      }
+    };
+
+    pollJob();
+    interval = setInterval(pollJob, 5000);
+
+    return () => {
+      cancelled = true;
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [file?.active_job_id, fetchJobDetails, fetchFileDetails]);
 
   const attemptAutoRecoveryWithLLM = useCallback(
     async (failureMessage: string): Promise<AutoRecoveryOutcome> => {
@@ -1659,6 +1734,33 @@ export const ImportMappingPage: React.FC = () => {
       >
         Back to Import List
       </Button>
+
+      {jobInfo && (
+        <Alert
+          type={
+            jobInfo.status === 'failed'
+              ? 'error'
+              : jobInfo.status === 'succeeded'
+                ? 'success'
+                : 'info'
+          }
+          showIcon
+          message={`Import job: ${jobInfo.status}`}
+          description={
+            <Space direction="vertical" size={4}>
+              <Text>
+                {jobInfo.stage
+                  ? `Stage: ${jobInfo.stage.replace(/_/g, ' ')}`
+                  : 'Processing in progress'}
+              </Text>
+              {jobInfo.error_message && (
+                <Text type="secondary">Last error: {jobInfo.error_message}</Text>
+              )}
+            </Space>
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       {file.status === 'failed' ? (
         <Card title={`Failed Mapping: ${file.file_name}`}>
