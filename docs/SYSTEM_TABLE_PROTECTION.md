@@ -16,6 +16,12 @@ The following system tables are protected from LLM access:
 - `file_imports` - File import tracking with hashes
 - `import_jobs` - Tracks background import job progress and metadata
 
+> 💡 **User uploads never overwrite these tables.** When a mapping request
+> specifies a reserved table name (for example, `users`), the backend
+> automatically remaps it to a safe alternative such as `users_user_data`
+> before any DDL/DML happens. This keeps system state protected while
+> still letting customers import similarly named business data.
+
 ## Implementation
 
 ### Two-Layer Protection
