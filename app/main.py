@@ -50,11 +50,11 @@ async def lifespan(app: FastAPI):
         create_import_history_table()
         print("✓ import_history table ready")
         
-        ensure_import_jobs_table()
-        print("✓ import_jobs table ready")
-        
         create_uploaded_files_table()
         # Success message printed inside function
+        
+        ensure_import_jobs_table()
+        print("✓ import_jobs table ready")
         
         init_auth_tables()
         print("✓ auth tables ready")
