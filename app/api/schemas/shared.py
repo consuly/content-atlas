@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field, validator
-from typing import List, Dict, Optional, Any
-from enum import Enum
+import logging
 from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, validator
 
 
 RESERVED_SYSTEM_TABLES = {
@@ -17,6 +19,41 @@ RESERVED_SYSTEM_TABLES = {
     "users",
     "api_keys",
 }
+
+_RESERVED_TABLES_LOWER = {name.lower() for name in RESERVED_SYSTEM_TABLES}
+_RESERVED_TABLE_SUFFIX = "_user_data"
+logger = logging.getLogger(__name__)
+
+
+def ensure_safe_table_name(requested_name: str) -> str:
+    """
+    Return a safe table name that won't collide with system tables.
+
+    - Trims whitespace
+    - Auto-renames reserved names using a deterministic suffix
+    """
+    normalized = requested_name.strip()
+    if not normalized:
+        return normalized
+
+    candidate = normalized
+    if candidate.lower() not in _RESERVED_TABLES_LOWER:
+        return candidate
+
+    # Append suffix until we find a safe option (rarely loops more than once)
+    base = normalized
+    counter = 1
+    while candidate.lower() in _RESERVED_TABLES_LOWER:
+        suffix = f"{_RESERVED_TABLE_SUFFIX}{counter if counter > 1 else ''}"
+        candidate = f"{base}{suffix}"
+        counter += 1
+
+    logger.info(
+        "Table name '%s' is reserved; automatically remapped to '%s'",
+        requested_name,
+        candidate,
+    )
+    return candidate
 
 
 class DuplicateCheckConfig(BaseModel):
@@ -65,12 +102,7 @@ class MappingConfig(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("table_name cannot be blank")
-        if normalized.lower() in RESERVED_SYSTEM_TABLES:
-            raise ValueError(
-                f"table_name '{normalized}' is reserved for internal use. "
-                "Choose a different table name."
-            )
-        return normalized
+        return ensure_safe_table_name(normalized)
 
 
 class MapDataRequest(BaseModel):
