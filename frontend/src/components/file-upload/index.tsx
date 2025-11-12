@@ -31,7 +31,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   onUploadSuccess,
   onUploadError,
   maxFileSize = 100, // 100MB default
-  accept = '.csv,.xlsx,.xls',
+  accept = '.csv,.xlsx,.xls,.zip',
   multiple = true,
 }) => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
@@ -188,7 +188,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         </p>
         <p className="ant-upload-text">Click or drag file to this area to upload</p>
         <p className="ant-upload-hint">
-          Support for CSV and Excel files (.csv, .xlsx, .xls). Maximum file size: {maxFileSize}MB.
+          Support for CSV/Excel files (.csv, .xlsx, .xls) and ZIP archives containing those files. Maximum file size: {maxFileSize}MB.
           {multiple && ' You can upload multiple files at once.'}
         </p>
       </Dragger>

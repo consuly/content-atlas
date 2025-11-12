@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from app.main import app
-from app.db.session import get_engine
+from tests.utils.system_tables import ensure_system_tables_ready
 
 client = TestClient(app)
 
@@ -54,8 +54,9 @@ def test_headerless_file_merge_with_duplicates():
     print("SETUP: Cleaning up any existing test data")
     print("="*80)
     
+    engine = ensure_system_tables_ready()
+    
     try:
-        engine = get_engine()
         with engine.begin() as conn:
             # Get ALL tables from the database
             result = conn.execute(text("""
@@ -73,6 +74,7 @@ def test_headerless_file_merge_with_duplicates():
                 'import_history',
                 'mapping_errors',
                 'import_duplicates',
+                'import_jobs',
                 'api_keys',
                 'users',
                 'uploaded_files'
@@ -96,6 +98,7 @@ def test_headerless_file_merge_with_duplicates():
                 print("  No user data tables to clean up")
             
             # Clean up ALL import tracking records
+        with engine.begin() as conn:
             conn.execute(text("DELETE FROM file_imports"))
             print("  Cleaned up all file_imports records")
             
@@ -487,7 +490,7 @@ def test_headerless_file_merge_with_duplicates():
     print("="*80)
     
     try:
-        engine = get_engine()
+        engine = ensure_system_tables_ready()
         with engine.begin() as conn:
             conn.execute(text(f'DROP TABLE IF EXISTS "{final_table_name}" CASCADE'))
             conn.execute(text("DELETE FROM file_imports WHERE file_name LIKE '%sample-test%'"))

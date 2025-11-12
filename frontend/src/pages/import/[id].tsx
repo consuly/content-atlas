@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../../components/error-log-viewer';
@@ -105,6 +106,31 @@ interface ImportJobInfo {
   conflict_mode?: string | null;
 }
 
+type ArchiveFileStatus = 'processed' | 'failed' | 'skipped';
+
+interface ArchiveFileResult {
+  archive_path: string;
+  stored_file_name?: string | null;
+  uploaded_file_id?: string | null;
+  status: ArchiveFileStatus;
+  table_name?: string | null;
+  records_processed?: number | null;
+  duplicates_skipped?: number | null;
+  import_id?: string | null;
+  auto_retry_used?: boolean;
+  message?: string | null;
+}
+
+interface ArchiveAutoProcessResult {
+  success: boolean;
+  total_files: number;
+  processed_files: number;
+  failed_files: number;
+  skipped_files: number;
+  results: ArchiveFileResult[];
+  job_id?: string | null;
+}
+
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -117,6 +143,8 @@ export const ImportMappingPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ProcessingResult | null>(null);
   const [jobInfo, setJobInfo] = useState<ImportJobInfo | null>(null);
+  const [archiveProcessing, setArchiveProcessing] = useState(false);
+  const [archiveResult, setArchiveResult] = useState<ArchiveAutoProcessResult | null>(null);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -518,6 +546,10 @@ export const ImportMappingPage: React.FC = () => {
   }, [duplicateData]);
 
   useEffect(() => {
+    setArchiveResult(null);
+  }, [id]);
+
+  useEffect(() => {
     if (file && file.status !== 'failed' && showInteractiveRetry) {
       setShowInteractiveRetry(false);
     }
@@ -661,6 +693,7 @@ export const ImportMappingPage: React.FC = () => {
     setProcessing(true);
     setError(null);
     setResult(null);
+    setArchiveResult(null);
     let autoError: string | null = null;
 
     try {
@@ -718,6 +751,46 @@ export const ImportMappingPage: React.FC = () => {
     }
 
     setProcessing(false);
+  };
+
+  const handleArchiveAutoProcess = async () => {
+    if (!id) {
+      return;
+    }
+    setArchiveProcessing(true);
+    setProcessing(false);
+    setResult(null);
+    setError(null);
+
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const formData = new FormData();
+      formData.append('file_id', id);
+      formData.append('analysis_mode', 'auto_always');
+      formData.append('conflict_resolution', 'llm_decide');
+      formData.append('max_iterations', '5');
+
+      const response = await axios.post(`${API_URL}/auto-process-archive`, formData, {
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+      });
+
+      const payload: ArchiveAutoProcessResult = response.data;
+      setArchiveResult(payload);
+      if (payload.success) {
+        messageApi.success('Archive processed successfully');
+      } else {
+        messageApi.warning('Archive processed with some errors');
+      }
+      await fetchFileDetails();
+    } catch (err) {
+      const error = err as AxiosError<{ detail?: string }>;
+      const errorMsg = error.response?.data?.detail || error.message || 'Archive processing failed';
+      messageApi.error(errorMsg);
+    } finally {
+      setArchiveProcessing(false);
+    }
   };
 
   const handleInteractiveStart = async (options?: { previousError?: string }) => {
@@ -1491,6 +1564,67 @@ export const ImportMappingPage: React.FC = () => {
     },
   ];
 
+  const isArchive = file.file_name.toLowerCase().endsWith('.zip');
+
+  const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
+    {
+      title: 'Archive Path',
+      dataIndex: 'archive_path',
+      key: 'archive_path',
+      render: (text: string) => <Text code>{text}</Text>,
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      render: (value: ArchiveFileStatus) => {
+        const color =
+          value === 'processed' ? 'green' : value === 'failed' ? 'red' : 'default';
+        return <Tag color={color}>{value}</Tag>;
+      },
+    },
+    {
+      title: 'Table',
+      dataIndex: 'table_name',
+      key: 'table_name',
+      render: (value?: string | null) => value || '-',
+    },
+    {
+      title: 'Records',
+      dataIndex: 'records_processed',
+      key: 'records_processed',
+      render: (value?: number | null) =>
+        typeof value === 'number' ? value.toLocaleString() : '-',
+    },
+    {
+      title: 'Message',
+      dataIndex: 'message',
+      key: 'message',
+      render: (value?: string | null) => value || '-',
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      render: (_: unknown, record) =>
+        record.uploaded_file_id ? (
+          <Button
+            type="link"
+            size="small"
+            onClick={() => navigate(`/import/${record.uploaded_file_id}`)}
+          >
+            View File
+          </Button>
+        ) : null,
+    },
+  ];
+
+  const archiveResultRows = archiveResult
+    ? archiveResult.results.map((item, index) => ({
+        ...item,
+        key: `${item.archive_path}-${index}`,
+      }))
+    : [];
+
   const autoTabContent = (
     <div style={{ padding: '24px 0' }}>
       <Alert
@@ -1500,6 +1634,15 @@ export const ImportMappingPage: React.FC = () => {
         showIcon
         style={{ marginBottom: 24 }}
       />
+      {isArchive && (
+        <Alert
+          message="Archive detected"
+          description="Auto Process Archive will unpack every CSV/XLSX in this ZIP file and run the auto mapper on each one sequentially."
+          type="warning"
+          showIcon
+          style={{ marginBottom: 24 }}
+        />
+      )}
 
       {error && !result && (
         <div style={{ marginBottom: 24 }}>
@@ -1518,17 +1661,58 @@ export const ImportMappingPage: React.FC = () => {
             <Text>{formatBytes(file.file_size)}</Text>
           </div>
 
-          <Button
-            type="primary"
-            size="large"
-            icon={<ThunderboltOutlined />}
-            onClick={handleAutoProcess}
-            loading={processing}
-            block
-          >
-            {processing ? 'Processing...' : 'Process Now'}
-          </Button>
+          {!isArchive && (
+            <Button
+              type="primary"
+              size="large"
+              icon={<ThunderboltOutlined />}
+              onClick={handleAutoProcess}
+              loading={processing}
+              block
+            >
+              {processing ? 'Processing...' : 'Process Now'}
+            </Button>
+          )}
+
+          {isArchive && (
+            <Button
+              type="primary"
+              size="large"
+              icon={<ThunderboltOutlined />}
+              onClick={handleArchiveAutoProcess}
+              loading={archiveProcessing}
+              block
+            >
+              {archiveProcessing ? 'Processing Archive...' : 'Auto Process Archive'}
+            </Button>
+          )}
         </Space>
+      )}
+
+      {archiveResult && (
+        <Card title="Archive Results" style={{ marginTop: 24 }}>
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col span={6}>
+              <Statistic title="Processed" value={archiveResult.processed_files} />
+            </Col>
+            <Col span={6}>
+              <Statistic title="Failed" value={archiveResult.failed_files} />
+            </Col>
+            <Col span={6}>
+              <Statistic title="Skipped" value={archiveResult.skipped_files} />
+            </Col>
+            <Col span={6}>
+              <Statistic title="Total Files" value={archiveResult.total_files} />
+            </Col>
+          </Row>
+          <Table
+            dataSource={archiveResultRows}
+            columns={archiveResultsColumns}
+            pagination={false}
+            size="small"
+            scroll={{ x: 'max-content' }}
+          />
+        </Card>
       )}
     </div>
   );

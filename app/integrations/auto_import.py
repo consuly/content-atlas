@@ -21,6 +21,7 @@ from app.utils.date import parse_flexible_date
 import pandas as pd
 import logging
 import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,36 @@ _TYPE_ALIAS_MAP = {
 }
 
 _SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "TIMESTAMP", "DATE", "BOOLEAN"}
+
+_SLASHED_DATE_PATTERN = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{2,4})")
+
+
+def _detect_dayfirst(series: pd.Series) -> Optional[bool]:
+    """
+    Try to infer whether we should use day-first parsing for a column.
+
+    Returns True/False when detection is confident, otherwise None so pandas keeps defaults.
+    """
+    if series is None:
+        return None
+
+    sample_values = series.dropna()
+    if sample_values.empty:
+        return None
+
+    for value in sample_values.astype(str).head(25):
+        match = _SLASHED_DATE_PATTERN.match(value)
+        if not match:
+            continue
+        first = int(match.group(1))
+        second = int(match.group(2))
+
+        if first > 12 and second <= 12:
+            return True
+        if second > 12 and first <= 12:
+            return False
+
+    return None
 
 
 def _normalize_existing_column_type(sqlalchemy_type: Any) -> str:
@@ -240,7 +271,16 @@ def coerce_records_to_expected_types(
                     column_summary["coerced_values"] = coerced_count
                 df[source_col] = converted
             elif normalized_type in {"TIMESTAMP", "DATE"}:
-                converted = pd.to_datetime(series, errors="coerce", utc=False)
+                dayfirst_override = _detect_dayfirst(series)
+                if dayfirst_override is None:
+                    converted = pd.to_datetime(series, errors="coerce", utc=False)
+                else:
+                    converted = pd.to_datetime(
+                        series,
+                        errors="coerce",
+                        utc=False,
+                        dayfirst=dayfirst_override,
+                    )
                 coerced_count = int((series.notna() & converted.isna()).sum())
                 column_summary["status"] = "converted"
                 if coerced_count:
