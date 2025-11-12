@@ -785,6 +785,12 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
             conn.execute(text("""
                 INSERT INTO file_imports (file_hash, file_name, table_name, record_count)
                 VALUES (:file_hash, :file_name, :table_name, :record_count)
+                ON CONFLICT (file_hash) DO UPDATE
+                SET
+                    file_name = EXCLUDED.file_name,
+                    table_name = EXCLUDED.table_name,
+                    record_count = EXCLUDED.record_count,
+                    imported_at = CURRENT_TIMESTAMP
             """), {
                 "file_hash": file_hash,
                 "file_name": file_name or "",
@@ -1236,6 +1242,12 @@ def _insert_records_chunked(
             conn.execute(text("""
                 INSERT INTO file_imports (file_hash, file_name, table_name, record_count)
                 VALUES (:file_hash, :file_name, :table_name, :record_count)
+                ON CONFLICT (file_hash) DO UPDATE
+                SET
+                    file_name = EXCLUDED.file_name,
+                    table_name = EXCLUDED.table_name,
+                    record_count = EXCLUDED.record_count,
+                    imported_at = CURRENT_TIMESTAMP
             """), {
                 "file_hash": file_hash,
                 "file_name": file_name or "",

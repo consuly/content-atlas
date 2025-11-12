@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.main import app
-from app.db.session import get_engine
+from tests.utils.system_tables import ensure_system_tables_ready
 
 
 client = TestClient(app)
@@ -91,9 +91,15 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
         raising=False,
     )
 
-    engine = get_engine()
+    engine = ensure_system_tables_ready()
     with engine.begin() as conn:
-        conn.execute(text('DROP TABLE IF EXISTS "marketing_agency_contacts" CASCADE'))
+        for table in (
+            "marketing_agency_contacts",
+            "marketing_agency_leads_us",
+        ):
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+
+    with engine.begin() as conn:
         for table in (
             "file_imports",
             "table_metadata",
@@ -131,6 +137,9 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
     data_tx = response_tx.json()
     assert data_tx["success"] is True
     assert "AUTO-EXECUTION COMPLETED" in data_tx["llm_response"]
+    auto_result = data_tx.get("auto_execution_result")
+    assert auto_result and auto_result.get("table_name"), "Expected auto execution result with table name"
+    target_table = auto_result["table_name"]
 
     # Verify duplicates were recorded for the Texas import
     with engine.connect() as conn:
@@ -139,11 +148,12 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
                 """
                 SELECT import_id, duplicates_found
                 FROM import_history
-                WHERE table_name = 'marketing_agency_contacts'
+                WHERE table_name = :table_name
                 ORDER BY import_timestamp DESC
                 LIMIT 1
                 """
-            )
+            ),
+            {"table_name": target_table},
         ).mappings().one()
 
         assert latest_import["duplicates_found"] == 2

@@ -209,9 +209,12 @@ def enrich_table_metadata(
             params = {"table_name": table_name}
             
             if additional_purpose:
-                # Append to detailed purpose
-                new_detailed = current.get("purpose_detailed", current["purpose_short"])
-                new_detailed += f"\n\nAdditional data: {additional_purpose}"
+                # Append to detailed purpose, tolerating null existing values
+                existing_detail = current.get("purpose_detailed") or current.get("purpose_short") or ""
+                if existing_detail:
+                    new_detailed = f"{existing_detail}\n\nAdditional data: {additional_purpose}"
+                else:
+                    new_detailed = f"Additional data: {additional_purpose}"
                 updates.append("purpose_detailed = :purpose_detailed")
                 params["purpose_detailed"] = new_detailed
             

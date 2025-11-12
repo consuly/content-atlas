@@ -131,7 +131,7 @@ def create_import_job(
     )
     VALUES (
         :id, :file_id, 'running', :stage, 0, 1, NULL,
-        :trigger_source, :analysis_mode, :conflict_mode, :metadata::jsonb
+        :trigger_source, :analysis_mode, :conflict_mode, CAST(:metadata AS jsonb)
     )
     RETURNING *
     """
@@ -190,10 +190,10 @@ def update_import_job(
         update_parts.append("error_message = :error_message")
         params["error_message"] = error_message
     if metadata is not None:
-        update_parts.append("metadata = :metadata::jsonb")
+        update_parts.append("metadata = CAST(:metadata AS jsonb)")
         params["metadata"] = _json_payload(metadata)
     if result_metadata is not None:
-        update_parts.append("result_metadata = :result_metadata::jsonb")
+        update_parts.append("result_metadata = CAST(:result_metadata AS jsonb)")
         params["result_metadata"] = _json_payload(result_metadata)
     if completed:
         update_parts.append("completed_at = COALESCE(completed_at, NOW())")

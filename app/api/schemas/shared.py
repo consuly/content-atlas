@@ -1,9 +1,9 @@
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 RESERVED_SYSTEM_TABLES = {
@@ -94,7 +94,7 @@ class MappingConfig(BaseModel):
     check_duplicates: bool = True  # Legacy field for backward compatibility
     duplicate_check: DuplicateCheckConfig = DuplicateCheckConfig()  # New structured config
 
-    @validator("table_name")
+    @field_validator("table_name")
     def validate_table_name(cls, value: str) -> str:
         """Disallow mapping into system tables or blank names."""
         if not value:
@@ -301,6 +301,11 @@ class AnalyzeFileResponse(BaseModel):
     max_iterations: int = 5
     error: Optional[str] = None
     job_id: Optional[str] = None
+    auto_execution_result: Optional["AutoExecutionResult"] = None
+    auto_retry_execution_result: Optional[MapDataResponse] = None
+    auto_execution_error: Optional[str] = None
+    auto_retry_attempted: bool = False
+    auto_retry_error: Optional[str] = None
 
 
 class AnalyzeB2FileRequest(BaseModel):
@@ -411,6 +416,50 @@ class UploadFileResponse(BaseModel):
     files: List[UploadedFileInfo]
 
 
+class AutoExecutionResult(BaseModel):
+    """Structured summary of automatic execution attempts."""
+    success: bool
+    strategy_executed: Optional[str] = None
+    strategy_attempted: Optional[str] = None
+    table_name: Optional[str] = None
+    target_table: Optional[str] = None
+    records_processed: Optional[int] = None
+    duplicates_skipped: Optional[int] = 0
+    duplicate_rows: Optional[List[DuplicateRow]] = None
+    duplicate_rows_count: Optional[int] = None
+    import_id: Optional[str] = None
+    mapping_errors: Optional[List[MappingErrorDetail]] = None
+    type_mismatch_summary: Optional[List[TypeMismatchSummary]] = None
+    llm_followup: Optional[str] = None
+    schema_migration_results: Optional[List[Dict[str, Any]]] = None
+    error: Optional[str] = None
+
+
+class ArchiveAutoProcessFileResult(BaseModel):
+    """Per-file outcome when processing an archive."""
+    archive_path: str
+    stored_file_name: Optional[str] = None
+    uploaded_file_id: Optional[str] = None
+    status: Literal["processed", "failed", "skipped"]
+    table_name: Optional[str] = None
+    records_processed: Optional[int] = None
+    duplicates_skipped: Optional[int] = None
+    import_id: Optional[str] = None
+    auto_retry_used: bool = False
+    message: Optional[str] = None
+
+
+class ArchiveAutoProcessResponse(BaseModel):
+    """Aggregate result after processing an archive automatically."""
+    success: bool
+    total_files: int
+    processed_files: int
+    failed_files: int
+    skipped_files: int
+    results: List[ArchiveAutoProcessFileResult]
+    job_id: Optional[str] = None
+
+
 class FileExistsResponse(BaseModel):
     """Response when file already exists"""
     success: bool
@@ -486,8 +535,8 @@ class ImportJobInfo(BaseModel):
     retry_attempt: int = 1
     error_message: Optional[str] = None
     trigger_source: Optional[str] = None
-    analysis_mode: Optional[str] = None
-    conflict_mode: Optional[str] = None
+    analysis_mode: Optional[AnalysisMode] = None
+    conflict_mode: Optional[ConflictResolutionMode] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 os.environ.setdefault("SKIP_DB_INIT", "1")
 
@@ -9,7 +9,7 @@ from app.api.schemas.shared import ImportHistoryRecord
 def test_import_history_record_allows_missing_file_metadata():
     record = ImportHistoryRecord(
         import_id="import-123",
-        import_timestamp=datetime.utcnow(),
+        import_timestamp=datetime.now(timezone.utc),
         file_name=None,
         file_hash=None,
         table_name="marketing_agency_contacts_us",
