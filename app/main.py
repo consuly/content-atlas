@@ -5,6 +5,7 @@ This module initializes the FastAPI application, configures middleware,
 and registers all API routers.
 """
 import os
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -118,4 +119,14 @@ async def root():
     return {
         "message": "Data Mapper API",
         "version": "1.0.0"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Railway deployment monitoring."""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "data-mapper-api"
     }
