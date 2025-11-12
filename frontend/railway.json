@@ -3,8 +3,5 @@
   "build": {
     "builder": "dockerfile",
     "dockerfilePath": "Dockerfile"
-  },
-  "deploy": {
-    "startCommand": "serve -s dist -l $PORT"
   }
 }

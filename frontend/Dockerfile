@@ -34,4 +34,5 @@ COPY --from=builder /app/refine/dist ./
 
 USER refine
 
-CMD ["serve"]
+# Use PORT environment variable if set, otherwise default to 3000
+CMD serve -s dist -l ${PORT:-3000}
