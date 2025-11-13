@@ -1,4 +1,4 @@
-# ContentAtlas
+# Content Atlas Frontend (Development)
 
 <div align="center" style="margin: 30px;">
     <a href="https://refine.dev">
@@ -7,7 +7,13 @@
 </div>
 <br/>
 
-This [Refine](https://github.com/refinedev/refine) project was generated with [create refine-app](https://github.com/refinedev/refine/tree/master/packages/create-refine-app).
+This is the **development version** of the Content Atlas frontend. Changes made here are automatically synced to the deployment repository.
+
+## Repository Separation
+
+- **Development**: This repository (monorepo)
+- **Deployment**: [content-atlas-frontend](https://github.com/thefoundry-app/content-atlas-frontend)
+- **Sync**: Automatic via GitHub Actions on push to `main` branch
 
 ## Getting Started
 
@@ -34,6 +40,14 @@ Refine's hooks and components simplifies the development process and eliminates 
 ```bash
     npm run start
 ```
+
+## Environment Variables
+
+- `VITE_API_URL`: URL of the Content Atlas API (default: http://localhost:8000)
+
+## Deployment
+
+This frontend is automatically deployed when changes are pushed to the `main` branch. The deployment repository contains the production-ready build.
 
 ## Learn More
 
