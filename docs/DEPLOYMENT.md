@@ -5,6 +5,7 @@ Guide for deploying the Data Mapper API in production environments.
 ## Table of Contents
 
 - [Overview](#overview)
+- [Railway Deployment](#railway-deployment)
 - [Docker Deployment](#docker-deployment)
 - [Production Configuration](#production-configuration)
 - [Monitoring and Logging](#monitoring-and-logging)
@@ -24,6 +25,53 @@ This guide covers deploying the Data Mapper API in production environments using
 2. **Docker Container**: API only, external database
 3. **Kubernetes**: Scalable container orchestration
 4. **Cloud Platforms**: AWS, GCP, Azure deployment
+
+---
+
+## Railway Deployment
+
+Railway can host multiple services that share this monorepo (FastAPI backend + Refine frontend). By default it looks for a `Dockerfile` in the repository root, so you must point the frontend service at `frontend/Dockerfile` to avoid deploying the backend container twice.
+
+### 1. Create/confirm services
+
+1. In the Railway project, create two services that both reference this GitHub repository (or deploy once with `railway up` to create them automatically).
+2. Keep the backend service attached to the root `Dockerfile`.
+3. Use the second service for the frontend build (`frontend/Dockerfile`).
+
+### 2. Override the Dockerfile path for the frontend service
+
+Railway lets you override the Dockerfile location via the `RAILWAY_DOCKERFILE_PATH` environment variable. Set it only on the frontend service:
+
+```bash
+railway service frontend
+railway env set RAILWAY_DOCKERFILE_PATH=frontend/Dockerfile
+```
+
+The same variable can be set in the Dashboard → Variables tab if you prefer the UI. You may also set `RAILWAY_DOCKERFILE_PATH=Dockerfile` on the backend service to make the intent explicit.
+
+### 3. Run builds inside `frontend/`
+
+Tell the frontend service to execute its build and start commands inside that directory so the GitHub integration does not try to run Node tooling from the root:
+
+- **Build command:** `cd frontend && npm ci && npm run build`
+- **Start command (if needed):** `cd frontend && npm run start` or the equivalent command in your Dockerfile.
+
+### 4. CLI fallback when GitHub limits apply
+
+If you prefer not to rely on GitHub-triggered deploys, run the CLI in each directory and push artifacts manually:
+
+```bash
+# Backend container
+railway up
+
+# Frontend container
+cd frontend
+railway up
+```
+
+`railway up` only uploads the current working directory, so the correct Dockerfile is used automatically.
+
+Once the environment variable and commands are set, re-trigger a deployment. Railway will now build the backend from the root `Dockerfile` and the frontend from `frontend/Dockerfile` without splitting the repository.
 
 ---
 
