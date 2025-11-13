@@ -62,43 +62,7 @@ jobs:
         cp ../AGENTS.md ./
 
         # Create API-specific README
-        cat > README.md << 'EOF'
-# Content Atlas API
-
-FastAPI backend for Content Atlas - a data consolidation platform.
-
-## Features
-
-- Multi-format file processing (CSV, Excel, JSON, XML)
-- Dynamic PostgreSQL schema creation
-- Duplicate detection and prevention
-- Natural language database queries via LLM
-- RESTful API with automatic documentation
-
-## Quick Start
-
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. Set up environment variables (copy from .env.example)
-
-3. Run the application:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-
-## API Documentation
-
-- API: http://localhost:8000
-- Interactive Docs: http://localhost:8000/docs
-
-## Deployment
-
-This repository is automatically synced from the main Content Atlas monorepo.
-Manual changes to this repository may be overwritten.
-EOF
+        printf '# Content Atlas API\n\nFastAPI backend for Content Atlas - a data consolidation platform.\n\n## Features\n\n- Multi-format file processing (CSV, Excel, JSON, XML)\n- Dynamic PostgreSQL schema creation\n- Duplicate detection and prevention\n- Natural language database queries via LLM\n- RESTful API with automatic documentation\n\n## Quick Start\n\n1. Install dependencies:\n   ```bash\n   pip install -r requirements.txt\n   ```\n\n2. Set up environment variables (copy from .env.example)\n\n3. Run the application:\n   ```bash\n   uvicorn app.main:app --reload\n   ```\n\n## API Documentation\n\n- API: http://localhost:8000\n- Interactive Docs: http://localhost:8000/docs\n\n## Deployment\n\nThis repository is automatically synced from the main Content Atlas monorepo.\nManual changes to this repository may be overwritten.\n' > README.md
 
     - name: Check for changes
       id: check_changes
