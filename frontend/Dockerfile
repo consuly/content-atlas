@@ -5,13 +5,19 @@ FROM refinedev/node:20 AS base
 
 FROM base as deps
 
+# Set working directory
+WORKDIR /app
+
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production=false
+# Install dependencies (includes dev dependencies)
+RUN npm ci
 
 FROM base as builder
+
+# Set working directory
+WORKDIR /app
 
 ENV NODE_ENV production
 
@@ -25,6 +31,9 @@ COPY . .
 RUN npm run build
 
 FROM base as runner
+
+# Set working directory
+WORKDIR /app
 
 ENV NODE_ENV production
 
