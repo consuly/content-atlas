@@ -202,35 +202,41 @@ This will:
 
 See [Database Reset Guide](docs/DATABASE_RESET.md) for detailed documentation.
 
+## Repository Structure
+
+Content Atlas uses a **monorepo for development** but automatically syncs to separate deployment repositories for independent scaling.
+
+### Development (This Repository)
+- **Unified development environment** with full codebase
+- **Automated sync** to deployment repositories via GitHub Actions
+- **Local development** with docker-compose
+
+### Deployment Repositories
+- **`content-atlas-api`**: FastAPI backend for serverless/container deployment
+- **`content-atlas-frontend`**: React frontend for static hosting (Vercel, Netlify)
+
+📖 **[Repository Separation Guide](docs/REPOSITORY_SEPARATION.md)** - Learn how the automated sync works
+
 ## Project Structure
 
 ```
-content-atlas/
-├── app/
-│   ├── main.py              # FastAPI application
-│   ├── mapper.py            # Data mapping logic
-│   ├── database.py          # Database connection
-│   ├── console.py           # Natural language console
-│   ├── processors/          # File format processors
-│   │   ├── csv_processor.py
-│   │   ├── json_processor.py
-│   │   └── xml_processor.py
-│   └── ...
-├── docs/                    # Documentation
-│   ├── API_REFERENCE.md
-│   ├── SETUP.md
-│   ├── TESTING.md
-│   ├── CONSOLE.md
-│   ├── DEPLOYMENT.md
-│   ├── ARCHITECTURE.md
-│   ├── DATABASE_RESET.md
-│   ├── DUPLICATE_DETECTION.md
-│   └── PARALLEL_PROCESSING.md
-├── tests/                   # Test suite
-├── docker-compose.yml       # Docker orchestration
-├── Dockerfile              # Container definition
-├── requirements.txt        # Python dependencies
-└── README.md              # This file
+content-atlas/                    # Development monorepo
+├── app/                          # FastAPI backend
+│   ├── main.py                   # Application entry point
+│   ├── api/                      # REST API endpoints
+│   ├── core/                     # Core functionality
+│   ├── db/                       # Database models & session
+│   ├── domain/                   # Business logic
+│   └── utils/                    # Utilities
+├── frontend/                     # React frontend
+│   ├── src/                      # React application
+│   ├── public/                   # Static assets
+│   └── package.json              # Dependencies
+├── docs/                         # Documentation
+├── tests/                        # Test suite
+├── docker-compose.yml            # Local development
+├── .github/workflows/            # Automated sync workflows
+└── setup-separate-repos.sh       # Repository setup script
 ```
 
 ## Key Features Explained

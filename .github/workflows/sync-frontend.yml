@@ -1,0 +1,112 @@
+name: Sync Frontend to Frontend Repository
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:
+
+jobs:
+  sync-frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout main repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Git
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+    - name: Clone Frontend repository
+      run: |
+        git clone https://${{ secrets.FRONTEND_REPO_TOKEN }}@github.com/${{ secrets.FRONTEND_REPO_OWNER }}/content-atlas-frontend.git frontend-repo
+        cd frontend-repo
+        git checkout main || git checkout -b main
+        cd ..
+
+    - name: Sync frontend files
+      run: |
+        cd frontend-repo
+
+        # Remove all files except .git
+        find . -not -path './.git*' -delete
+
+        # Copy frontend directory contents to root
+        cp -r ../frontend/* ./
+
+        # Create frontend-specific README
+        cat > README.md << 'EOF'
+# Content Atlas Frontend
+
+React frontend for Content Atlas - a data consolidation platform built with Refine.dev.
+
+## Features
+
+- Modern React admin interface
+- File upload and data mapping
+- Natural language database queries
+- Real-time import progress tracking
+- Responsive design with Ant Design
+
+## Quick Start
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Set up environment variables:
+   ```bash
+   cp .env.example .env
+   # Edit .env to point to your API URL
+   ```
+
+3. Run development server:
+   ```bash
+   npm run dev
+   ```
+
+## Environment Variables
+
+- `VITE_API_URL`: URL of the Content Atlas API (default: http://localhost:8000)
+
+## Build for Production
+
+```bash
+npm run build
+```
+
+## Deployment
+
+This repository is automatically synced from the main Content Atlas monorepo.
+Manual changes to this repository may be overwritten.
+
+The frontend can be deployed to:
+- Vercel
+- Netlify
+- Railway
+- Any static hosting service
+EOF
+
+    - name: Check for changes
+      id: check_changes
+      run: |
+        cd frontend-repo
+        if [[ -n $(git status --porcelain) ]]; then
+          echo "changes=true" >> $GITHUB_OUTPUT
+        else
+          echo "changes=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Commit and push changes
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        cd frontend-repo
+        git add .
+        git commit -m "Sync from monorepo: ${GITHUB_SHA}"
+        git push origin main
