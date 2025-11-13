@@ -234,12 +234,29 @@ ANTHROPIC_API_KEY=your_production_api_key
 # Application
 WORKERS=4
 LOG_LEVEL=info
+
+# Admin bootstrap (optional)
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=super-secure-password
+ADMIN_NAME=Content Atlas Admin
 ```
 
 **Load environment:**
 ```bash
 docker-compose --env-file .env.production up -d
 ```
+
+### Automatic Admin Provisioning
+
+When `ADMIN_EMAIL` (and a matching `ADMIN_PASSWORD`) are set, the FastAPI
+lifespan hook calls `create_admin_user_env.create_admin_user_if_not_exists()`
+during startup. The helper checks the `users` table for an existing record
+with that email and only inserts a new row when it is missing, so you can keep
+these variables defined in production without risking duplicate accounts.
+
+Set `ADMIN_NAME` (optional) to control the display name that gets stored in the
+database. If you prefer to manage admins manually, leave `ADMIN_EMAIL`
+undefined and run `python create_admin_user.py` instead.
 
 ### Nginx Configuration
 

@@ -62,7 +62,18 @@ async def lifespan(app: FastAPI):
         
         init_api_key_tables()
         print("✓ api_keys table ready")
-        
+
+        # Create admin user if configured and doesn't exist
+        try:
+            from .create_admin_user_env import create_admin_user_if_not_exists
+            admin_created = create_admin_user_if_not_exists()
+            if admin_created:
+                print("✓ Admin user created from environment variables")
+            elif os.getenv('ADMIN_EMAIL'):
+                print("✓ Admin user already exists (skipped creation)")
+        except Exception as e:
+            print(f"Warning: Admin user initialization failed: {e}")
+
         print("✓ All database tables initialized successfully")
     except Exception as e:
         print(f"ERROR: Failed to initialize database tables: {e}")
