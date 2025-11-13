@@ -86,12 +86,14 @@ app = FastAPI(
 )
 
 # Configure CORS middleware
+# Allow origins from environment variable or defaults for development
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+# Strip whitespace from origins
+allowed_origins = [origin.strip() for origin in allowed_origins]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:3000",  # Alternative frontend port
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers including Authorization
