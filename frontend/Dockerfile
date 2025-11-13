@@ -5,32 +5,34 @@ FROM refinedev/node:20 AS base
 
 FROM base as deps
 
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
+# Copy package files
+COPY package*.json ./
 
-RUN \
-  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-  elif [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then yarn global add pnpm && pnpm i --frozen-lockfile; \
-  else echo "Lockfile not found." && exit 1; \
-  fi
+# Install dependencies
+RUN npm ci --only=production=false
 
 FROM base as builder
 
 ENV NODE_ENV production
 
-COPY --from=deps /app/refine/node_modules ./node_modules
+# Copy node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
 
+# Copy source code
 COPY . .
 
+# Build the application
 RUN npm run build
 
 FROM base as runner
 
 ENV NODE_ENV production
 
+# Install serve globally
 RUN npm install -g serve
 
-COPY --from=builder /app/refine/dist ./
+# Copy built files from builder stage
+COPY --from=builder /app/dist ./dist
 
 USER refine
 
