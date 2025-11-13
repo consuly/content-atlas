@@ -124,11 +124,32 @@ Required only if using the natural language query console:
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
+#### Admin Bootstrap (Optional)
+
+Set these when you want the application to auto-create the first admin user
+during startup (recommended for production deployments):
+
+```bash
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=super-secret-password
+ADMIN_NAME=Content Atlas Admin  # optional
+```
+
+When `ADMIN_EMAIL` is present, `app/main.py` invokes
+`create_admin_user_env.create_admin_user_if_not_exists()` during startup. The
+script is idempotent — it only creates the user if no existing record matches
+`ADMIN_EMAIL`, so it is safe to leave these variables set in production.
+
 ### Example .env File
 
 ```bash
 # Database
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/datamapper
+
+# Admin bootstrap (optional)
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=super-secret-password
+ADMIN_NAME=Content Atlas Admin
 
 # Backblaze B2 (optional)
 B2_APPLICATION_KEY_ID=your_key_id
