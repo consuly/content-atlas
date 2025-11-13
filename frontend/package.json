@@ -6,7 +6,7 @@
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
     "@refinedev/antd": "^6.0.1",
-    "@refinedev/cli": "^2.16.48",
+    "@refinedev/cli": "^2.16.50",
     "@refinedev/core": "^5.0.0",
     "@refinedev/devtools": "^2.0.1",
     "@refinedev/kbar": "^2.0.0",
@@ -36,15 +36,16 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.19",
     "globals": "^16.0.0",
+    "picomatch": "^4.0.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^6.3.5"
   },
   "scripts": {
-    "dev": "refine dev",
-    "build": "tsc && refine build",
-    "start": "refine start",
-    "refine": "refine"
+    "dev": "npx refine dev",
+    "build": "tsc && npx refine build",
+    "start": "npx refine start",
+    "refine": "npx refine"
   },
   "browserslist": {
     "production": [
