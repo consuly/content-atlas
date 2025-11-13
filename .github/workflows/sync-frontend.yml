@@ -39,59 +39,10 @@ jobs:
         # Copy frontend directory contents to root
         cp -r ../frontend/* ./
 
-        # Create frontend-specific README
-        cat > README.md << 'EOF'
-# Content Atlas Frontend
-
-React frontend for Content Atlas - a data consolidation platform built with Refine.dev.
-
-## Features
-
-- Modern React admin interface
-- File upload and data mapping
-- Natural language database queries
-- Real-time import progress tracking
-- Responsive design with Ant Design
-
-## Quick Start
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-2. Set up environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env to point to your API URL
-   ```
-
-3. Run development server:
-   ```bash
-   npm run dev
-   ```
-
-## Environment Variables
-
-- `VITE_API_URL`: URL of the Content Atlas API (default: http://localhost:8000)
-
-## Build for Production
-
-```bash
-npm run build
-```
-
-## Deployment
-
-This repository is automatically synced from the main Content Atlas monorepo.
-Manual changes to this repository may be overwritten.
-
-The frontend can be deployed to:
-- Vercel
-- Netlify
-- Railway
-- Any static hosting service
-EOF
+    - name: Create frontend README
+      run: |
+        cd frontend-repo
+        printf '# Content Atlas Frontend\n\nReact frontend for Content Atlas - a data consolidation platform built with Refine.dev.\n\n## Features\n\n- Modern React admin interface\n- File upload and data mapping\n- Natural language database queries\n- Real-time import progress tracking\n- Responsive design with Ant Design\n\n## Quick Start\n\n1. Install dependencies:\n   ```bash\n   npm install\n   ```\n\n2. Set up environment variables:\n   ```bash\n   cp .env.example .env\n   # Edit .env to point to your API URL\n   ```\n\n3. Run development server:\n   ```bash\n   npm run dev\n   ```\n\n## Environment Variables\n\n- VITE_API_URL: URL of the Content Atlas API (default: http://localhost:8000)\n\n## Build for Production\n\n```bash\nnpm run build\n```\n\n## Deployment\n\nThis repository is automatically synced from the main Content Atlas monorepo.\nManual changes to this repository may be overwritten.\n\nThe frontend can be deployed to:\n- Vercel\n- Netlify\n- Railway\n- Any static hosting service\n' > README.md
 
     - name: Check for changes
       id: check_changes
