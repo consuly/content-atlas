@@ -18,7 +18,7 @@ import {
 } from 'antd';
 import type { BreadcrumbProps } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
-import type { SortOrder, SorterResult } from 'antd/es/table/interface';
+import type { FilterValue, SortOrder, SorterResult, TableCurrentDataSource } from 'antd/es/table/interface';
 import {
   ArrowLeftOutlined,
   FilterOutlined,
@@ -203,8 +203,9 @@ export const TableViewerPage: React.FC = () => {
 
   const handleTableChange = (
     nextPagination: TablePaginationConfig,
-    _filters: Record<string, React.Key[] | null>,
+    _filters: Record<string, FilterValue | null>,
     sorterInfo: SorterResult<TableRow> | SorterResult<TableRow>[],
+    _extra: TableCurrentDataSource<TableRow>,
   ) => {
     const currentSorter = Array.isArray(sorterInfo) ? sorterInfo[0] : sorterInfo;
     setPagination((prev) => ({
