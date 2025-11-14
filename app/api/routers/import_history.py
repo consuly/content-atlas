@@ -28,6 +28,10 @@ async def list_import_history(
     table_name: Optional[str] = None,
     user_id: Optional[str] = None,
     status: Optional[str] = None,
+    file_name: Optional[str] = None,
+    file_hash: Optional[str] = None,
+    source_path: Optional[str] = None,
+    file_size_bytes: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db)
@@ -39,6 +43,10 @@ async def list_import_history(
     - table_name: Filter by destination table name
     - user_id: Filter by user ID
     - status: Filter by status ('success', 'failed', 'partial')
+    - file_name: Filter by original file name
+    - file_hash: Filter by SHA-256 hash
+    - source_path: Filter by stored source path (e.g. B2 key)
+    - file_size_bytes: Filter by file size recorded during import
     - limit: Maximum number of records to return (default: 100)
     - offset: Number of records to skip for pagination (default: 0)
     """
@@ -47,6 +55,10 @@ async def list_import_history(
             table_name=table_name,
             user_id=user_id,
             status=status,
+            file_name=file_name,
+            file_hash=file_hash,
+            source_path=source_path,
+            file_size_bytes=file_size_bytes,
             limit=limit,
             offset=offset
         )

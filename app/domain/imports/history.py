@@ -919,6 +919,10 @@ def get_import_history(
     table_name: Optional[str] = None,
     user_id: Optional[str] = None,
     status: Optional[str] = None,
+    file_name: Optional[str] = None,
+    file_hash: Optional[str] = None,
+    source_path: Optional[str] = None,
+    file_size_bytes: Optional[int] = None,
     limit: int = 100,
     offset: int = 0
 ) -> List[Dict[str, Any]]:
@@ -932,6 +936,10 @@ def get_import_history(
         status: Filter by status
         limit: Maximum number of records to return
         offset: Number of records to skip
+        file_name: Filter by original file name
+        file_hash: Filter by SHA-256 hash
+        source_path: Filter by stored source path (e.g. B2 key)
+        file_size_bytes: Filter by file size recorded during import
         
     Returns:
         List of import history records
@@ -956,6 +964,18 @@ def get_import_history(
             if status:
                 where_clauses.append("status = :status")
                 params["status"] = status
+            if file_name:
+                where_clauses.append("file_name = :file_name")
+                params["file_name"] = file_name
+            if file_hash:
+                where_clauses.append("file_hash = :file_hash")
+                params["file_hash"] = file_hash
+            if source_path:
+                where_clauses.append("source_path = :source_path")
+                params["source_path"] = source_path
+            if file_size_bytes is not None:
+                where_clauses.append("file_size_bytes = :file_size_bytes")
+                params["file_size_bytes"] = file_size_bytes
             
             where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
             
