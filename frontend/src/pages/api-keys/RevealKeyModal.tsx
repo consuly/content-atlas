@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { App as AntdApp, Modal, Typography, Alert, Space, Button } from 'antd';
 import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 import type { CreateKeyResponse } from './types';
+import { API_URL } from '../../config';
 
 const { Text, Paragraph } = Typography;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface RevealKeyModalProps {
   visible: boolean;

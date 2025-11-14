@@ -42,8 +42,13 @@ RUN npm install -g serve
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
+COPY scripts ./scripts
+COPY docker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && chown -R refine:refine /app
 
 USER refine
 
+ENTRYPOINT ["/entrypoint.sh"]
+
 # Use PORT environment variable if set, otherwise default to 3000
-CMD serve -s dist -l ${PORT:-3000}
+CMD ["sh", "-c", "serve -s dist -l ${PORT:-3000}"]

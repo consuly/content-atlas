@@ -5,6 +5,7 @@ import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from
 import type { ColumnsType } from 'antd/es/table';
 import { FileUpload } from '../../components/file-upload';
 import axios from 'axios';
+import { API_URL } from '../../config';
 
 interface UploadedFile {
   id: string;
@@ -25,9 +26,6 @@ interface UploadedFile {
   active_job_progress?: number;
   active_job_started_at?: string;
 }
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
 export const ImportPage: React.FC = () => {
   const navigate = useNavigate();
   const [files, setFiles] = useState<UploadedFile[]>([]);

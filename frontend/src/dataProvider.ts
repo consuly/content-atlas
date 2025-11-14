@@ -1,7 +1,6 @@
 import { DataProvider } from "@refinedev/core";
 import axios, { AxiosInstance } from "axios";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+import { API_URL } from "./config";
 
 // Create axios instance with interceptors
 const axiosInstance: AxiosInstance = axios.create({

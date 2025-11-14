@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import axios from 'axios';
+import { API_URL } from '../../config';
 import {
   App as AntdApp,
   Breadcrumb,
@@ -29,7 +30,6 @@ import {
 
 const { Title, Text } = Typography;
 const { Search } = Input;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const DEFAULT_PAGE_SIZE = 50;
 
 type FilterOperator = 'eq' | 'contains';
