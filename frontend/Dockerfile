@@ -44,9 +44,9 @@ RUN npm install -g serve
 COPY --from=builder /app/dist ./dist
 COPY scripts ./scripts
 COPY docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh && chown -R refine:refine /app
+RUN chmod +x /entrypoint.sh && chown -R node:node /app
 
-USER refine
+USER node
 
 ENTRYPOINT ["/entrypoint.sh"]
 
