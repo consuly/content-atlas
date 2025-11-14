@@ -7,10 +7,10 @@ import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOut
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../../components/error-log-viewer';
 import { formatUserFacingError } from '../../utils/errorMessages';
+import { API_URL } from '../../config';
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const DUPLICATE_PREVIEW_LIMIT = 20;
 
 interface UploadedFile {

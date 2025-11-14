@@ -17,6 +17,7 @@ import axios from 'axios';
 import dayjs from 'dayjs';
 import type { ApiKey, UpdateKeyRequest } from './types';
 import { getStoredApiKey } from './apiKeyStorage';
+import { API_URL } from '../../config';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -27,8 +28,6 @@ interface UpdateKeyModalProps {
   onClose: () => void;
   onSuccess: () => void;
 }
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const UpdateKeyModal: React.FC<UpdateKeyModalProps> = ({
   visible,

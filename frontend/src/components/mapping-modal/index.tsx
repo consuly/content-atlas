@@ -5,9 +5,9 @@ import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined } from '@ant-
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../error-log-viewer';
 import { formatUserFacingError } from '../../utils/errorMessages';
+import { API_URL } from '../../config';
 
 const { Text, Paragraph } = Typography;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface MappingModalProps {
   visible: boolean;

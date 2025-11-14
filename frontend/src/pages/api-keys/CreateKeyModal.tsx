@@ -4,6 +4,7 @@ import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import type { CreateKeyRequest, CreateKeyResponse } from './types';
 import { saveApiKeySecret } from './apiKeyStorage';
+import { API_URL } from '../../config';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -14,9 +15,6 @@ interface CreateKeyModalProps {
   onSuccess: () => void;
   onKeyCreated?: (key: CreateKeyResponse) => void;
 }
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
 export const CreateKeyModal: React.FC<CreateKeyModalProps> = ({
   visible,
   onClose,

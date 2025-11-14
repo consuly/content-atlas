@@ -3,6 +3,7 @@ import { App as AntdApp, Upload, Modal, Button, Space } from 'antd';
 import { InboxOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import type { UploadProps, UploadFile } from 'antd';
 import axios from 'axios';
+import { API_URL } from '../../config';
 
 const { Dragger } = Upload;
 
@@ -37,9 +38,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFileInfo | null>(null);
   const { message: messageApi } = AntdApp.useApp();
-
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
   const handleDuplicateAction = async (action: 'overwrite' | 'duplicate' | 'skip') => {
     if (!duplicateFile) return;
 
