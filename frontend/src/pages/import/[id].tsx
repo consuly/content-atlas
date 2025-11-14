@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
@@ -131,6 +131,19 @@ interface ArchiveAutoProcessResult {
   job_id?: string | null;
 }
 
+type ArchiveResultMetadata = {
+  files_total?: number;
+  processed_files?: number;
+  failed_files?: number;
+  skipped_files?: number;
+  results?: ArchiveFileResult[];
+};
+
+interface ArchiveHistorySummary {
+  job: ImportJobInfo;
+  result: ArchiveAutoProcessResult;
+}
+
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -145,6 +158,8 @@ export const ImportMappingPage: React.FC = () => {
   const [jobInfo, setJobInfo] = useState<ImportJobInfo | null>(null);
   const [archiveProcessing, setArchiveProcessing] = useState(false);
   const [archiveResult, setArchiveResult] = useState<ArchiveAutoProcessResult | null>(null);
+  const [archiveHistorySummary, setArchiveHistorySummary] = useState<ArchiveHistorySummary | null>(null);
+  const [archiveJobDetails, setArchiveJobDetails] = useState<ImportJobInfo | null>(null);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -168,6 +183,36 @@ export const ImportMappingPage: React.FC = () => {
       prompt: 'Explain how duplicate detection is configured. Are there better uniqueness rules we should consider?',
     },
   ];
+
+  const isArchiveFile = file?.file_name?.toLowerCase().endsWith('.zip') ?? false;
+
+  const effectiveArchiveResult = archiveResult ?? archiveHistorySummary?.result ?? null;
+
+  const archiveAggregates = useMemo(() => {
+    if (!effectiveArchiveResult) {
+      return null;
+    }
+
+    const aggregate = effectiveArchiveResult.results.reduce(
+      (acc, item) => {
+        if (item.status === 'processed') {
+          acc.totalRecords += item.records_processed ?? 0;
+          acc.totalDuplicates += item.duplicates_skipped ?? 0;
+          if (item.table_name) {
+            acc.tableNames.add(item.table_name);
+          }
+        }
+        return acc;
+      },
+      { totalRecords: 0, totalDuplicates: 0, tableNames: new Set<string>() }
+    );
+
+    return {
+      totalRecords: aggregate.totalRecords,
+      totalDuplicates: aggregate.totalDuplicates,
+      tablesTouched: aggregate.tableNames.size,
+    };
+  }, [effectiveArchiveResult]);
 
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -233,12 +278,15 @@ export const ImportMappingPage: React.FC = () => {
     []
   );
 
-  const fetchMappedFileDetails = useCallback(async (tableName: string) => {
+  const fetchMappedFileDetails = useCallback(async (fileMeta: UploadedFile) => {
+    if (!fileMeta.mapped_table_name) return;
+
+    const tableName = fileMeta.mapped_table_name;
     setLoadingDetails(true);
     setDuplicateData(null);
     try {
       const token = localStorage.getItem('refine-auth');
-      
+
       // Fetch table data preview
       const tableResponse = await axios.get(`${API_URL}/tables/${tableName}`, {
         params: { limit: 10, offset: 0 },
@@ -271,16 +319,43 @@ export const ImportMappingPage: React.FC = () => {
         });
       }
 
-      // Fetch import history
-      const historyResponse = await axios.get(`${API_URL}/import-history`, {
-        params: { table_name: tableName, limit: 1 },
+      // Prefer matching import history using original file metadata so
+      // duplicates/summary reflect the specific upload even when multiple
+      // files target the same table.
+      const importParams: Record<string, unknown> = {
+        table_name: tableName,
+        file_name: fileMeta.file_name,
+        limit: 1,
+      };
+      if (typeof fileMeta.file_size === 'number') {
+        importParams.file_size_bytes = fileMeta.file_size;
+      }
+
+      let historyResponse = await axios.get(`${API_URL}/import-history`, {
+        params: importParams,
         headers: {
           ...(token && { Authorization: `Bearer ${token}` }),
         },
       });
 
+      if (
+        (!historyResponse.data.success || historyResponse.data.imports.length === 0) &&
+        fileMeta.mapped_table_name
+      ) {
+        // Fallback to table-level lookup so we still show something even if
+        // file-specific filters miss (e.g. legacy records without metadata).
+        historyResponse = await axios.get(`${API_URL}/import-history`, {
+          params: { table_name: tableName, limit: 1 },
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+      }
+
       if (historyResponse.data.success && historyResponse.data.imports.length > 0) {
         setImportHistory(historyResponse.data.imports[0]);
+      } else {
+        setImportHistory(null);
       }
     } catch (err) {
       console.error('Error fetching mapped file details:', err);
@@ -418,8 +493,8 @@ export const ImportMappingPage: React.FC = () => {
         messageApi.success('Duplicate merged successfully');
         setMergeModalVisible(false);
         resetMergeState();
-        if (file?.mapped_table_name) {
-          await fetchMappedFileDetails(file.mapped_table_name);
+        if (file) {
+          await fetchMappedFileDetails(file);
         } else if (importHistory.import_id) {
           await fetchDuplicateRows(importHistory.import_id);
         }
@@ -497,8 +572,8 @@ export const ImportMappingPage: React.FC = () => {
       messageApi.success(
         `Mapped ${successCount} duplicate${successCount > 1 ? 's' : ''} successfully`
       );
-      if (file?.mapped_table_name) {
-        await fetchMappedFileDetails(file.mapped_table_name);
+      if (file) {
+        await fetchMappedFileDetails(file);
       }
       await fetchDuplicateRows(importHistory.import_id);
     }
@@ -510,7 +585,7 @@ export const ImportMappingPage: React.FC = () => {
     duplicateData,
     fetchDuplicateRows,
     fetchMappedFileDetails,
-    file?.mapped_table_name,
+    file,
     importHistory,
     messageApi,
     selectedDuplicateRowIds,
@@ -529,7 +604,7 @@ export const ImportMappingPage: React.FC = () => {
 
   useEffect(() => {
     if (file?.status === 'mapped' && file.mapped_table_name) {
-      fetchMappedFileDetails(file.mapped_table_name);
+      fetchMappedFileDetails(file);
     }
   }, [file, fetchMappedFileDetails]);
 
@@ -548,6 +623,141 @@ export const ImportMappingPage: React.FC = () => {
   useEffect(() => {
     setArchiveResult(null);
   }, [id]);
+
+  useEffect(() => {
+    if (!file?.id || !isArchiveFile) {
+      setArchiveHistorySummary(null);
+      return;
+    }
+
+    if (archiveResult || file.status !== 'mapped') {
+      setArchiveHistorySummary(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchArchiveSummary = async () => {
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const response = await axios.get(`${API_URL}/import-jobs`, {
+          params: { file_id: file.id, limit: 1 },
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        if (
+          !response.data?.success ||
+          !Array.isArray(response.data.jobs) ||
+          response.data.jobs.length === 0
+        ) {
+          if (!cancelled) {
+            setArchiveHistorySummary(null);
+          }
+          return;
+        }
+
+        const job: ImportJobInfo = response.data.jobs[0];
+        const metadata = job.result_metadata as ArchiveResultMetadata | null;
+        const resultList = Array.isArray(metadata?.results)
+          ? (metadata?.results as ArchiveFileResult[])
+          : [];
+
+        if (resultList.length === 0) {
+          if (!cancelled) {
+            setArchiveHistorySummary(null);
+          }
+          return;
+        }
+
+        const processedFiles =
+          typeof metadata?.processed_files === 'number'
+            ? metadata.processed_files
+            : resultList.filter((entry) => entry.status === 'processed').length;
+        const failedFiles =
+          typeof metadata?.failed_files === 'number'
+            ? metadata.failed_files
+            : resultList.filter((entry) => entry.status === 'failed').length;
+        const skippedFiles =
+          typeof metadata?.skipped_files === 'number'
+            ? metadata.skipped_files
+            : resultList.filter((entry) => entry.status === 'skipped').length;
+        const supportedFiles =
+          typeof metadata?.files_total === 'number' ? metadata.files_total : resultList.length;
+
+        const normalizedResult: ArchiveAutoProcessResult = {
+          success: job.status === 'succeeded' && failedFiles === 0,
+          total_files: supportedFiles + skippedFiles,
+          processed_files: processedFiles,
+          failed_files: failedFiles,
+          skipped_files: skippedFiles,
+          results: resultList,
+          job_id: job.id,
+        };
+
+        if (!cancelled) {
+          setArchiveHistorySummary({ job, result: normalizedResult });
+        }
+      } catch (summaryError) {
+        console.error('Failed to load archive summary', summaryError);
+        if (!cancelled) {
+          setArchiveHistorySummary(null);
+        }
+      }
+    };
+
+    fetchArchiveSummary();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [API_URL, archiveResult, file?.id, file?.status, isArchiveFile]);
+
+  useEffect(() => {
+    if (!isArchiveFile) {
+      setArchiveJobDetails(null);
+      return;
+    }
+
+    if (archiveHistorySummary?.job) {
+      setArchiveJobDetails(archiveHistorySummary.job);
+      return;
+    }
+
+    if (!archiveResult?.job_id) {
+      setArchiveJobDetails(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchJobDetailsOnce = async () => {
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const response = await axios.get(`${API_URL}/import-jobs/${archiveResult.job_id}`, {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        if (!cancelled && response.data?.success) {
+          setArchiveJobDetails(response.data.job);
+        }
+      } catch (jobError) {
+        console.error('Failed to load archive job details', jobError);
+        if (!cancelled) {
+          setArchiveJobDetails(null);
+        }
+      }
+    };
+
+    fetchJobDetailsOnce();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [API_URL, archiveHistorySummary?.job, archiveResult?.job_id, isArchiveFile]);
 
   useEffect(() => {
     if (file && file.status !== 'failed' && showInteractiveRetry) {
@@ -1028,6 +1238,158 @@ export const ImportMappingPage: React.FC = () => {
 
   const renderMappedFileView = () => {
     if (!file || file.status !== 'mapped') return null;
+
+    if (isArchiveFile) {
+      const summaryResult = effectiveArchiveResult;
+      const jobId = archiveJobDetails?.id ?? archiveResult?.job_id ?? null;
+      const jobSource = archiveJobDetails?.trigger_source || 'Auto Process Archive';
+      const jobCompletedAt = archiveJobDetails?.completed_at ?? file.mapped_date;
+      const filesInArchiveMeta =
+        archiveJobDetails?.metadata && typeof archiveJobDetails.metadata['files_in_archive'] === 'number'
+          ? (archiveJobDetails.metadata['files_in_archive'] as number)
+          : undefined;
+      const filesInArchiveCount = filesInArchiveMeta ?? summaryResult?.total_files;
+      const summaryTagColor = summaryResult
+        ? summaryResult.failed_files > 0
+          ? 'orange'
+          : 'green'
+        : 'default';
+      const summaryTagText = summaryResult
+        ? summaryResult.failed_files > 0
+          ? 'Completed with warnings'
+          : 'Completed'
+        : 'Awaiting summary';
+
+      const archiveSummaryItems: DescriptionsProps['items'] = [
+        {
+          key: 'archive-name',
+          label: 'Archive',
+          children: <Text>{file.file_name}</Text>,
+        },
+        {
+          key: 'file-size',
+          label: 'File Size',
+          children: formatBytes(file.file_size),
+        },
+        {
+          key: 'uploaded',
+          label: 'Uploaded',
+          children: formatDate(file.upload_date),
+        },
+        {
+          key: 'last-processed',
+          label: 'Last Processed',
+          children: formatDate(jobCompletedAt),
+        },
+        {
+          key: 'job-id',
+          label: 'Import Job',
+          children: jobId ? <Text code>{jobId}</Text> : '-',
+        },
+        {
+          key: 'trigger',
+          label: 'Trigger Source',
+          children: jobSource,
+        },
+        {
+          key: 'files-total',
+          label: 'Files in Archive',
+          children:
+            typeof filesInArchiveCount === 'number'
+              ? filesInArchiveCount.toLocaleString()
+              : '-',
+        },
+        {
+          key: 'status',
+          label: 'Status',
+          children: <Tag color={summaryTagColor}>{summaryTagText}</Tag>,
+        },
+      ];
+
+      const archiveAlertType =
+        summaryResult && summaryResult.failed_files > 0
+          ? 'warning'
+          : summaryResult
+            ? 'success'
+            : 'info';
+      const archiveAlertDescription = summaryResult
+        ? summaryResult.failed_files > 0
+          ? 'Some files in this archive failed to import. Review the table below for details.'
+          : 'All supported files in this archive were imported successfully.'
+        : 'We could not find a previous auto-process summary for this archive.';
+
+      return (
+        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Descriptions
+            title="Archive Details"
+            bordered
+            size="middle"
+            column={2}
+            items={archiveSummaryItems}
+          />
+          <Alert
+            type={archiveAlertType}
+            message="Archive Import Summary"
+            description={archiveAlertDescription}
+            showIcon
+          />
+          {summaryResult ? (
+            <>
+              <Row gutter={16}>
+                <Col span={6}>
+                  <Statistic title="Processed" value={summaryResult.processed_files} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="Failed" value={summaryResult.failed_files} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="Skipped" value={summaryResult.skipped_files} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="Total Files" value={summaryResult.total_files} />
+                </Col>
+              </Row>
+              {archiveAggregates && (
+                <Row gutter={16} style={{ marginTop: 16 }}>
+                  <Col span={8}>
+                    <Statistic title="Rows Inserted" value={archiveAggregates.totalRecords} />
+                  </Col>
+                  <Col span={8}>
+                    <Statistic
+                      title="Duplicates Skipped"
+                      value={archiveAggregates.totalDuplicates}
+                    />
+                  </Col>
+                  <Col span={8}>
+                    <Statistic title="Tables Updated" value={archiveAggregates.tablesTouched} />
+                  </Col>
+                </Row>
+              )}
+              <Card
+                title="Files in Archive"
+                size="small"
+                style={{ marginTop: 16 }}
+              >
+                <Table
+                  dataSource={archiveResultRows}
+                  columns={archiveResultsColumns}
+                  pagination={false}
+                  size="small"
+                  scroll={{ x: 'max-content' }}
+                />
+              </Card>
+            </>
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              message="Archive summary not available"
+              description="This ZIP was marked as mapped, but we couldn't locate a completed Auto Process Archive job. Run Auto Process Archive again to rebuild the summary."
+            />
+          )}
+        </Space>
+      );
+    }
 
     const summaryItems: DescriptionsProps['items'] = [
       {
@@ -1564,7 +1926,7 @@ export const ImportMappingPage: React.FC = () => {
     },
   ];
 
-  const isArchive = file.file_name.toLowerCase().endsWith('.zip');
+  const isArchive = isArchiveFile;
 
   const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
     {
@@ -1597,6 +1959,13 @@ export const ImportMappingPage: React.FC = () => {
         typeof value === 'number' ? value.toLocaleString() : '-',
     },
     {
+      title: 'Duplicates',
+      dataIndex: 'duplicates_skipped',
+      key: 'duplicates_skipped',
+      render: (value?: number | null) =>
+        typeof value === 'number' ? value.toLocaleString() : '-',
+    },
+    {
       title: 'Message',
       dataIndex: 'message',
       key: 'message',
@@ -1618,8 +1987,8 @@ export const ImportMappingPage: React.FC = () => {
     },
   ];
 
-  const archiveResultRows = archiveResult
-    ? archiveResult.results.map((item, index) => ({
+  const archiveResultRows = effectiveArchiveResult
+    ? effectiveArchiveResult.results.map((item, index) => ({
         ...item,
         key: `${item.archive_path}-${index}`,
       }))
@@ -1689,31 +2058,53 @@ export const ImportMappingPage: React.FC = () => {
         </Space>
       )}
 
-      {archiveResult && (
-        <Card title="Archive Results" style={{ marginTop: 24 }}>
-          <Row gutter={16} style={{ marginBottom: 16 }}>
-            <Col span={6}>
-              <Statistic title="Processed" value={archiveResult.processed_files} />
-            </Col>
-            <Col span={6}>
-              <Statistic title="Failed" value={archiveResult.failed_files} />
-            </Col>
-            <Col span={6}>
-              <Statistic title="Skipped" value={archiveResult.skipped_files} />
-            </Col>
-            <Col span={6}>
-              <Statistic title="Total Files" value={archiveResult.total_files} />
-            </Col>
-          </Row>
-          <Table
-            dataSource={archiveResultRows}
-            columns={archiveResultsColumns}
-            pagination={false}
-            size="small"
-            scroll={{ x: 'max-content' }}
-          />
-        </Card>
-      )}
+        {effectiveArchiveResult && (
+          <Card title="Archive Results" style={{ marginTop: 24 }}>
+            <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Col span={6}>
+                <Statistic title="Processed" value={effectiveArchiveResult.processed_files} />
+              </Col>
+              <Col span={6}>
+                <Statistic title="Failed" value={effectiveArchiveResult.failed_files} />
+              </Col>
+              <Col span={6}>
+                <Statistic title="Skipped" value={effectiveArchiveResult.skipped_files} />
+              </Col>
+              <Col span={6}>
+                <Statistic title="Total Files" value={effectiveArchiveResult.total_files} />
+              </Col>
+            </Row>
+            {archiveAggregates && (
+              <Row gutter={16} style={{ marginBottom: 16 }}>
+                <Col span={8}>
+                  <Statistic
+                    title="Rows Inserted"
+                    value={archiveAggregates.totalRecords}
+                  />
+                </Col>
+                <Col span={8}>
+                  <Statistic
+                    title="Duplicates Skipped"
+                    value={archiveAggregates.totalDuplicates}
+                  />
+                </Col>
+                <Col span={8}>
+                  <Statistic
+                    title="Tables Updated"
+                    value={archiveAggregates.tablesTouched}
+                  />
+                </Col>
+              </Row>
+            )}
+            <Table
+              dataSource={archiveResultRows}
+              columns={archiveResultsColumns}
+              pagination={false}
+              size="small"
+              scroll={{ x: 'max-content' }}
+            />
+          </Card>
+        )}
     </div>
   );
 
