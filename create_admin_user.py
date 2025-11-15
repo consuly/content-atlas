@@ -73,7 +73,8 @@ def main():
                 db=db,
                 email=email,
                 password=password,
-                full_name=full_name
+                full_name=full_name,
+                role="admin"
             )
             print()
             print("=" * 60)
