@@ -4,13 +4,18 @@ Provides API key-based authentication for external applications.
 """
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, String, Integer, DateTime, Boolean, Text, JSON
 from app.db.session import Base, get_db
+
+def _utcnow() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
 
 # Security scheme for API key in header
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -25,7 +30,7 @@ class ApiKey(Base):
     app_name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     created_by = Column(Integer, nullable=True)  # FK to users.id
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     last_used_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
@@ -88,7 +93,7 @@ def verify_api_key(db: Session, api_key: str) -> Optional[ApiKey]:
         return None
     
     # Check expiration
-    if api_key_record.expires_at and api_key_record.expires_at < datetime.utcnow():
+    if api_key_record.expires_at and api_key_record.expires_at < _utcnow():
         return None
     
     return api_key_record
@@ -103,7 +108,7 @@ def update_last_used(db: Session, api_key_id: str):
         api_key_id: ID of the API key to update
     """
     db.query(ApiKey).filter(ApiKey.id == api_key_id).update({
-        "last_used_at": datetime.utcnow()
+        "last_used_at": _utcnow()
     })
     db.commit()
 
@@ -182,7 +187,7 @@ def create_api_key(
     # Calculate expiration
     expires_at = None
     if expires_in_days:
-        expires_at = datetime.utcnow() + timedelta(days=expires_in_days)
+        expires_at = _utcnow() + timedelta(days=expires_in_days)
     
     # Create record
     api_key_record = ApiKey(

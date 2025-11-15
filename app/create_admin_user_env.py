@@ -53,7 +53,8 @@ def create_admin_user_if_not_exists():
                 db=db,
                 email=email,
                 password=password,
-                full_name=full_name
+                full_name=full_name,
+                role="admin"
             )
             print("✓ Admin user created successfully!")
             print(f"  Email: {user.email}")

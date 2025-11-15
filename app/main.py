@@ -16,7 +16,7 @@ from .core.logging_config import configure_logging
 # Import routers
 from .api.routers import (
     imports, mapping, tables, tasks, query, analysis,
-    import_history, uploads, auth, api_keys, public_api, jobs
+    import_history, uploads, auth, api_keys, public_api, jobs, admin_users
 )
 
 # Backwards-compatible exports used by tests and legacy modules.
@@ -124,6 +124,7 @@ app.include_router(auth.router)
 app.include_router(api_keys.router)
 app.include_router(public_api.router)
 app.include_router(jobs.router)
+app.include_router(admin_users.router)
 
 
 @app.get("/")

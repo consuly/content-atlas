@@ -17,6 +17,7 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
+    # Role is controlled by admins; registration always creates a standard user
 
 
 class Token(BaseModel):
@@ -32,6 +33,7 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = None
     created_at: datetime
     is_active: bool
+    role: str
 
     model_config = ConfigDict(from_attributes=True)
 

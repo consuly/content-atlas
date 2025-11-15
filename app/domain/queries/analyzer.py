@@ -23,6 +23,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
+from app.api.schemas.shared import AnalysisMode, ConflictResolutionMode
 from app.core.config import settings
 from app.db.context import get_database_schema, format_schema_for_prompt
 from app.utils.date import detect_date_column, infer_date_format
@@ -39,19 +40,6 @@ class ImportStrategy(str, Enum):
     EXTEND_TABLE = "extend_table"     # Add columns to existing
     ADAPT_DATA = "adapt_data"         # Transform to fit existing
 
-
-class AnalysisMode(str, Enum):
-    """Controls auto-execution behavior"""
-    MANUAL = "manual"                      # User reviews and approves
-    AUTO_HIGH_CONFIDENCE = "auto_high"     # Auto-execute if confidence > threshold
-    AUTO_ALWAYS = "auto_always"            # Always auto-execute
-
-
-class ConflictResolutionMode(str, Enum):
-    """How to handle schema conflicts"""
-    ASK_USER = "ask_user"              # Stop and ask for clarification
-    LLM_DECIDE = "llm_decide"          # Let LLM resolve conflicts
-    PREFER_FLEXIBLE = "prefer_flexible" # Use most flexible data type
 
 
 # Custom AgentState for file analysis with retry tracking

@@ -47,7 +47,7 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
         return AuthResponse(
             success=True,
             token=Token(access_token=access_token),
-            user=UserResponse.from_orm(user)
+            user=UserResponse.model_validate(user)
         )
         
     except HTTPException:
@@ -87,7 +87,7 @@ async def login(credentials: UserLogin, db: Session = Depends(get_db)):
         return AuthResponse(
             success=True,
             token=Token(access_token=access_token),
-            user=UserResponse.from_orm(user)
+            user=UserResponse.model_validate(user)
         )
         
     except HTTPException:
@@ -106,4 +106,4 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     Returns:
     - User information
     """
-    return UserResponse.from_orm(current_user)
+    return UserResponse.model_validate(current_user)
