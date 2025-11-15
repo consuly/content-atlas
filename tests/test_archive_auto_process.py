@@ -52,6 +52,7 @@ def reset_tables():
             "import_duplicates",
             "import_jobs",
             "uploaded_files",
+            "file_imports",
         ):
             conn.execute(text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
     yield
