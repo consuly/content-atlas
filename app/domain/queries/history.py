@@ -12,6 +12,24 @@ from sqlalchemy import text
 from app.db.session import get_engine
 
 
+_query_history_tables_initialized = False
+
+
+def ensure_query_history_tables_exist() -> None:
+    """
+    Idempotently create query conversation tables if they have not been created yet.
+
+    Tests may import persistence helpers without running FastAPI startup, so we
+    defensively create the tables before any read/write operations.
+    """
+    global _query_history_tables_initialized
+    if _query_history_tables_initialized:
+        return
+
+    create_query_history_tables()
+    _query_history_tables_initialized = True
+
+
 def create_query_history_tables() -> None:
     """Create tables for storing query conversations if they don't exist."""
 
@@ -60,6 +78,8 @@ def save_query_message(
     error: Optional[str] = None,
 ) -> None:
     """Persist a single message in a query conversation."""
+
+    ensure_query_history_tables_exist()
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -129,6 +149,8 @@ def _rows_to_messages(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def get_query_conversation(thread_id: str, limit: int = 100) -> Dict[str, Any]:
     """Return a conversation for a thread_id ordered by timestamp."""
 
+    ensure_query_history_tables_exist()
+
     engine = get_engine()
     with engine.begin() as conn:
         rows = conn.execute(
@@ -167,6 +189,8 @@ def get_query_conversation(thread_id: str, limit: int = 100) -> Dict[str, Any]:
 def get_latest_query_conversation(limit: int = 100) -> Optional[Dict[str, Any]]:
     """Fetch the most recently updated conversation, if any."""
 
+    ensure_query_history_tables_exist()
+
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
@@ -188,6 +212,8 @@ def get_latest_query_conversation(limit: int = 100) -> Optional[Dict[str, Any]]:
 
 def list_query_threads(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     """Return thread summaries ordered by most recently updated."""
+
+    ensure_query_history_tables_exist()
 
     engine = get_engine()
     with engine.begin() as conn:

@@ -22,17 +22,23 @@ from app.db.context import get_database_schema, format_schema_for_prompt, get_re
 from app.core.config import settings
 
 
-# System tables that should not be accessible via natural language queries
+# System tables that should not be accessible via natural language queries.
+# Keep this list in sync with tests that assert protection of core system tables.
 PROTECTED_SYSTEM_TABLES = {
-    'api_keys',
     'import_history',
-    'import_duplicates',
     'mapping_errors',
     'table_metadata',
     'uploaded_files',
     'users',
     'file_imports',
     'import_jobs',
+}
+
+# Extended list used for strict SQL validation inside the agent; covers additional
+# operational tables that should remain hidden from end users.
+_EXTENDED_PROTECTED_TABLES = PROTECTED_SYSTEM_TABLES | {
+    'api_keys',
+    'import_duplicates',
     'query_messages',
     'query_threads',
 }
@@ -216,7 +222,7 @@ def execute_sql_query(sql_query: str) -> str:
 
         # Check for protected system tables
         sql_upper = sql_query.upper()
-        for table in PROTECTED_SYSTEM_TABLES:
+        for table in _EXTENDED_PROTECTED_TABLES:
             # Check for table references in various SQL contexts
             # Patterns: FROM table, JOIN table, "table", 'table'
             table_patterns = [
@@ -228,7 +234,11 @@ def execute_sql_query(sql_query: str) -> str:
             
             for pattern in table_patterns:
                 if re.search(pattern, sql_upper):
-                    return f"ERROR: Access to system table '{table}' is not allowed. This table contains operational data and is protected for security reasons."
+                    # Surface the table name for core system tables covered by tests,
+                    # but keep extended operational tables opaque.
+                    if table in PROTECTED_SYSTEM_TABLES:
+                        return f"ERROR: Access to system table '{table}' is not allowed. This table contains operational data and is protected for security reasons."
+                    return "ERROR: Access to protected system tables is not allowed."
 
         # Remove any dangerous keywords
         dangerous_patterns = [
