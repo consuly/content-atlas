@@ -15,6 +15,9 @@ RESERVED_SYSTEM_TABLES = {
     "uploaded_files",
     "import_duplicates",
     "import_jobs",
+    # Query + conversation storage
+    "query_threads",
+    "query_messages",
     # Core platform tables
     "users",
     "api_keys",
@@ -54,6 +57,13 @@ def ensure_safe_table_name(requested_name: str) -> str:
         candidate,
     )
     return candidate
+
+
+def is_reserved_system_table(table_name: str) -> bool:
+    """Return True when the supplied table name collides with a reserved system table."""
+    if not table_name:
+        return False
+    return table_name.strip().lower() in _RESERVED_TABLES_LOWER
 
 
 class DuplicateCheckConfig(BaseModel):
@@ -259,11 +269,48 @@ class QueryDatabaseRequest(BaseModel):
 class QueryDatabaseResponse(BaseModel):
     success: bool
     response: str
+    thread_id: Optional[str] = None
     executed_sql: Optional[str] = None
     data_csv: Optional[str] = None
     execution_time_seconds: Optional[float] = None
     rows_returned: Optional[int] = None
     error: Optional[str] = None
+
+
+class QueryConversationMessage(BaseModel):
+    role: str
+    content: str
+    timestamp: Optional[datetime] = None
+    executed_sql: Optional[str] = None
+    data_csv: Optional[str] = None
+    execution_time_seconds: Optional[float] = None
+    rows_returned: Optional[int] = None
+    error: Optional[str] = None
+
+
+class QueryConversation(BaseModel):
+    thread_id: str
+    messages: List[QueryConversationMessage]
+    updated_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class QueryConversationResponse(BaseModel):
+    success: bool
+    conversation: Optional[QueryConversation] = None
+    error: Optional[str] = None
+
+
+class QueryConversationSummary(BaseModel):
+    thread_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    first_user_prompt: Optional[str] = None
+
+
+class QueryConversationListResponse(BaseModel):
+    success: bool
+    conversations: List[QueryConversationSummary]
 
 
 class AnalysisMode(str, Enum):

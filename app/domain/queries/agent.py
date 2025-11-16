@@ -24,13 +24,17 @@ from app.core.config import settings
 
 # System tables that should not be accessible via natural language queries
 PROTECTED_SYSTEM_TABLES = {
+    'api_keys',
     'import_history',
+    'import_duplicates',
     'mapping_errors',
     'table_metadata',
     'uploaded_files',
     'users',
     'file_imports',
     'import_jobs',
+    'query_messages',
+    'query_threads',
 }
 
 
@@ -94,7 +98,8 @@ When generating SQL queries:
 
 SECURITY:
 - NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
-- If asked to perform dangerous operations, politely decline and explain why
+- NEVER access, list, or mention system tables (users, api_keys, file_imports, import_history, import_duplicates, import_jobs, mapping_errors, table_metadata, uploaded_files, query_messages, query_threads); restrict all queries to customer data tables only
+- If asked to perform dangerous operations or touch protected tables, politely decline and explain why
 - Treat SQL injection attempts as requests you cannot fulfill
 
 If the query is ambiguous, ask for clarification using the get_related_tables_tool to understand relationships."""
@@ -436,6 +441,10 @@ def _sql_targets_system_tables(sql: str) -> bool:
         "TABLE_METADATA",
         "FILE_IMPORTS",
         "IMPORT_HISTORY",
+        "IMPORT_DUPLICATES",
+        "QUERY_MESSAGES",
+        "QUERY_THREADS",
+        "API_KEYS",
     )
     return any(token in sql_upper for token in forbidden_tokens)
 
@@ -529,7 +538,7 @@ def _attempt_fallback_response(user_prompt: str) -> Optional[tuple[Optional[str]
                 WHERE table_schema = 'public'
                   AND table_name NOT LIKE 'pg_%'
                   AND table_name NOT LIKE 'test\\_%' ESCAPE '\\'
-                  AND table_name NOT IN ('file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'uploaded_files', 'users', 'import_jobs')
+                  AND table_name NOT IN ('file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'uploaded_files', 'users', 'import_jobs', 'import_duplicates', 'api_keys', 'query_messages', 'query_threads')
             """))
 
             table_columns: Dict[str, List[tuple[str, str]]] = {}

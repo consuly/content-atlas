@@ -3,16 +3,17 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, Button, Space, Typography, Alert, Spin, Empty } from 'antd';
+import { Card, Button, Space, Typography, Alert, Spin, Empty, App as AntdApp, List, Skeleton } from 'antd';
 import { 
   PlusOutlined, 
   RobotOutlined, 
-  QuestionCircleOutlined 
+  QuestionCircleOutlined, 
+  HistoryOutlined
 } from '@ant-design/icons';
 import { QueryInput } from './QueryInput';
 import { MessageDisplay } from './MessageDisplay';
-import { QueryMessage } from './types';
-import { queryDatabase } from '../../api/query';
+import { QueryConversationMessage, QueryConversationSummary, QueryMessage } from './types';
+import { fetchConversations, fetchLatestConversation, fetchConversationByThreadId, queryDatabase } from '../../api/query';
 
 // Simple UUID generator (alternative to uuid package)
 const generateUuid = () => {
@@ -25,52 +26,77 @@ const generateUuid = () => {
 
 const { Title, Text, Paragraph } = Typography;
 
-// LocalStorage keys
-const THREAD_ID_KEY = 'query-thread-id';
-const MESSAGES_KEY_PREFIX = 'query-messages-';
-
 export const QueryPage: React.FC = () => {
   const [threadId, setThreadId] = useState<string>('');
   const [messages, setMessages] = useState<QueryMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isHydrating, setIsHydrating] = useState(true);
+  const [isLoadingConversationList, setIsLoadingConversationList] = useState(false);
+  const [conversations, setConversations] = useState<QueryConversationSummary[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { message: messageApi } = AntdApp.useApp();
+  const isBusy = isLoading || isHydrating;
 
-  // Initialize or load conversation on mount
-  useEffect(() => {
-    const savedThreadId = localStorage.getItem(THREAD_ID_KEY);
-    
-    if (savedThreadId) {
-      // Load existing conversation
-      setThreadId(savedThreadId);
-      const savedMessages = localStorage.getItem(`${MESSAGES_KEY_PREFIX}${savedThreadId}`);
-      if (savedMessages) {
-        try {
-          const parsed = JSON.parse(savedMessages);
-          // Convert timestamp strings back to Date objects
-          const messagesWithDates = parsed.map((msg: QueryMessage) => ({
-            ...msg,
-            timestamp: new Date(msg.timestamp),
-          }));
-          setMessages(messagesWithDates);
-        } catch (e) {
-          console.error('Failed to parse saved messages:', e);
-        }
+  const convertConversationMessages = (items: QueryConversationMessage[]) => {
+    return items.map((msg) => ({
+      id: generateUuid(),
+      type: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: msg.content,
+      timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+      executedSql: msg.executed_sql,
+      dataCsv: msg.data_csv,
+      executionTime: msg.execution_time_seconds,
+      rowsReturned: msg.rows_returned,
+      error: msg.error,
+    } as QueryMessage));
+  };
+
+  const loadConversationList = async () => {
+    setIsLoadingConversationList(true);
+    try {
+      const response = await fetchConversations();
+      if (response.success && response.conversations.length > 0) {
+        setConversations(response.conversations);
       }
-    } else {
-      // Create new conversation
-      const newThreadId = generateUuid();
-      setThreadId(newThreadId);
-      localStorage.setItem(THREAD_ID_KEY, newThreadId);
+    } catch (err) {
+      console.error('Failed to list conversations', err);
+      messageApi.error('Unable to load conversations list.');
+    } finally {
+      setIsLoadingConversationList(false);
     }
-  }, []);
+  };
 
-  // Save messages to localStorage whenever they change
-  useEffect(() => {
-    if (threadId && messages.length > 0) {
-      localStorage.setItem(`${MESSAGES_KEY_PREFIX}${threadId}`, JSON.stringify(messages));
+  const hydrateLatestConversation = async () => {
+    setIsHydrating(true);
+    setError(null);
+
+    try {
+      const response = await fetchLatestConversation();
+      if (response.success && response.conversation) {
+        setThreadId(response.conversation.thread_id);
+        setMessages(convertConversationMessages(response.conversation.messages));
+        await loadConversationList();
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to load latest conversation', err);
+      messageApi.warning('Could not load the latest conversation from the database.');
+    } finally {
+      setIsHydrating(false);
     }
-  }, [threadId, messages]);
+
+    const newThreadId = generateUuid();
+    setThreadId(newThreadId);
+    setMessages([]);
+  };
+
+  // Initialize conversation on mount
+  useEffect(() => {
+    hydrateLatestConversation();
+    loadConversationList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -82,13 +108,54 @@ export const QueryPage: React.FC = () => {
     setThreadId(newThreadId);
     setMessages([]);
     setError(null);
-    localStorage.setItem(THREAD_ID_KEY, newThreadId);
-    // Optionally clean up old conversation from localStorage
-    // localStorage.removeItem(`${MESSAGES_KEY_PREFIX}${threadId}`);
+    loadConversationList();
+  };
+
+  const handleLoadConversation = async (id: string) => {
+    if (!id) return;
+    setIsHydrating(true);
+    setError(null);
+
+    try {
+      const response = await fetchConversationByThreadId(id);
+      if (response.success && response.conversation) {
+        setThreadId(response.conversation.thread_id);
+        setMessages(convertConversationMessages(response.conversation.messages));
+      } else {
+        setMessages([]);
+        setThreadId(id);
+        messageApi.info('No messages found for this conversation.');
+      }
+    } catch (err) {
+      console.error('Failed to load conversation', err);
+      messageApi.error('Could not load that conversation.');
+    } finally {
+      setIsHydrating(false);
+    }
   };
 
   const handleSendQuery = async (query: string) => {
     if (!query.trim() || isLoading) return;
+
+    const activeThreadId = threadId || generateUuid();
+    if (!threadId) {
+      setThreadId(activeThreadId);
+    }
+
+    // Ensure sidebar shows this conversation even if list API is unavailable
+    setConversations((prev) => {
+      const exists = prev.some((c) => c.thread_id === activeThreadId);
+      if (exists) return prev;
+      return [
+        {
+          thread_id: activeThreadId,
+          updated_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          first_user_prompt: query,
+        },
+        ...prev,
+      ];
+    });
 
     // Add user message
     const userMessage: QueryMessage = {
@@ -104,7 +171,11 @@ export const QueryPage: React.FC = () => {
 
     try {
       // Call API
-      const response = await queryDatabase(query, threadId);
+      const response = await queryDatabase(query, activeThreadId);
+
+      if (response.thread_id && response.thread_id !== threadId) {
+        setThreadId(response.thread_id);
+      }
 
       // Add assistant message
       const assistantMessage: QueryMessage = {
@@ -120,6 +191,7 @@ export const QueryPage: React.FC = () => {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+      loadConversationList();
     } catch (err) {
       // Extract error message with fallback
       let errorMessage = 'An unexpected error occurred while processing your query.';
@@ -167,7 +239,7 @@ export const QueryPage: React.FC = () => {
       {/* Header */}
       <Card
         style={{ marginBottom: '16px', flexShrink: 0 }}
-        bodyStyle={{ padding: '16px 24px' }}
+        styles={{ body: { padding: '16px 24px' } }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Space>
@@ -179,83 +251,137 @@ export const QueryPage: React.FC = () => {
               <Text type="secondary">Ask questions in natural language</Text>
             </div>
           </Space>
-          <Button
-            icon={<PlusOutlined />}
-            onClick={handleNewConversation}
-            disabled={isLoading}
-          >
-            New Conversation
-          </Button>
+          <Space>
+            <Button
+              icon={<HistoryOutlined />}
+              onClick={hydrateLatestConversation}
+              loading={isHydrating}
+              disabled={isLoading}
+            >
+              Load Latest
+            </Button>
+            <Button
+              icon={<PlusOutlined />}
+              onClick={handleNewConversation}
+              disabled={isBusy}
+            >
+              New Conversation
+            </Button>
+          </Space>
         </div>
       </Card>
 
-      {/* Messages Area */}
-      <Card
-        style={{ 
-          flex: 1, 
-          marginBottom: '16px', 
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column'
-        }}
-        bodyStyle={{ 
-          padding: '24px', 
-          overflow: 'auto',
-          flex: 1
-        }}
-      >
-        {messages.length === 0 ? (
-          <Empty
-            image={<QuestionCircleOutlined style={{ fontSize: 64, color: '#1890ff' }} />}
-            description={
-              <div>
-                <Title level={4}>Welcome to Query Database</Title>
-                <Paragraph type="secondary">
-                  Ask questions about your data in natural language. I'll help you explore your database,
-                  generate SQL queries, and visualize results.
-                </Paragraph>
-                <div style={{ marginTop: 24 }}>
-                  <Text strong>Try these examples:</Text>
-                  <div style={{ marginTop: 12 }}>
-                    {exampleQueries.map((example, index) => (
-                      <Button
-                        key={index}
-                        type="link"
-                        onClick={() => handleSendQuery(example)}
-                        disabled={isLoading}
-                        style={{ display: 'block', textAlign: 'left', marginBottom: 8 }}
-                      >
-                        • {example}
-                      </Button>
-                    ))}
+      <div style={{ display: 'flex', flex: 1, gap: 16, overflow: 'hidden' }}>
+        {/* Sidebar Conversations */}
+          <Card
+            title="Conversations"
+            style={{ width: 320, flexShrink: 0, overflow: 'hidden' }}
+            styles={{ body: { padding: 0, height: '100%', overflow: 'auto' } }}
+            extra={<Button size="small" onClick={loadConversationList} loading={isLoadingConversationList}>Refresh</Button>}
+        >
+          <List
+            loading={isLoadingConversationList}
+            dataSource={conversations}
+            renderItem={(conv) => (
+              <List.Item
+                key={conv.thread_id}
+                style={{ cursor: 'pointer', padding: '12px 16px' }}
+                onClick={() => handleLoadConversation(conv.thread_id)}
+              >
+                <List.Item.Meta
+                  title={
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text strong ellipsis style={{ maxWidth: 200 }}>
+                        {conv.first_user_prompt || 'Conversation'}
+                      </Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {conv.updated_at ? new Date(conv.updated_at).toLocaleString() : ''}
+                      </Text>
+                    </div>
+                  }
+                  description={
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      ID: {conv.thread_id}
+                    </Text>
+                  }
+                />
+              </List.Item>
+            )}
+            locale={{ emptyText: isLoadingConversationList ? <Skeleton active paragraph={false} /> : 'No conversations yet' }}
+          />
+        </Card>
+
+        {/* Messages Area */}
+        <Card
+          style={{ 
+            flex: 1, 
+            marginBottom: '16px', 
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+          styles={{ body: { padding: '24px', overflow: 'auto', flex: 1 } }}
+        >
+          {isHydrating ? (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+              <Space>
+                <Spin size="large" />
+                <Text type="secondary">Loading conversation...</Text>
+              </Space>
+            </div>
+          ) : messages.length === 0 ? (
+            <Empty
+              image={<QuestionCircleOutlined style={{ fontSize: 64, color: '#1890ff' }} />}
+              description={
+                <div>
+                  <Title level={4}>Welcome to Query Database</Title>
+                  <Paragraph type="secondary">
+                    Ask questions about your data in natural language. I'll help you explore your database,
+                    generate SQL queries, and visualize results.
+                  </Paragraph>
+                  <div style={{ marginTop: 24 }}>
+                    <Text strong>Try these examples:</Text>
+                    <div style={{ marginTop: 12 }}>
+                      {exampleQueries.map((example, index) => (
+                        <Button
+                          key={index}
+                          type="link"
+                          onClick={() => handleSendQuery(example)}
+                          disabled={isBusy}
+                          style={{ display: 'block', textAlign: 'left', marginBottom: 8 }}
+                        >
+                          • {example}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-              </div>
-            }
-          />
-        ) : (
-          <>
-            {messages.map((message) => (
-              <MessageDisplay key={message.id} message={message} />
-            ))}
-            {isLoading && (
-              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
-                <Card
-                  size="small"
-                  style={{ maxWidth: '85%', borderRadius: 8 }}
-                  bodyStyle={{ padding: '16px' }}
-                >
-                  <Space>
-                    <Spin size="small" />
-                    <Text type="secondary">Thinking...</Text>
-                  </Space>
-                </Card>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </>
-        )}
-      </Card>
+              }
+            />
+          ) : (
+            <>
+              {messages.map((message) => (
+                <MessageDisplay key={message.id} message={message} />
+              ))}
+              {isLoading && (
+                <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
+                  <Card
+                    size="small"
+                    style={{ maxWidth: '85%', borderRadius: 8 }}
+                    bodyStyle={{ padding: '16px' }}
+                  >
+                    <Space>
+                      <Spin size="small" />
+                      <Text type="secondary">Thinking...</Text>
+                    </Space>
+                  </Card>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </>
+          )}
+        </Card>
+      </div>
 
       {/* Error Alert */}
       {error && (
@@ -270,10 +396,10 @@ export const QueryPage: React.FC = () => {
       )}
 
       {/* Input Area */}
-      <Card bodyStyle={{ padding: '16px' }}>
+      <Card styles={{ body: { padding: '16px' } }}>
         <QueryInput
           onSend={handleSendQuery}
-          disabled={isLoading}
+          disabled={isBusy}
           placeholder="Ask a question about your data... (Press Enter to send, Shift+Enter for new line)"
         />
         <div style={{ marginTop: 8 }}>

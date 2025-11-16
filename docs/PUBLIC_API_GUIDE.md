@@ -20,7 +20,7 @@ All public endpoints share the `/api/v1` prefix (e.g., `https://{host}/api/v1/qu
 - Each request must include `X-API-Key: <your_key>`. Keys can be provisioned via the internal admin console or the API key management endpoints.
 - Keys are stored hashed. If a key is revoked or expires, requests return `401 Invalid or expired API key`.
 - Rate limiting is enforced per key (`rate_limit_per_minute` column). Coordinate with the platform team if your integration requires higher throughput.
-- API access is read-only. The query agent blocks destructive SQL (`INSERT`, `UPDATE`, `DELETE`, etc.) and access to protected system tables such as `users`, `file_imports`, and `import_history`.
+- API access is read-only. The query agent blocks destructive SQL (`INSERT`, `UPDATE`, `DELETE`, etc.) and access to protected system tables such as `users`, `api_keys`, `file_imports`, `import_history`, `import_duplicates`, `import_jobs`, `mapping_errors`, `table_metadata`, `uploaded_files`, `query_messages`, and `query_threads`.
 
 ---
 

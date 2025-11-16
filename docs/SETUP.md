@@ -116,6 +116,14 @@ B2_APPLICATION_KEY=your_application_key_here
 B2_BUCKET_NAME=your_bucket_name_here
 ```
 
+#### Upload Configuration (Optional)
+
+Control the maximum upload size allowed by the API (in megabytes). Adjust this per environment/bucket capacity.
+
+```bash
+UPLOAD_MAX_FILE_SIZE_MB=100
+```
+
 #### Console/LLM Configuration (Optional)
 
 Required only if using the natural language query console:
@@ -150,6 +158,9 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/datamapper
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=super-secret-password
 ADMIN_NAME=Content Atlas Admin
+
+# Uploads (optional)
+UPLOAD_MAX_FILE_SIZE_MB=100
 
 # Backblaze B2 (optional)
 B2_APPLICATION_KEY_ID=your_key_id

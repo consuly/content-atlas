@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI):
         from .domain.imports.history import create_import_history_table
         from .domain.imports.jobs import ensure_import_jobs_table
         from .core.security import init_auth_tables
+        from .domain.queries.history import create_query_history_tables
         
         print("Initializing database tables...")
         create_table_metadata_table()
@@ -50,6 +51,9 @@ async def lifespan(app: FastAPI):
         
         create_import_history_table()
         print("✓ import_history table ready")
+
+        create_query_history_tables()
+        print("✓ query conversation tables ready")
         
         create_uploaded_files_table()
         # Success message printed inside function
@@ -116,6 +120,7 @@ app.include_router(mapping.router)
 app.include_router(tables.router)
 app.include_router(tasks.router)
 app.include_router(query.router)
+app.include_router(query.router_v1)
 app.include_router(analysis.router)
 app.include_router(import_history.router)
 app.include_router(import_history.alias_router)

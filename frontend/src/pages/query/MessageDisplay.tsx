@@ -37,7 +37,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
             color: 'white',
             borderRadius: 8,
           }}
-          bodyStyle={{ padding: '12px 16px' }}
+          styles={{ body: { padding: '12px 16px' } }}
         >
           <Text style={{ color: 'white' }}>{message.content}</Text>
         </Card>
@@ -54,7 +54,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
           maxWidth: '85%',
           borderRadius: 8,
         }}
-        bodyStyle={{ padding: '16px' }}
+        styles={{ body: { padding: '16px' } }}
       >
         {/* Error message */}
         {message.error && (

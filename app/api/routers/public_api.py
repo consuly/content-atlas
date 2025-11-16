@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db, get_engine
 from app.api.schemas.shared import (
     QueryDatabaseRequest, QueryDatabaseResponse,
-    TablesListResponse, TableInfo, TableSchemaResponse, ColumnInfo
+    TablesListResponse, TableInfo, TableSchemaResponse, ColumnInfo,
+    is_reserved_system_table,
 )
 from app.core.api_key_auth import ApiKey, get_api_key_from_header
 from app.domain.queries.agent import query_database_with_agent
@@ -79,7 +80,7 @@ async def public_list_tables_endpoint(
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
-                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'api_keys', 'import_jobs')
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'api_keys', 'import_jobs', 'import_duplicates', 'query_messages', 'query_threads')
                 AND table_name NOT LIKE 'pg_%'
                 AND table_name NOT LIKE 'test\_%' ESCAPE '\\'
                 ORDER BY table_name
@@ -122,6 +123,9 @@ async def public_get_table_schema_endpoint(
     - Table column information
     """
     try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
         engine = get_engine()
         with engine.connect() as conn:
             # Validate table exists

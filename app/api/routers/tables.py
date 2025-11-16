@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db, get_engine
 from app.api.schemas.shared import (
-    TablesListResponse, TableInfo, TableDataResponse, 
-    TableSchemaResponse, ColumnInfo, TableStatsResponse
+    TablesListResponse, TableInfo, TableDataResponse,
+    TableSchemaResponse, ColumnInfo, TableStatsResponse,
+    is_reserved_system_table,
 )
 
 router = APIRouter(prefix="/tables", tags=["tables"])
@@ -37,7 +38,7 @@ async def list_tables(db: Session = Depends(get_db)):
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
-                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs')
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'api_keys', 'query_messages', 'query_threads')
                 AND table_name NOT LIKE 'pg_%'
                 AND table_name NOT LIKE 'test\_%' ESCAPE '\\'
                 ORDER BY table_name
@@ -80,6 +81,9 @@ async def query_table(
     Query table data with pagination, optional search, sorting, and filtering.
     """
     try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
         limit = min(limit, 500)
         operator_map = {"eq": "=", "neq": "!=", "contains": "ILIKE"}
 
@@ -229,6 +233,9 @@ async def get_table_schema(table_name: str, db: Session = Depends(get_db)):
     - Table schema with column details
     """
     try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
         engine = get_engine()
         with engine.connect() as conn:
             # Validate table exists
@@ -284,6 +291,9 @@ async def get_table_stats(table_name: str, db: Session = Depends(get_db)):
     - Table statistics
     """
     try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
         engine = get_engine()
         with engine.connect() as conn:
             # Validate table exists
@@ -345,6 +355,9 @@ async def get_table_lineage(
     from app.api.schemas.shared import TableLineageResponse, ImportHistoryRecord
     
     try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
         records = get_table_import_lineage(table_name)
         
         # Convert to Pydantic models

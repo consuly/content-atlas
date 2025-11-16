@@ -23,11 +23,48 @@ export interface QueryRequest {
 export interface QueryResponse {
   success: boolean;
   response: string;
+  thread_id?: string;
   executed_sql?: string;
   data_csv?: string;
   execution_time_seconds?: number;
   rows_returned?: number;
   error?: string;
+}
+
+export interface QueryConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: string;
+  executed_sql?: string;
+  data_csv?: string;
+  execution_time_seconds?: number;
+  rows_returned?: number;
+  error?: string;
+}
+
+export interface QueryConversation {
+  thread_id: string;
+  messages: QueryConversationMessage[];
+  updated_at?: string;
+  created_at?: string;
+}
+
+export interface QueryConversationResponse {
+  success: boolean;
+  conversation?: QueryConversation | null;
+  error?: string;
+}
+
+export interface QueryConversationSummary {
+  thread_id: string;
+  created_at?: string;
+  updated_at?: string;
+  first_user_prompt?: string;
+}
+
+export interface QueryConversationListResponse {
+  success: boolean;
+  conversations: QueryConversationSummary[];
 }
 
 export interface ConversationState {
