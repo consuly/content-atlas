@@ -37,7 +37,7 @@ from app.domain.uploads.uploaded_files import (
     update_file_status,
     insert_uploaded_file,
 )
-from app.domain.imports.jobs import create_import_job, update_import_job, complete_import_job
+from app.domain.imports.jobs import create_import_job, update_import_job, complete_import_job, get_import_job
 from app.domain.imports.history import get_import_history, list_duplicate_rows
 from app.core.config import settings
 from app.domain.imports.jobs import fail_active_job
@@ -113,6 +113,59 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
     }
 
 
+def _extract_supported_archive_entries(
+    archive_bytes: bytes, allowed_paths: Optional[set[str]] = None
+) -> tuple[list[zipfile.ZipInfo], list[ArchiveAutoProcessFileResult]]:
+    """
+    Return supported archive members and pre-populated skipped results.
+    If allowed_paths is provided, only matching members are returned.
+    """
+    zip_file = zipfile.ZipFile(io.BytesIO(archive_bytes))
+    try:
+        skipped_results: list[ArchiveAutoProcessFileResult] = []
+        supported_entries: list[zipfile.ZipInfo] = []
+        normalized_allowed = set(allowed_paths) if allowed_paths is not None else None
+        seen_paths: set[str] = set()
+
+        for info in zip_file.infolist():
+            if info.is_dir():
+                continue
+            archive_path = info.filename
+            if not archive_path or archive_path.endswith("/"):
+                continue
+            if normalized_allowed is not None and archive_path not in normalized_allowed:
+                continue
+
+            lower_name = archive_path.lower()
+            if not lower_name.endswith(ARCHIVE_SUPPORTED_SUFFIXES):
+                skipped_results.append(
+                    ArchiveAutoProcessFileResult(
+                        archive_path=archive_path,
+                        status="skipped",
+                        message="Unsupported file type",
+                    )
+                )
+                continue
+
+            supported_entries.append(info)
+            seen_paths.add(archive_path)
+
+        if normalized_allowed is not None:
+            missing_paths = normalized_allowed - seen_paths
+            for missing in missing_paths:
+                skipped_results.append(
+                    ArchiveAutoProcessFileResult(
+                        archive_path=missing,
+                        status="failed",
+                        message="Archive entry not found",
+                    )
+                )
+
+        return supported_entries, skipped_results
+    finally:
+        zip_file.close()
+
+
 async def _run_archive_auto_process_job(
     *,
     file_id: str,
@@ -125,17 +178,29 @@ async def _run_archive_auto_process_job(
     auto_execute_confidence_threshold: float,
     max_iterations: int,
     job_id: str,
+    prefilled_results: Optional[List[ArchiveAutoProcessFileResult]] = None,
 ) -> None:
     """Execute archive auto-processing in the background so it survives client disconnects."""
     SessionLocal = get_session_local()
     db_session = SessionLocal()
 
+    prefilled_results = prefilled_results or []
+    prefilled_lookup = {result.archive_path: result for result in prefilled_results}
+    initial_processed = sum(1 for result in prefilled_results if result.status == "processed")
+    initial_failed = sum(1 for result in prefilled_results if result.status == "failed")
+    initial_skipped = sum(1 for result in prefilled_results if result.status == "skipped")
+
     processed_files = 0
     failed_files = 0
     skipped_files = len(skipped_results)
-    results: List[ArchiveAutoProcessFileResult] = list(skipped_results)
-    remaining_archive_paths = list(supported_archive_paths)
-    completed_archive_entries: List[Dict[str, str]] = []
+    results: List[ArchiveAutoProcessFileResult] = list(prefilled_results) + list(skipped_results)
+    remaining_archive_paths = [path for path in supported_archive_paths if path not in prefilled_lookup]
+    processing_paths = list(remaining_archive_paths)
+    completed_archive_entries: List[Dict[str, str]] = [
+        {"archive_path": res.archive_path, "status": res.status}
+        for res in prefilled_results + skipped_results
+    ]
+    total_work_items = len(remaining_archive_paths) + initial_processed + initial_failed
 
     archive_stem = os.path.splitext(os.path.basename(archive_name))[0] or "archive"
     archive_folder = f"uploads/archive_{file_id}"
@@ -148,7 +213,7 @@ async def _run_archive_auto_process_job(
             return
 
         try:
-            for index, archive_path in enumerate(supported_archive_paths, start=1):
+            for index, archive_path in enumerate(processing_paths, start=1):
                 entry_name = os.path.basename(archive_path) or f"entry_{index:03d}"
                 stored_file_name = _build_archive_entry_name(
                     archive_stem, entry_name, index
@@ -291,21 +356,25 @@ async def _run_archive_auto_process_job(
                     }
                 )
 
-                total_handled = processed_files + failed_files
-                progress = int((total_handled / len(supported_archive_paths)) * 100)
+                total_handled = initial_processed + initial_failed + processed_files + failed_files
+                progress_denominator = total_work_items or 1
+                progress = int((total_handled / progress_denominator) * 100)
+                updated_processed = initial_processed + processed_files
+                updated_failed = initial_failed + failed_files
+                updated_skipped = initial_skipped + skipped_files
                 update_import_job(
                     job_id,
                     stage="execution",
                     progress=progress,
                     metadata={
                         "current_file": archive_path,
-                        "processed": processed_files,
-                        "failed": failed_files,
-                        "skipped": skipped_files,
-                        "total": len(supported_archive_paths),
+                        "processed": updated_processed,
+                        "failed": updated_failed,
+                        "skipped": updated_skipped,
+                        "total": total_work_items,
                         "completed_files": list(completed_archive_entries),
                         "remaining_files": list(remaining_archive_paths),
-                        "files_in_archive": len(supported_archive_paths),
+                        "files_in_archive": total_work_items + updated_skipped,
                         "source": "auto-process-archive",
                     },
                 )
@@ -318,16 +387,19 @@ async def _run_archive_auto_process_job(
     finally:
         db_session.close()
 
-    total_supported = len(supported_archive_paths)
-    total_files = total_supported + skipped_files
-    success = failed_files == 0
+    processed_total = initial_processed + processed_files
+    failed_total = initial_failed + failed_files
+    skipped_total = initial_skipped + skipped_files
+    total_supported = total_work_items
+    total_files = total_supported + skipped_total
+    success = failed_total == 0
     error_message = None if success else "One or more files failed auto-processing"
 
     result_metadata = {
         "files_total": total_supported,
-        "processed_files": processed_files,
-        "failed_files": failed_files,
-        "skipped_files": skipped_files,
+        "processed_files": processed_total,
+        "failed_files": failed_total,
+        "skipped_files": skipped_total,
         "results": [result.model_dump() for result in results],
     }
 
@@ -1685,37 +1757,15 @@ async def auto_process_archive_endpoint(
 
     archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
     try:
-        zip_file = zipfile.ZipFile(io.BytesIO(archive_bytes))
+        supported_entries, skipped_results = _extract_supported_archive_entries(archive_bytes)
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="Archive is corrupted") from exc
-
-    skipped_results: List[ArchiveAutoProcessFileResult] = []
-    supported_entries: List[zipfile.ZipInfo] = []
-    for info in zip_file.infolist():
-        if info.is_dir():
-            continue
-        archive_path = info.filename
-        if not archive_path or archive_path.endswith("/"):
-            continue
-        lower_name = archive_path.lower()
-        if not lower_name.endswith(ARCHIVE_SUPPORTED_SUFFIXES):
-            skipped_results.append(
-                ArchiveAutoProcessFileResult(
-                    archive_path=archive_path,
-                    status="skipped",
-                    message="Unsupported file type",
-                )
-            )
-            continue
-        supported_entries.append(info)
 
     if not supported_entries:
         raise HTTPException(
             status_code=400,
             detail="Archive does not contain CSV or Excel files.",
         )
-
-    zip_file.close()
 
     remaining_archive_paths = [info.filename for info in supported_entries]
 
@@ -1756,6 +1806,148 @@ async def auto_process_archive_endpoint(
         failed_files=0,
         skipped_files=len(skipped_results),
         results=skipped_results,
+        job_id=job_id,
+    )
+
+
+@router.post("/auto-process-archive/resume", response_model=ArchiveAutoProcessResponse)
+async def resume_auto_process_archive_endpoint(
+    file_id: str = Form(...),
+    from_job_id: Optional[str] = Form(None),
+    resume_failed_entries_only: bool = Form(True),
+    analysis_mode: AnalysisMode = Form(AnalysisMode.AUTO_ALWAYS),
+    conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.LLM_DECIDE),
+    auto_execute_confidence_threshold: float = Form(0.9),
+    max_iterations: int = Form(5),
+):
+    """
+    Resume archive auto-processing using a previous job for state.
+
+    By default, only failed or unprocessed entries from the referenced job
+    are retried. Set resume_failed_entries_only=False to reprocess the entire
+    archive from scratch.
+    """
+    if analysis_mode != AnalysisMode.AUTO_ALWAYS:
+        raise HTTPException(
+            status_code=400,
+            detail="Archive processing currently supports auto process mode only.",
+        )
+
+    file_record = get_uploaded_file_by_id(file_id)
+    if not file_record:
+        raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+    archive_name = file_record["file_name"]
+    if not archive_name.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="File is not a ZIP archive")
+
+    prefilled_results: List[ArchiveAutoProcessFileResult] = []
+    allowed_paths: Optional[set[str]] = None
+
+    if from_job_id:
+        previous_job = get_import_job(from_job_id)
+        if not previous_job:
+            raise HTTPException(status_code=404, detail="Import job not found")
+        if previous_job["file_id"] != file_id:
+            raise HTTPException(
+                status_code=400, detail="Job does not belong to the provided file"
+            )
+        if previous_job.get("trigger_source") != "archive_auto_process":
+            raise HTTPException(
+                status_code=400, detail="Job is not an archive auto-process run"
+            )
+
+        allowed_paths = set((previous_job.get("metadata") or {}).get("remaining_files") or [])
+        previous_results = (previous_job.get("result_metadata") or {}).get("results") or []
+
+        if resume_failed_entries_only:
+            for raw_result in previous_results:
+                result = ArchiveAutoProcessFileResult(**raw_result)
+                if result.status == "failed":
+                    allowed_paths.add(result.archive_path)
+                else:
+                    prefilled_results.append(result)
+            if not allowed_paths:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No failed or pending archive entries to resume.",
+                )
+        else:
+            allowed_paths = None  # Reprocess everything
+
+    archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    try:
+        supported_entries, extracted_skipped_results = _extract_supported_archive_entries(
+            archive_bytes, allowed_paths=allowed_paths
+        )
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Archive is corrupted") from exc
+
+    failed_carryovers = [result for result in extracted_skipped_results if result.status == "failed"]
+    skipped_results = [result for result in extracted_skipped_results if result.status == "skipped"]
+    prefilled_results.extend(failed_carryovers)
+
+    if not supported_entries and not prefilled_results:
+        raise HTTPException(
+            status_code=400,
+            detail="Archive does not contain CSV or Excel files.",
+        )
+
+    remaining_archive_paths = [info.filename for info in supported_entries]
+    completed_seed = [
+        {"archive_path": res.archive_path, "status": res.status}
+        for res in prefilled_results + skipped_results
+    ]
+
+    job_metadata = {
+        "source": "auto-process-archive",
+        "files_in_archive": len(remaining_archive_paths) + len(completed_seed),
+        "remaining_files": list(remaining_archive_paths),
+        "completed_files": completed_seed,
+    }
+    if from_job_id:
+        job_metadata["resume_of_job_id"] = from_job_id
+        job_metadata["resume_failed_entries_only"] = resume_failed_entries_only
+
+    job = create_import_job(
+        file_id=file_id,
+        trigger_source="archive_auto_process",
+        analysis_mode=analysis_mode.value,
+        conflict_mode=conflict_resolution.value,
+        metadata=job_metadata,
+    )
+    job_id = job["id"]
+    update_file_status(file_id, "mapping", expected_active_job_id=job_id)
+
+    asyncio.create_task(
+        _run_archive_auto_process_job(
+            file_id=file_id,
+            archive_name=archive_name,
+            archive_bytes=archive_bytes,
+            supported_archive_paths=remaining_archive_paths,
+            skipped_results=skipped_results,
+            analysis_mode=analysis_mode,
+            conflict_resolution=conflict_resolution,
+            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+            max_iterations=max_iterations,
+            job_id=job_id,
+            prefilled_results=prefilled_results,
+        )
+    )
+
+    processed_prefilled = sum(1 for res in prefilled_results if res.status == "processed")
+    failed_prefilled = sum(1 for res in prefilled_results if res.status == "failed")
+    skipped_prefilled = len(skipped_results) + sum(
+        1 for res in prefilled_results if res.status == "skipped"
+    )
+
+    return ArchiveAutoProcessResponse(
+        success=True,
+        total_files=len(remaining_archive_paths) + len(skipped_results) + len(prefilled_results),
+        processed_files=processed_prefilled,
+        failed_files=failed_prefilled,
+        skipped_files=skipped_prefilled,
+        results=[*prefilled_results, *skipped_results],
         job_id=job_id,
     )
 
