@@ -1,6 +1,7 @@
 import importlib
 import io
 import os
+import time
 import zipfile
 from typing import Dict
 
@@ -35,6 +36,21 @@ def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip") -> str:
     print("ARCHIVE HAPPY PAYLOAD", payload)
     assert payload["success"] is True
     return payload["files"][0]["id"]
+
+
+def _wait_for_job(job_id: str, timeout: float = 5.0) -> dict:
+    """Poll import job until completion or timeout."""
+    deadline = time.monotonic() + timeout
+    last_payload = None
+    while time.monotonic() < deadline:
+        resp = client.get(f"/import-jobs/{job_id}")
+        assert resp.status_code == 200, resp.text
+        last_payload = resp.json()
+        job = last_payload.get("job") or {}
+        if job.get("status") in ("succeeded", "failed"):
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"Job {job_id} did not complete in time; last payload={last_payload}")
 
 
 @pytest.fixture(autouse=True)
@@ -108,18 +124,24 @@ def test_auto_process_archive_happy_path(fake_b2_storage):
             "file_id": archive_id,
             "analysis_mode": "auto_always",
             "conflict_resolution": "llm_decide",
-            "max_iterations": "5",
-        },
-    )
+        "max_iterations": "5",
+    },
+)
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["success"] is True
-    assert payload["processed_files"] == 2
-    assert payload["failed_files"] == 0
-    assert payload["skipped_files"] == 0
-    assert len(payload["results"]) == 2
-    assert all(result["status"] == "processed" for result in payload["results"])
-    assert all(result["uploaded_file_id"] for result in payload["results"])
+    job_id = payload["job_id"]
+    assert job_id
+
+    job = _wait_for_job(job_id)
+    assert job["status"] == "succeeded"
+    metadata = job["result_metadata"]
+    assert metadata["processed_files"] == 2
+    assert metadata["failed_files"] == 0
+    assert metadata["skipped_files"] == 0
+    assert len(metadata["results"]) == 2
+    assert all(result["status"] == "processed" for result in metadata["results"])
+    assert all(result["uploaded_file_id"] for result in metadata["results"])
 
 
 @pytest.mark.not_b2
@@ -172,17 +194,23 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_stor
             "file_id": archive_id,
             "analysis_mode": "auto_always",
             "conflict_resolution": "llm_decide",
-            "max_iterations": "5",
-        },
-    )
+        "max_iterations": "5",
+    },
+)
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["success"] is False
-    assert payload["processed_files"] == 0
-    assert payload["failed_files"] == 1
-    assert payload["skipped_files"] == 1
-    assert len(payload["results"]) == 2
-    failed_entry = next(result for result in payload["results"] if result["status"] == "failed")
+    assert payload["success"] is True
+    job_id = payload["job_id"]
+    assert job_id
+
+    job = _wait_for_job(job_id)
+    assert job["status"] == "failed"
+    metadata = job["result_metadata"]
+    assert metadata["processed_files"] == 0
+    assert metadata["failed_files"] == 1
+    assert metadata["skipped_files"] == 1
+    assert len(metadata["results"]) == 2
+    failed_entry = next(result for result in metadata["results"] if result["status"] == "failed")
     assert failed_entry["message"]
-    skipped_entry = next(result for result in payload["results"] if result["status"] == "skipped")
+    skipped_entry = next(result for result in metadata["results"] if result["status"] == "skipped")
     assert skipped_entry["message"] == "Unsupported file type"
