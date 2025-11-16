@@ -6,7 +6,7 @@ Content Atlas implements security measures to prevent the LLM-powered query inte
 
 ## Protected Tables
 
-The following system tables are protected from LLM access:
+The following system tables are protected from LLM access and must never be listed, queried, or exposed in the frontend:
 
 - `import_history` - Tracks file import operations
 - `mapping_errors` - Stores data mapping errors
@@ -15,6 +15,9 @@ The following system tables are protected from LLM access:
 - `users` - User account information
 - `file_imports` - File import tracking with hashes
 - `import_jobs` - Tracks background import job progress and metadata
+- `import_duplicates` - Duplicate detection audit log
+- `query_messages` - Stored LLM conversation messages
+- `query_threads` - LLM conversation thread metadata
 
 > 💡 **User uploads never overwrite these tables.** When a mapping request
 > specifies a reserved table name (for example, `users`), the backend
@@ -97,6 +100,7 @@ To protect additional tables:
 1. Add the table name to `PROTECTED_SYSTEM_TABLES` in `app/query_agent.py`:
    ```python
    PROTECTED_SYSTEM_TABLES = {
+       'api_keys',
        'import_history',
        'mapping_errors',
        'table_metadata',
@@ -104,6 +108,9 @@ To protect additional tables:
        'users',
        'file_imports',
        'import_jobs',
+       'import_duplicates',
+       'query_messages',
+       'query_threads',
        'your_new_table'  # Add here
    }
    ```

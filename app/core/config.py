@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     date_default_dayfirst: bool = False
     log_level: str = "INFO"
     map_stage_timeout_seconds: int = 600
+    upload_max_file_size_mb: int = 100
     b2_max_retries: int = 3
     
     # Authentication

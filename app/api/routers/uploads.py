@@ -19,8 +19,23 @@ from app.domain.uploads.uploaded_files import (
     get_uploaded_files, get_uploaded_files_count, delete_uploaded_file,
     update_file_status, get_uploaded_file_by_hash
 )
+from app.core.config import settings
 
 router = APIRouter(tags=["uploads"])
+
+MAX_UPLOAD_BYTES = settings.upload_max_file_size_mb * 1024 * 1024
+
+
+def _ensure_within_size_limit(file_size: int, file_name: str) -> None:
+    """Raise an HTTPException if a file exceeds the configured upload limit."""
+    if file_size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"{file_name} is too large. "
+                f"Maximum allowed upload size is {settings.upload_max_file_size_mb}MB."
+            ),
+        )
 
 
 @router.post("/upload-to-b2", response_model=UploadFileResponse)
@@ -69,6 +84,7 @@ async def upload_file_to_b2_endpoint(
         print(f"[UPLOAD] Reading file content...")
         file_content = await file.read()
         file_size = len(file_content)
+        _ensure_within_size_limit(file_size, file.filename)
         print(f"[UPLOAD] File size: {file_size} bytes ({file_size / 1024:.2f} KB)")
         
         # Upload to B2
@@ -146,6 +162,7 @@ async def overwrite_file_in_b2_endpoint(
         # Read file content
         file_content = await file.read()
         file_size = len(file_content)
+        _ensure_within_size_limit(file_size, file.filename)
         
         # Upload new version to B2
         b2_result = upload_file_to_b2(

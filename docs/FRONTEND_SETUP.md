@@ -286,12 +286,14 @@ docker-compose up -d
 
 ```env
 VITE_API_URL=http://localhost:8000
+VITE_MAX_UPLOAD_SIZE_MB=100
 ```
 
 ### Production (.env.production)
 
 ```env
 VITE_API_URL=https://api.yourdomain.com
+VITE_MAX_UPLOAD_SIZE_MB=100
 ```
 
 ### Environment Variables
@@ -299,6 +301,7 @@ VITE_API_URL=https://api.yourdomain.com
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VITE_API_URL` | FastAPI backend URL | `http://localhost:8000` |
+| `VITE_MAX_UPLOAD_SIZE_MB` | Max file size (MB) allowed by the upload widget | `100` |
 
 ---
 

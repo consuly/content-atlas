@@ -18,6 +18,7 @@ from app.domain.imports.history import create_import_history_table
 from app.domain.uploads.uploaded_files import create_uploaded_files_table
 from app.db.models import create_file_imports_table_if_not_exists
 from app.domain.imports.jobs import ensure_import_jobs_table
+from app.domain.queries.history import create_query_history_tables
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -69,7 +70,10 @@ def initialize_test_database():
 
         print("  Creating import_jobs table...")
         ensure_import_jobs_table()
-        
+
+        print("  Creating query conversation tables...")
+        create_query_history_tables()
+
         print("  Creating file_imports table...")
         create_file_imports_table_if_not_exists(engine)
         

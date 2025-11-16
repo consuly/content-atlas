@@ -2,7 +2,12 @@
  * API integration for database queries
  */
 
-import { QueryRequest, QueryResponse } from '../pages/query/types';
+import {
+  QueryConversationListResponse,
+  QueryConversationResponse,
+  QueryRequest,
+  QueryResponse,
+} from '../pages/query/types';
 import { API_URL } from '../config';
 
 export const queryDatabase = async (
@@ -80,4 +85,104 @@ export const queryDatabase = async (
       throw new Error('An unexpected error occurred while querying the database.');
     }
   }
+};
+
+const getAuthHeader = () => {
+  const token = localStorage.getItem('refine-auth');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const parseConversationResponse = async (
+  response: Response
+): Promise<QueryConversationResponse> => {
+  const data = await response.json();
+  return data as QueryConversationResponse;
+};
+
+export const fetchLatestConversation = async (): Promise<QueryConversationResponse> => {
+  const base = API_URL.replace(/\/?$/, '');
+  const urls = [
+    `${base}/query-conversations/latest`,
+    `${base}/api/v1/query-conversations/latest`,
+  ];
+
+  for (const url of urls) {
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeader(),
+      },
+    });
+
+    if (response.status === 404) {
+      continue;
+    }
+
+    if (response.ok) {
+      return parseConversationResponse(response);
+    }
+  }
+
+  throw new Error('Query conversation endpoints not found');
+};
+
+export const fetchConversationByThreadId = async (
+  threadId: string
+): Promise<QueryConversationResponse> => {
+  const base = API_URL.replace(/\/?$/, '');
+  const urls = [
+    `${base}/query-conversations/${threadId}`,
+    `${base}/api/v1/query-conversations/${threadId}`,
+  ];
+
+  for (const url of urls) {
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeader(),
+      },
+    });
+
+    if (response.status === 404) {
+      continue;
+    }
+
+    if (response.ok) {
+      return parseConversationResponse(response);
+    }
+  }
+
+  throw new Error('Query conversation endpoints not found');
+};
+
+export const fetchConversations = async (
+  limit = 50,
+  offset = 0
+): Promise<QueryConversationListResponse> => {
+  const params = new URLSearchParams({ limit: `${limit}`, offset: `${offset}` });
+  const base = API_URL.replace(/\/?$/, '');
+  const urls = [
+    `${base}/query-conversations?${params.toString()}`,
+    `${base}/api/v1/query-conversations?${params.toString()}`,
+  ];
+
+  for (const url of urls) {
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeader(),
+      },
+    });
+
+    if (response.status === 404) {
+      continue;
+    }
+
+    if (response.ok) {
+      const data = await response.json();
+      return data as QueryConversationListResponse;
+    }
+  }
+
+  throw new Error('Query conversation list endpoint not found');
 };

@@ -1,5 +1,6 @@
 type RuntimeConfig = {
   VITE_API_URL?: string;
+  VITE_MAX_UPLOAD_SIZE_MB?: string | number;
 };
 
 declare global {
@@ -17,3 +18,13 @@ export const API_URL =
   runtimeConfig?.VITE_API_URL ||
   import.meta.env.VITE_API_URL ||
   "http://localhost:8000";
+
+const resolveNumber = (value?: string | number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+export const MAX_UPLOAD_SIZE_MB =
+  resolveNumber(runtimeConfig?.VITE_MAX_UPLOAD_SIZE_MB) ||
+  resolveNumber(import.meta.env.VITE_MAX_UPLOAD_SIZE_MB) ||
+  100;

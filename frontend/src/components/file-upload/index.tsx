@@ -3,7 +3,7 @@ import { App as AntdApp, Upload, Modal, Button, Space } from 'antd';
 import { InboxOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import type { UploadProps, UploadFile } from 'antd';
 import axios from 'axios';
-import { API_URL } from '../../config';
+import { API_URL, MAX_UPLOAD_SIZE_MB } from '../../config';
 
 const { Dragger } = Upload;
 
@@ -31,7 +31,7 @@ interface DuplicateFileInfo {
 export const FileUpload: React.FC<FileUploadProps> = ({
   onUploadSuccess,
   onUploadError,
-  maxFileSize = 100, // 100MB default
+  maxFileSize = MAX_UPLOAD_SIZE_MB,
   accept = '.csv,.xlsx,.xls,.zip',
   multiple = true,
 }) => {
