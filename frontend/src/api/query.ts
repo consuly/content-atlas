@@ -87,9 +87,15 @@ export const queryDatabase = async (
   }
 };
 
-const getAuthHeader = () => {
+const getAuthHeaders = (): HeadersInit => {
   const token = localStorage.getItem('refine-auth');
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
 };
 
 const parseConversationResponse = async (
@@ -107,12 +113,7 @@ export const fetchLatestConversation = async (): Promise<QueryConversationRespon
   ];
 
   for (const url of urls) {
-    const response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeader(),
-      },
-    });
+    const response = await fetch(url, { headers: getAuthHeaders() });
 
     if (response.status === 404) {
       continue;
@@ -136,12 +137,7 @@ export const fetchConversationByThreadId = async (
   ];
 
   for (const url of urls) {
-    const response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeader(),
-      },
-    });
+    const response = await fetch(url, { headers: getAuthHeaders() });
 
     if (response.status === 404) {
       continue;
@@ -167,12 +163,7 @@ export const fetchConversations = async (
   ];
 
   for (const url of urls) {
-    const response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeader(),
-      },
-    });
+    const response = await fetch(url, { headers: getAuthHeaders() });
 
     if (response.status === 404) {
       continue;
