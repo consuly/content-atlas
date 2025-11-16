@@ -1475,6 +1475,9 @@ async def auto_process_archive_endpoint(
             detail="Archive does not contain CSV or Excel files.",
         )
 
+    remaining_archive_paths = [info.filename for info in supported_entries]
+    completed_archive_entries: List[Dict[str, str]] = []
+
     job = create_import_job(
         file_id=file_id,
         trigger_source="archive_auto_process",
@@ -1483,6 +1486,8 @@ async def auto_process_archive_endpoint(
         metadata={
             "source": "auto-process-archive",
             "files_in_archive": len(supported_entries),
+            "remaining_files": list(remaining_archive_paths),
+            "completed_files": [],
         },
     )
     job_id = job["id"]
@@ -1631,6 +1636,15 @@ async def auto_process_archive_endpoint(
             elif summary["status"] == "failed":
                 failed_files += 1
 
+            if archive_path in remaining_archive_paths:
+                remaining_archive_paths.remove(archive_path)
+            completed_archive_entries.append(
+                {
+                    "archive_path": archive_path,
+                    "status": summary["status"],
+                }
+            )
+
             total_handled = processed_files + failed_files
             progress = int((total_handled / len(supported_entries)) * 100)
             update_import_job(
@@ -1643,6 +1657,10 @@ async def auto_process_archive_endpoint(
                     "failed": failed_files,
                     "skipped": skipped_files,
                     "total": len(supported_entries),
+                    "completed_files": list(completed_archive_entries),
+                    "remaining_files": list(remaining_archive_paths),
+                    "files_in_archive": len(supported_entries),
+                    "source": "auto-process-archive",
                 },
             )
     finally:

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input } from 'antd';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
@@ -137,6 +137,23 @@ interface ArchiveAutoProcessResult {
   job_id?: string | null;
 }
 
+type ArchiveJobCompletedEntry = {
+  archive_path: string;
+  status: ArchiveFileStatus;
+};
+
+type ArchiveJobMetadata = {
+  source?: string;
+  files_in_archive?: number;
+  remaining_files?: string[];
+  completed_files?: ArchiveJobCompletedEntry[];
+  current_file?: string | null;
+  processed?: number;
+  failed?: number;
+  skipped?: number;
+  total?: number;
+};
+
 type ArchiveResultMetadata = {
   files_total?: number;
   processed_files?: number;
@@ -219,6 +236,47 @@ export const ImportMappingPage: React.FC = () => {
       tablesTouched: aggregate.tableNames.size,
     };
   }, [effectiveArchiveResult]);
+
+  const archiveJobProgress = useMemo(() => {
+    if (!jobInfo || jobInfo.trigger_source !== 'archive_auto_process') {
+      return null;
+    }
+
+    const metadata = (jobInfo.metadata || {}) as ArchiveJobMetadata;
+    const remainingRaw = Array.isArray(metadata.remaining_files)
+      ? metadata.remaining_files
+      : [];
+    const remaining = remainingRaw.filter((value): value is string => typeof value === 'string');
+
+    const completedRaw = Array.isArray(metadata.completed_files)
+      ? metadata.completed_files
+      : [];
+    const completed = completedRaw
+      .map((entry) => {
+        if (!entry) {
+          return null;
+        }
+        const path = (entry as ArchiveJobCompletedEntry).archive_path;
+        const status = (entry as ArchiveJobCompletedEntry).status;
+        if (typeof path !== 'string') {
+          return null;
+        }
+        if (status !== 'processed' && status !== 'failed' && status !== 'skipped') {
+          return null;
+        }
+        return { archive_path: path, status };
+      })
+      .filter((entry): entry is ArchiveJobCompletedEntry => !!entry);
+
+    const currentFile =
+      typeof metadata.current_file === 'string' ? (metadata.current_file as string) : null;
+
+    return {
+      currentFile,
+      remaining,
+      completed,
+    };
+  }, [jobInfo]);
 
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -2341,6 +2399,67 @@ export const ImportMappingPage: React.FC = () => {
           }
           style={{ marginBottom: 16 }}
         />
+      )}
+
+      {jobInfo && archiveJobProgress && (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Text strong>Archive mapping progress</Text>
+            <Progress
+              percent={jobInfo.progress ?? 0}
+              status={
+                jobInfo.status === 'failed'
+                  ? 'exception'
+                  : jobInfo.status === 'succeeded'
+                    ? 'success'
+                    : 'active'
+              }
+              size="small"
+            />
+            {archiveJobProgress.currentFile && (
+              <Text>
+                Currently processing: <Text code>{archiveJobProgress.currentFile}</Text>
+              </Text>
+            )}
+            {archiveJobProgress.completed.length > 0 && (
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Text strong>Completed files</Text>
+                <Space wrap size={[4, 4]}>
+                  {archiveJobProgress.completed.slice(0, 8).map((item) => (
+                    <Tag
+                      key={`done-${item.archive_path}`}
+                      color={
+                        item.status === 'processed'
+                          ? 'green'
+                          : item.status === 'failed'
+                            ? 'red'
+                            : 'default'
+                      }
+                    >
+                      {item.archive_path}
+                    </Tag>
+                  ))}
+                  {archiveJobProgress.completed.length > 8 && (
+                    <Tag>+{archiveJobProgress.completed.length - 8} more</Tag>
+                  )}
+                </Space>
+              </Space>
+            )}
+            {archiveJobProgress.remaining.length > 0 && (
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Text strong>Remaining files</Text>
+                <Space wrap size={[4, 4]}>
+                  {archiveJobProgress.remaining.slice(0, 8).map((name) => (
+                    <Tag key={`pending-${name}`}>{name}</Tag>
+                  ))}
+                  {archiveJobProgress.remaining.length > 8 && (
+                    <Tag>+{archiveJobProgress.remaining.length - 8} more</Tag>
+                  )}
+                </Space>
+              </Space>
+            )}
+          </Space>
+        </Card>
       )}
 
       {file.status === 'failed' ? (
