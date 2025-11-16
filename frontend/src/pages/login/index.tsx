@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLogin } from "@refinedev/core";
 import { Form, Input, Button, Card, Typography, Alert, Space } from "antd";
 import { MailOutlined, LockOutlined } from "@ant-design/icons";
+import axios from "axios";
+import { API_URL } from "../../config";
 
 const { Title, Text } = Typography;
 
@@ -15,6 +17,7 @@ export const Login = () => {
   const { mutate: login } = useLogin<LoginFormValues>();
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
+  const [requiresAdminSetup, setRequiresAdminSetup] = useState(false);
 
   const onFinish = async (values: LoginFormValues) => {
     setErrorMessage("");
@@ -32,6 +35,30 @@ export const Login = () => {
       },
     });
   };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const checkBootstrapStatus = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/auth/bootstrap-status`, {
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!isMounted) return;
+        setRequiresAdminSetup(!!response?.data?.requires_admin_setup);
+      } catch (error) {
+        if (!isMounted) return;
+        // Leave requiresAdminSetup as-is; login flow will surface errors.
+        console.warn("Unable to determine bootstrap status", error);
+      }
+    };
+
+    checkBootstrapStatus();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div
@@ -59,6 +86,20 @@ export const Login = () => {
             </Title>
             <Text type="secondary">Sign in to your account</Text>
           </div>
+
+          {requiresAdminSetup && (
+            <Alert
+              type="info"
+              message="Create your admin account"
+              description="No users exist yet. Please create the first account to continue."
+              showIcon
+              action={
+                <Button type="link" href="/register" style={{ paddingLeft: 0 }}>
+                  Go to registration
+                </Button>
+              }
+            />
+          )}
 
           {/* Error Alert */}
           {errorMessage && (

@@ -1,18 +1,36 @@
 """
 Authentication endpoints for user registration and login.
 """
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
 from datetime import timedelta
 
-from app.db.session import get_db
-from app.core.security import (
-    authenticate_user, create_access_token, get_current_user,
-    create_user, User
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.api.schemas.auth import (
+    AuthResponse,
+    BootstrapStatusResponse,
+    Token,
+    UserLogin,
+    UserRegister,
+    UserResponse,
 )
-from app.api.schemas.auth import UserLogin, UserRegister, AuthResponse, Token, UserResponse
+from app.core.security import (
+    User,
+    authenticate_user,
+    create_access_token,
+    create_user,
+    get_current_user,
+)
+from app.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+
+def _requires_admin_setup(db: Session) -> bool:
+    """Return True when no users exist yet."""
+    existing_users = db.query(func.count(User.id)).scalar() or 0
+    return existing_users == 0
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -30,12 +48,16 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     - User information
     """
     try:
+        # First user becomes an admin so new deployments require manual setup
+        role = "admin" if _requires_admin_setup(db) else "user"
+
         # Create user
         user = create_user(
             db=db,
             email=user_data.email,
             password=user_data.password,
-            full_name=user_data.full_name
+            full_name=user_data.full_name,
+            role=role,
         )
         
         # Generate JWT token
@@ -70,6 +92,12 @@ async def login(credentials: UserLogin, db: Session = Depends(get_db)):
     - User information
     """
     try:
+        if _requires_admin_setup(db):
+            raise HTTPException(
+                status_code=400,
+                detail="No users exist yet. Please create the first account to continue.",
+            )
+
         # Authenticate user
         user = authenticate_user(db, credentials.email, credentials.password)
         if not user:
@@ -107,3 +135,11 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     - User information
     """
     return UserResponse.model_validate(current_user)
+
+
+@router.get("/bootstrap-status", response_model=BootstrapStatusResponse)
+async def get_bootstrap_status(db: Session = Depends(get_db)):
+    """
+    Return whether the deployment still needs an initial admin account.
+    """
+    return BootstrapStatusResponse(requires_admin_setup=_requires_admin_setup(db))

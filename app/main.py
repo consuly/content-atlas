@@ -67,16 +67,21 @@ async def lifespan(app: FastAPI):
         init_api_key_tables()
         print("✓ api_keys table ready")
 
-        # Create admin user if configured and doesn't exist
+        # Surface bootstrap requirement when no users exist
         try:
-            from .create_admin_user_env import create_admin_user_if_not_exists
-            admin_created = create_admin_user_if_not_exists()
-            if admin_created:
-                print("✓ Admin user created from environment variables")
-            elif os.getenv('ADMIN_EMAIL'):
-                print("✓ Admin user already exists (skipped creation)")
+            from sqlalchemy import func
+            from sqlalchemy.orm import Session
+
+            from .core.security import User
+            from .db.session import get_engine
+
+            engine = get_engine()
+            with Session(engine) as db:
+                user_count = db.query(func.count(User.id)).scalar() or 0
+                if user_count == 0:
+                    print("No users found in database. First visitor must register an account (will become admin).")
         except Exception as e:
-            print(f"Warning: Admin user initialization failed: {e}")
+            print(f"Warning: Could not check user bootstrap status: {e}")
 
         print("✓ All database tables initialized successfully")
     except Exception as e:

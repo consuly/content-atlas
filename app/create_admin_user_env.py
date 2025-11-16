@@ -1,7 +1,8 @@
 """
 Admin user initialization script for Content Atlas.
-Runs automatically on application startup if ADMIN_EMAIL is set and user doesn't exist.
-Can also be run manually with: python create_admin_user_env.py
+
+Bootstrap an admin from environment variables when run manually:
+python create_admin_user_env.py
 """
 import os
 import sys
