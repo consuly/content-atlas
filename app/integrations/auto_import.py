@@ -440,7 +440,7 @@ def execute_llm_import_decision(
                         else:
                             schema_type = "DECIMAL"
                     else:
-                        parsed_samples = [parse_flexible_date(val) for val in subset]
+                        parsed_samples = [parse_flexible_date(val, log_failures=False) for val in subset]
                         successful_parses = [ps for ps in parsed_samples if ps is not None]
 
                         if successful_parses and len(successful_parses) >= max(1, len(subset) // 2):

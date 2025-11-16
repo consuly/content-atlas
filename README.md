@@ -94,6 +94,11 @@ A Python FastAPI application that accepts documents (CSV, Excel, JSON, XML) with
 
 See [API Reference](docs/API_REFERENCE.md) for detailed documentation.
 
+### Archive Auto-Process (ZIP)
+- `POST /auto-process-archive` downloads the ZIP from B2 once, streams each supported entry (CSV/XLSX/XLS) from memory for analysis/import, and uploads each entry a single time for persistence.
+- Reprocessing a specific file later uses the stored B2 path for that entry (not the whole ZIP), so day-to-day runs avoid per-entry B2 downloads and stay under bandwidth caps.
+- Unsupported entries (non-CSV/Excel) are marked as skipped; processing results and any failures are recorded on the import job.
+
 ## Usage Example
 
 ```bash

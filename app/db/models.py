@@ -981,6 +981,7 @@ def _check_chunks_parallel(
     
     # Check chunks in parallel using database-side queries
     total_duplicates = 0
+    chunks_with_duplicates = set()
     duplicate_entries: List[Dict[str, Any]] = []
     
     def check_chunk_db_side(chunk_num: int, chunk_start: int, chunk_records: List[Dict[str, Any]]) -> Tuple[int, int, List[Dict[str, Any]]]:
@@ -1005,6 +1006,7 @@ def _check_chunks_parallel(
         # Check duplicates in batches to avoid query size limits
         batch_size = 1000
         chunk_duplicates = 0
+        duplicate_batches = 0
         chunk_duplicate_entries: List[Dict[str, Any]] = []
         
         with engine.connect() as conn:
@@ -1037,9 +1039,8 @@ def _check_chunks_parallel(
                     result = conn.execute(query, params)
                     batch_duplicates = result.scalar()
                     chunk_duplicates += batch_duplicates
-                    
                     if batch_duplicates > 0:
-                        logger.warning(f"Chunk {chunk_num} batch {batch_start//batch_size + 1} found {batch_duplicates} duplicates")
+                        duplicate_batches += 1
                 except Exception as e:
                     logger.error(f"Error checking chunk {chunk_num} batch: {e}")
                     raise
@@ -1055,7 +1056,12 @@ def _check_chunks_parallel(
                 ]
         
         if chunk_duplicates > 0:
-            logger.warning(f"Chunk {chunk_num}: Found {chunk_duplicates} total duplicates")
+            logger.warning(
+                "Chunk %d: Found %d total duplicates across %d batches",
+                chunk_num,
+                chunk_duplicates,
+                duplicate_batches,
+            )
         else:
             logger.info(f"Chunk {chunk_num}: No duplicates found")
         
@@ -1075,6 +1081,7 @@ def _check_chunks_parallel(
                 result_chunk_num, duplicates_found, chunk_duplicates = future.result()
                 if duplicates_found > 0:
                     total_duplicates += duplicates_found
+                    chunks_with_duplicates.add(result_chunk_num)
                     duplicate_entries.extend(chunk_duplicates)
             except Exception as e:
                 logger.error(f"Error checking chunk {chunk_num + 1}: {e}")
@@ -1082,6 +1089,12 @@ def _check_chunks_parallel(
     
     if total_duplicates == 0:
         logger.info("Parallel duplicate check completed successfully - no duplicates found")
+    else:
+        logger.warning(
+            "Parallel duplicate check summary: %d duplicates across %d chunks",
+            total_duplicates,
+            len(chunks_with_duplicates),
+        )
     return total_duplicates, duplicate_entries
 
 
