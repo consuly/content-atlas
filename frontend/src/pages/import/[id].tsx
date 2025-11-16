@@ -104,6 +104,12 @@ interface ImportJobInfo {
   trigger_source?: string | null;
   analysis_mode?: string | null;
   conflict_mode?: string | null;
+  retry_attempt?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  metadata?: Record<string, unknown> | null;
+  result_metadata?: Record<string, unknown> | null;
 }
 
 type ArchiveFileStatus = 'processed' | 'failed' | 'skipped';
