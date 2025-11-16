@@ -151,10 +151,8 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for production deployment.
 ### Required
 - `DATABASE_URL` - PostgreSQL connection string
 
-### Optional (automatic admin bootstrap)
-- `ADMIN_EMAIL` - Email for the bootstrap admin account
-- `ADMIN_PASSWORD` - Password (min 8 chars) for the bootstrap admin
-- `ADMIN_NAME` - Display name for the bootstrap admin (optional)
+### Initial admin setup
+- The first account created through the `/register` page becomes the admin. Automatic bootstrap via `ADMIN_*` variables has been removed; create the initial admin interactively when the app first loads.
 
 ### Optional (for B2 integration)
 - `B2_APPLICATION_KEY_ID` - Backblaze B2 key ID

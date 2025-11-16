@@ -43,3 +43,8 @@ class AuthResponse(BaseModel):
     success: bool
     token: Token
     user: UserResponse
+
+
+class BootstrapStatusResponse(BaseModel):
+    """Indicates whether an admin account is needed."""
+    requires_admin_setup: bool

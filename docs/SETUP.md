@@ -132,32 +132,19 @@ Required only if using the natural language query console:
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
-#### Admin Bootstrap (Optional)
+#### Admin Setup (Required on first run)
 
-Set these when you want the application to auto-create the first admin user
-during startup (recommended for production deployments):
-
-```bash
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=super-secret-password
-ADMIN_NAME=Content Atlas Admin  # optional
-```
-
-When `ADMIN_EMAIL` is present, `app/main.py` invokes
-`create_admin_user_env.create_admin_user_if_not_exists()` during startup. The
-script is idempotent — it only creates the user if no existing record matches
-`ADMIN_EMAIL`, so it is safe to leave these variables set in production.
+On a fresh database with an empty `users` table, the first account created
+through the `/register` page is automatically granted the `admin` role.
+Automatic admin bootstrap via `ADMIN_*` environment variables has been
+removed so each deployment prompts for manual setup. After bringing the app
+up, visit the UI and complete registration to create the initial admin.
 
 ### Example .env File
 
 ```bash
 # Database
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/datamapper
-
-# Admin bootstrap (optional)
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=super-secret-password
-ADMIN_NAME=Content Atlas Admin
 
 # Uploads (optional)
 UPLOAD_MAX_FILE_SIZE_MB=100
