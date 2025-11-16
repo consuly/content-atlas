@@ -1120,6 +1120,7 @@ def _insert_records_chunked(
 
     total_records = len(records)
     print(f"DEBUG: _insert_records_chunked: Processing {total_records} {'pre-mapped' if pre_mapped else 'raw'} records in chunks of {chunk_size}")
+    duplicates_skipped = 0
     
     # File-level duplicate check (once upfront)
     if config and config.duplicate_check and config.duplicate_check.enabled and not config.duplicate_check.force_import:
@@ -1159,6 +1160,7 @@ def _insert_records_chunked(
                 max_workers
             )
             if total_duplicates > 0:
+                duplicates_skipped = total_duplicates
                 if duplicate_entries and has_active_import:
                     try:
                         record_duplicate_rows(import_id, duplicate_entries)
@@ -1170,11 +1172,34 @@ def _insert_records_chunked(
                         "Skipping duplicate audit persistence.",
                         table_name
                     )
-                error_message = config.duplicate_check.error_message or \
-                    f"Duplicate data detected. {total_duplicates} records overlap with existing data."
-                logger.error(f"Phase 1: Duplicate check failed - {error_message}")
-                raise DuplicateDataException(table_name, total_duplicates, error_message)
-            logger.info("Phase 1: Parallel duplicate check completed - no duplicates found")
+                duplicate_record_numbers = {
+                    entry.get("record_number") for entry in duplicate_entries or []
+                    if entry.get("record_number") is not None
+                }
+                if duplicate_record_numbers:
+                    records = [
+                        rec for idx, rec in enumerate(records, start=1)
+                        if idx not in duplicate_record_numbers
+                    ]
+                    total_records = len(records)
+                    logger.warning(
+                        "Phase 1: Skipping %d duplicate records; proceeding with %d non-duplicate records",
+                        duplicates_skipped,
+                        total_records,
+                    )
+                    chunks = []
+                    for chunk_start in range(0, total_records, chunk_size):
+                        chunk_end = min(chunk_start + chunk_size, total_records)
+                        chunk_records = records[chunk_start:chunk_end]
+                        chunks.append((chunk_start, chunk_records))
+                    total_chunks = len(chunks)
+                else:
+                    logger.warning(
+                        "Phase 1: Duplicate check reported %d duplicates but no record numbers were captured; proceeding without filtering",
+                        total_duplicates,
+                    )
+            else:
+                logger.info("Phase 1: Parallel duplicate check completed - no duplicates found")
     
     # PHASE 2: Sequential insertion (I/O-intensive, avoids race conditions)
     logger.info("Phase 2: Starting sequential chunk insertion")
@@ -1182,7 +1207,7 @@ def _insert_records_chunked(
     
     # Get column names from first record
     if not records:
-        return 0
+        return 0, duplicates_skipped
     
     # Get columns from first record, EXCLUDING any metadata that might already exist
     METADATA_COLS = {'_import_id', '_source_row_number', '_corrections_applied', '_imported_at', '_row_id'}
@@ -1256,4 +1281,4 @@ def _insert_records_chunked(
             })
     
     print(f"DEBUG: _insert_records_chunked: Completed - {total_inserted} records inserted")
-    return total_inserted, 0  # Return tuple: (records_inserted, duplicates_skipped)
+    return total_inserted, duplicates_skipped  # Return tuple: (records_inserted, duplicates_skipped)
