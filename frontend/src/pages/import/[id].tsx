@@ -1051,11 +1051,17 @@ export const ImportMappingPage: React.FC = () => {
       });
 
       const payload: ArchiveAutoProcessResult = response.data;
-      setArchiveResult(payload);
-      if (payload.success) {
-        messageApi.success('Archive processed successfully');
+      setArchiveResult(null);
+      setArchiveHistorySummary(null);
+
+      if (payload.job_id) {
+        const job = await fetchJobDetails(payload.job_id);
+        if (job) {
+          setArchiveJobDetails(job);
+        }
+        messageApi.success('Archive processing started. You can close this page and come back later.');
       } else {
-        messageApi.warning('Archive processed with some errors');
+        messageApi.warning('Archive processing started, but job tracking is unavailable.');
       }
       await fetchFileDetails();
     } catch (err) {

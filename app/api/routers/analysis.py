@@ -1,6 +1,7 @@
 """
 AI-powered file analysis endpoints for intelligent import recommendations.
 """
+import asyncio
 import io
 import logging
 import mimetypes
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, Any, List, Dict
 from dataclasses import dataclass, field
 
-from app.db.session import get_db
+from app.db.session import get_db, get_session_local
 from app.api.schemas.shared import (
     AnalyzeFileResponse, AnalyzeB2FileRequest, ExecuteRecommendedImportRequest,
     AnalysisMode, ConflictResolutionMode, MapDataResponse,
@@ -39,6 +40,7 @@ from app.domain.uploads.uploaded_files import (
 from app.domain.imports.jobs import create_import_job, update_import_job, complete_import_job
 from app.domain.imports.history import get_import_history, list_duplicate_rows
 from app.core.config import settings
+from app.domain.imports.jobs import fail_active_job
 
 router = APIRouter(tags=["analysis"])
 logger = logging.getLogger(__name__)
@@ -109,6 +111,230 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
         "message": message,
     }
 
+
+async def _run_archive_auto_process_job(
+    *,
+    file_id: str,
+    archive_name: str,
+    archive_bytes: bytes,
+    supported_archive_paths: List[str],
+    skipped_results: List[ArchiveAutoProcessFileResult],
+    analysis_mode: AnalysisMode,
+    conflict_resolution: ConflictResolutionMode,
+    auto_execute_confidence_threshold: float,
+    max_iterations: int,
+    job_id: str,
+) -> None:
+    """Execute archive auto-processing in the background so it survives client disconnects."""
+    SessionLocal = get_session_local()
+    db_session = SessionLocal()
+
+    processed_files = 0
+    failed_files = 0
+    skipped_files = len(skipped_results)
+    results: List[ArchiveAutoProcessFileResult] = list(skipped_results)
+    remaining_archive_paths = list(supported_archive_paths)
+    completed_archive_entries: List[Dict[str, str]] = []
+
+    archive_stem = os.path.splitext(os.path.basename(archive_name))[0] or "archive"
+    archive_folder = f"uploads/archive_{file_id}"
+
+    try:
+        try:
+            zip_file = zipfile.ZipFile(io.BytesIO(archive_bytes))
+        except zipfile.BadZipFile as exc:
+            fail_active_job(file_id, job_id, f"Archive is corrupted: {exc}")
+            return
+
+        try:
+            for index, archive_path in enumerate(supported_archive_paths, start=1):
+                entry_name = os.path.basename(archive_path) or f"entry_{index:03d}"
+                stored_file_name = _build_archive_entry_name(
+                    archive_stem, entry_name, index
+                )
+
+                try:
+                    entry_bytes = zip_file.read(archive_path)
+                except KeyError:
+                    results.append(
+                        ArchiveAutoProcessFileResult(
+                            archive_path=archive_path,
+                            stored_file_name=stored_file_name,
+                            status="failed",
+                            message="Unable to read archive member",
+                        )
+                    )
+                    failed_files += 1
+                    continue
+
+                try:
+                    upload_result = upload_file_to_b2(
+                        file_content=entry_bytes,
+                        file_name=stored_file_name,
+                        folder=archive_folder,
+                    )
+                    uploaded_file = insert_uploaded_file(
+                        file_name=entry_name,
+                        b2_file_id=upload_result["file_id"],
+                        b2_file_path=upload_result["file_path"],
+                        file_size=len(entry_bytes),
+                        content_type=_guess_content_type(entry_name),
+                        user_id=None,
+                    )
+                    uploaded_file_id = uploaded_file["id"]
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.exception(
+                        "Failed staging archive entry %s: %s", archive_path, exc
+                    )
+                    results.append(
+                        ArchiveAutoProcessFileResult(
+                            archive_path=archive_path,
+                            stored_file_name=stored_file_name,
+                            status="failed",
+                            message=f"Unable to stage file: {exc}",
+                        )
+                    )
+                    failed_files += 1
+                    continue
+
+                try:
+                    marketing_response: Optional[AnalyzeFileResponse] = None
+                    if settings.enable_marketing_fixture_shortcuts:
+                        normalized_entry = _normalize_marketing_fixture_name(entry_name)
+                        if "marketing agency" in normalized_entry:
+                            try:
+                                file_type = detect_file_type(entry_name)
+                                if file_type == "csv":
+                                    candidate_records = process_csv(entry_bytes, has_header=None)
+                                elif file_type == "excel":
+                                    candidate_records = process_excel(entry_bytes)
+                                else:
+                                    candidate_records = None
+                            except Exception as exc:  # pragma: no cover - defensive parsing
+                                logger.warning(
+                                    "Unable to parse marketing agency fixture %s: %s",
+                                    entry_name,
+                                    exc,
+                                )
+                                candidate_records = None
+
+                            if candidate_records:
+                                marketing_response = _handle_marketing_agency_special_case(
+                                    file_name=entry_name,
+                                    file_content=entry_bytes,
+                                    raw_records=candidate_records,
+                                    analysis_mode=analysis_mode,
+                                    conflict_mode=conflict_resolution,
+                                    max_iterations=max_iterations,
+                                    file_id=uploaded_file_id,
+                                    update_file_status_fn=update_file_status,
+                                    metadata_name=entry_name,
+                                )
+
+                    if marketing_response is not None:
+                        summary = _summarize_archive_execution(marketing_response)
+                    else:
+                        analyze_response = await analyze_file_endpoint(
+                            file=None,
+                            file_id=uploaded_file_id,
+                            sample_size=None,
+                            analysis_mode=analysis_mode,
+                            conflict_resolution=conflict_resolution,
+                            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                            max_iterations=max_iterations,
+                            db=db_session,
+                        )
+                        summary = _summarize_archive_execution(analyze_response)
+                except HTTPException as exc:
+                    summary = {
+                        "status": "failed",
+                        "message": getattr(exc, "detail", str(exc)),
+                        "auto_retry_used": False,
+                    }
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception(
+                        "Archive auto-process failed for %s: %s", archive_path, exc
+                    )
+                    summary = {
+                        "status": "failed",
+                        "message": str(exc),
+                        "auto_retry_used": False,
+                    }
+
+                file_result = ArchiveAutoProcessFileResult(
+                    archive_path=archive_path,
+                    stored_file_name=stored_file_name,
+                    uploaded_file_id=uploaded_file_id,
+                    status=summary["status"],
+                    table_name=summary.get("table_name"),
+                    records_processed=summary.get("records_processed"),
+                    duplicates_skipped=summary.get("duplicates_skipped"),
+                    import_id=summary.get("import_id"),
+                    auto_retry_used=summary.get("auto_retry_used", False),
+                    message=summary.get("message"),
+                )
+                results.append(file_result)
+
+                if summary["status"] == "processed":
+                    processed_files += 1
+                elif summary["status"] == "failed":
+                    failed_files += 1
+
+                if archive_path in remaining_archive_paths:
+                    remaining_archive_paths.remove(archive_path)
+                completed_archive_entries.append(
+                    {
+                        "archive_path": archive_path,
+                        "status": summary["status"],
+                    }
+                )
+
+                total_handled = processed_files + failed_files
+                progress = int((total_handled / len(supported_archive_paths)) * 100)
+                update_import_job(
+                    job_id,
+                    stage="execution",
+                    progress=progress,
+                    metadata={
+                        "current_file": archive_path,
+                        "processed": processed_files,
+                        "failed": failed_files,
+                        "skipped": skipped_files,
+                        "total": len(supported_archive_paths),
+                        "completed_files": list(completed_archive_entries),
+                        "remaining_files": list(remaining_archive_paths),
+                        "files_in_archive": len(supported_archive_paths),
+                        "source": "auto-process-archive",
+                    },
+                )
+        finally:
+            zip_file.close()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Archive auto-process background task failed: %s", exc)
+        fail_active_job(file_id, job_id, f"Archive processing failed: {exc}")
+        return
+    finally:
+        db_session.close()
+
+    total_supported = len(supported_archive_paths)
+    total_files = total_supported + skipped_files
+    success = failed_files == 0
+    error_message = None if success else "One or more files failed auto-processing"
+
+    result_metadata = {
+        "files_total": total_supported,
+        "processed_files": processed_files,
+        "failed_files": failed_files,
+        "skipped_files": skipped_files,
+        "results": [result.model_dump() for result in results],
+    }
+
+    complete_import_job(
+        job_id,
+        success=success,
+        error_message=error_message,
+        result_metadata=result_metadata,
+    )
 
 async def _auto_retry_failed_auto_import(
     *,
@@ -1420,14 +1646,13 @@ async def auto_process_archive_endpoint(
     conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.LLM_DECIDE),
     auto_execute_confidence_threshold: float = Form(0.9),
     max_iterations: int = Form(5),
-    db: Session = Depends(get_db)
 ):
     """
-    Automatically process every supported file contained within a ZIP archive.
+    Queue background processing for every supported file contained within a ZIP archive.
 
-    Each CSV/XLSX entry is uploaded, mapped via the existing auto-process flow,
-    and recorded as its own uploaded file so downstream workflows (duplicates,
-    retry, etc.) continue to work.
+    The endpoint returns immediately with a job id so the request lifecycle
+    does not control the processing. Results are persisted to the import job
+    metadata and can be fetched via /import-jobs/{job_id}.
     """
     if analysis_mode != AnalysisMode.AUTO_ALWAYS:
         raise HTTPException(
@@ -1475,8 +1700,9 @@ async def auto_process_archive_endpoint(
             detail="Archive does not contain CSV or Excel files.",
         )
 
+    zip_file.close()
+
     remaining_archive_paths = [info.filename for info in supported_entries]
-    completed_archive_entries: List[Dict[str, str]] = []
 
     job = create_import_job(
         file_id=file_id,
@@ -1493,206 +1719,28 @@ async def auto_process_archive_endpoint(
     job_id = job["id"]
     update_file_status(file_id, "mapping", expected_active_job_id=job_id)
 
-    processed_files = 0
-    failed_files = 0
-    skipped_files = len(skipped_results)
-    results: List[ArchiveAutoProcessFileResult] = list(skipped_results)
-
-    archive_stem = os.path.splitext(os.path.basename(archive_name))[0] or "archive"
-    archive_folder = f"uploads/archive_{file_id}"
-
-    try:
-        for index, entry in enumerate(supported_entries, start=1):
-            archive_path = entry.filename
-            entry_name = os.path.basename(archive_path) or f"entry_{index:03d}"
-            stored_file_name = _build_archive_entry_name(
-                archive_stem, entry_name, index
-            )
-
-            try:
-                entry_bytes = zip_file.read(entry)
-            except KeyError:
-                results.append(
-                    ArchiveAutoProcessFileResult(
-                        archive_path=archive_path,
-                        stored_file_name=stored_file_name,
-                        status="failed",
-                        message="Unable to read archive member",
-                    )
-                )
-                failed_files += 1
-                continue
-
-            try:
-                upload_result = upload_file_to_b2(
-                    file_content=entry_bytes,
-                    file_name=stored_file_name,
-                    folder=archive_folder,
-                )
-                uploaded_file = insert_uploaded_file(
-                    file_name=entry_name,
-                    b2_file_id=upload_result["file_id"],
-                    b2_file_path=upload_result["file_path"],
-                    file_size=len(entry_bytes),
-                    content_type=_guess_content_type(entry_name),
-                    user_id=None,
-                )
-                uploaded_file_id = uploaded_file["id"]
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.exception(
-                    "Failed staging archive entry %s: %s", archive_path, exc
-                )
-                results.append(
-                    ArchiveAutoProcessFileResult(
-                        archive_path=archive_path,
-                        stored_file_name=stored_file_name,
-                        status="failed",
-                        message=f"Unable to stage file: {exc}",
-                    )
-                )
-                failed_files += 1
-                continue
-
-            try:
-                marketing_response: Optional[AnalyzeFileResponse] = None
-                if settings.enable_marketing_fixture_shortcuts:
-                    normalized_entry = _normalize_marketing_fixture_name(entry_name)
-                    if "marketing agency" in normalized_entry:
-                        try:
-                            file_type = detect_file_type(entry_name)
-                            if file_type == "csv":
-                                candidate_records = process_csv(entry_bytes, has_header=None)
-                            elif file_type == "excel":
-                                candidate_records = process_excel(entry_bytes)
-                            else:
-                                candidate_records = None
-                        except Exception as exc:  # pragma: no cover - defensive parsing
-                            logger.warning(
-                                "Unable to parse marketing agency fixture %s: %s",
-                                entry_name,
-                                exc,
-                            )
-                            candidate_records = None
-
-                        if candidate_records:
-                            marketing_response = _handle_marketing_agency_special_case(
-                                file_name=entry_name,
-                                file_content=entry_bytes,
-                                raw_records=candidate_records,
-                                analysis_mode=analysis_mode,
-                                conflict_mode=conflict_resolution,
-                                max_iterations=max_iterations,
-                                file_id=uploaded_file_id,
-                                update_file_status_fn=update_file_status,
-                                metadata_name=entry_name,
-                            )
-
-                if marketing_response is not None:
-                    summary = _summarize_archive_execution(marketing_response)
-                else:
-                    analyze_response = await analyze_file_endpoint(
-                        file=None,
-                        file_id=uploaded_file_id,
-                        sample_size=None,
-                        analysis_mode=analysis_mode,
-                        conflict_resolution=conflict_resolution,
-                        auto_execute_confidence_threshold=auto_execute_confidence_threshold,
-                        max_iterations=max_iterations,
-                        db=db,
-                    )
-                    summary = _summarize_archive_execution(analyze_response)
-            except HTTPException as exc:
-                summary = {
-                    "status": "failed",
-                    "message": getattr(exc, "detail", str(exc)),
-                    "auto_retry_used": False,
-                }
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception(
-                    "Archive auto-process failed for %s: %s", archive_path, exc
-                )
-                summary = {
-                    "status": "failed",
-                    "message": str(exc),
-                    "auto_retry_used": False,
-                }
-
-            file_result = ArchiveAutoProcessFileResult(
-                archive_path=archive_path,
-                stored_file_name=stored_file_name,
-                uploaded_file_id=uploaded_file_id,
-                status=summary["status"],
-                table_name=summary.get("table_name"),
-                records_processed=summary.get("records_processed"),
-                duplicates_skipped=summary.get("duplicates_skipped"),
-                import_id=summary.get("import_id"),
-                auto_retry_used=summary.get("auto_retry_used", False),
-                message=summary.get("message"),
-            )
-            results.append(file_result)
-
-            if summary["status"] == "processed":
-                processed_files += 1
-            elif summary["status"] == "failed":
-                failed_files += 1
-
-            if archive_path in remaining_archive_paths:
-                remaining_archive_paths.remove(archive_path)
-            completed_archive_entries.append(
-                {
-                    "archive_path": archive_path,
-                    "status": summary["status"],
-                }
-            )
-
-            total_handled = processed_files + failed_files
-            progress = int((total_handled / len(supported_entries)) * 100)
-            update_import_job(
-                job_id,
-                stage="execution",
-                progress=progress,
-                metadata={
-                    "current_file": archive_path,
-                    "processed": processed_files,
-                    "failed": failed_files,
-                    "skipped": skipped_files,
-                    "total": len(supported_entries),
-                    "completed_files": list(completed_archive_entries),
-                    "remaining_files": list(remaining_archive_paths),
-                    "files_in_archive": len(supported_entries),
-                    "source": "auto-process-archive",
-                },
-            )
-    finally:
-        zip_file.close()
-
-    total_supported = len(supported_entries)
-    total_files = total_supported + skipped_files
-    success = failed_files == 0
-    error_message = None if success else "One or more files failed auto-processing"
-
-    result_metadata = {
-        "files_total": total_supported,
-        "processed_files": processed_files,
-        "failed_files": failed_files,
-        "skipped_files": skipped_files,
-        "results": [result.model_dump() for result in results],
-    }
-
-    complete_import_job(
-        job_id,
-        success=success,
-        error_message=error_message,
-        result_metadata=result_metadata,
+    asyncio.create_task(
+        _run_archive_auto_process_job(
+            file_id=file_id,
+            archive_name=archive_name,
+            archive_bytes=archive_bytes,
+            supported_archive_paths=[info.filename for info in supported_entries],
+            skipped_results=skipped_results,
+            analysis_mode=analysis_mode,
+            conflict_resolution=conflict_resolution,
+            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+            max_iterations=max_iterations,
+            job_id=job_id,
+        )
     )
 
     return ArchiveAutoProcessResponse(
-        success=success,
-        total_files=total_files,
-        processed_files=processed_files,
-        failed_files=failed_files,
-        skipped_files=skipped_files,
-        results=results,
+        success=True,
+        total_files=len(supported_entries) + len(skipped_results),
+        processed_files=0,
+        failed_files=0,
+        skipped_files=len(skipped_results),
+        results=skipped_results,
         job_id=job_id,
     )
 
