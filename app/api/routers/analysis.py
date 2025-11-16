@@ -31,7 +31,7 @@ from app.domain.imports.processors.csv_processor import process_csv, process_exc
 from app.domain.imports.processors.json_processor import process_json
 from app.domain.imports.processors.xml_processor import process_xml
 from app.domain.queries.analyzer import analyze_file_for_import as _analyze_file_for_import, sample_file_data
-from app.integrations.auto_import import execute_llm_import_decision
+import app.integrations.auto_import as auto_import
 from app.domain.uploads.uploaded_files import (
     get_uploaded_file_by_id,
     update_file_status,
@@ -44,6 +44,7 @@ from app.domain.imports.jobs import fail_active_job
 
 router = APIRouter(tags=["analysis"])
 logger = logging.getLogger(__name__)
+_preloaded_file_contents: Dict[str, bytes] = {}
 ARCHIVE_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xls")
 
 
@@ -234,6 +235,7 @@ async def _run_archive_auto_process_job(
                     if marketing_response is not None:
                         summary = _summarize_archive_execution(marketing_response)
                     else:
+                        _preloaded_file_contents[uploaded_file_id] = entry_bytes
                         analyze_response = await analyze_file_endpoint(
                             file=None,
                             file_id=uploaded_file_id,
@@ -418,6 +420,15 @@ def _get_download_file_from_b2():
         return getattr(main_module, "download_file_from_b2", _download_file_from_b2)
     except Exception:
         return _download_file_from_b2
+
+
+def _get_execute_llm_import_decision():
+    """Return the execute_llm_import_decision callable, honoring legacy patches."""
+    try:
+        from app import main as main_module
+        return getattr(main_module, "execute_llm_import_decision", auto_import.execute_llm_import_decision)
+    except Exception:
+        return auto_import.execute_llm_import_decision
 
 
 CLIENT_LIST_TABLE = "client_list_a"
@@ -824,7 +835,7 @@ def _handle_marketing_agency_texas(
         )
 
     decision = _build_marketing_agency_llm_decision()
-    execution_result = execute_llm_import_decision(
+    execution_result = _get_execute_llm_import_decision()(
         file_content=file_content,
         file_name=file_name,
         all_records=normalized_records,
@@ -1345,8 +1356,12 @@ async def analyze_file_endpoint(
                 "mapping",
                 expected_active_job_id=job_id if job_id else None
             )
-            
-            file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+
+            preloaded = _preloaded_file_contents.pop(file_id, None)
+            if preloaded is not None:
+                file_content = preloaded
+            else:
+                file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
             file_name = file_record["file_name"]
         else:
             # Read uploaded file
@@ -1477,7 +1492,7 @@ async def analyze_file_endpoint(
         if analysis_mode == AnalysisMode.AUTO_ALWAYS and llm_decision:
             # Execute the import automatically
             try:
-                execution_result = execute_llm_import_decision(
+                execution_result = _get_execute_llm_import_decision()(
                     file_content=file_content,
                     file_name=file_name,
                     all_records=records,  # Use all records, not just sample
@@ -2130,7 +2145,7 @@ async def execute_interactive_import_endpoint(
         )
 
         try:
-            execution_result = execute_llm_import_decision(
+            execution_result = _get_execute_llm_import_decision()(
                 file_content=file_content,
                 file_name=file_record["file_name"],
                 all_records=records,

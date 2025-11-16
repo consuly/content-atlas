@@ -270,7 +270,9 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                             continue
 
                         # Try to convert the date
-                        converted_value = parse_flexible_date(original_value)
+                        converted_value = parse_flexible_date(
+                            original_value, log_context=f"{col_name}"
+                        )
                         if converted_value is None and value_str:
                             # Conversion failed for non-empty value
                             message = f"Failed to convert datetime field '{col_name}' with value '{original_value}'"
@@ -281,7 +283,7 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                                 expected_type=config.db_schema.get(col_name),
                                 value=original_value
                             ))
-                            logger.warning(message)
+                            logger.debug(message)
                         mapped_record[col_name] = converted_value
         
         # Apply rules if present
@@ -646,7 +648,7 @@ def standardize_datetime(value: Any, source_format: Optional[str] = None) -> Opt
     """
     # Use the new flexible date parser which handles multiple formats
     # and always returns ISO 8601 with timezone
-    return parse_flexible_date(value)
+    return parse_flexible_date(value, log_context="standardize_datetime")
 
 
 def detect_column_type(series: pd.Series, has_datetime_transformation: bool = False) -> str:
@@ -703,7 +705,7 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
         # Test if our flexible date parser can handle these values
         conversion_success = True
         for val in sample_values.head(10):  # Test first 10 values
-            if parse_flexible_date(val) is None and pd.notna(val):
+            if parse_flexible_date(val, log_failures=False) is None and pd.notna(val):
                 conversion_success = False
                 break
 

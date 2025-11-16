@@ -5,6 +5,7 @@ import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy.exc import ProgrammingError
 
 from app.api.schemas.shared import (
     QueryConversationListResponse,
@@ -29,6 +30,11 @@ def _log_and_wrap_error(action: str, error: Exception) -> HTTPException:
     """Centralize logging for API errors so frontend errors correlate with server logs."""
     logger.exception("Query conversation endpoint failed during %s: %s", action, error)
     return HTTPException(status_code=500, detail=f"Failed to {action}: {str(error)}")
+
+
+def _is_missing_query_table_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "query_threads" in message and ("does not exist" in message or "UndefinedTable" in message)
 
 
 @router.post("/query-database", response_model=QueryDatabaseResponse)
@@ -107,6 +113,11 @@ async def get_latest_conversation():
             "hit" if conversation else "returned empty (no conversations yet)",
         )
         return QueryConversationResponse(success=True, conversation=conversation)
+    except ProgrammingError as e:
+        if _is_missing_query_table_error(e):
+            logger.warning("Query conversation tables missing; returning empty latest conversation")
+            return QueryConversationResponse(success=True, conversation=None)
+        raise _log_and_wrap_error("load latest conversation", e)
     except Exception as e:
         raise _log_and_wrap_error("load latest conversation", e)
 
@@ -123,6 +134,11 @@ async def get_conversation(thread_id: str):
             return QueryConversationResponse(success=True, conversation=None)
 
         return QueryConversationResponse(success=True, conversation=conversation)
+    except ProgrammingError as e:
+        if _is_missing_query_table_error(e):
+            logger.warning("Query conversation tables missing; returning empty conversation for %s", thread_id)
+            return QueryConversationResponse(success=True, conversation=None)
+        raise _log_and_wrap_error("load conversation", e)
     except Exception as e:
         raise _log_and_wrap_error("load conversation", e)
 
@@ -141,5 +157,10 @@ async def list_conversations(limit: int = 50, offset: int = 0):
             offset,
         )
         return QueryConversationListResponse(success=True, conversations=conversations)
+    except ProgrammingError as e:
+        if _is_missing_query_table_error(e):
+            logger.warning("Query conversation tables missing; returning empty list")
+            return QueryConversationListResponse(success=True, conversations=[])
+        raise _log_and_wrap_error("list conversations", e)
     except Exception as e:
         raise _log_and_wrap_error("list conversations", e)

@@ -15,8 +15,37 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+FAILED_SAMPLE_LIMIT = 5
+SUPPRESSION_NOTICE_EVERY = 100
 
-def parse_flexible_date(value: Any) -> Optional[str]:
+_failure_stats: dict = {}
+
+
+def _record_parse_failure(value: Any, context: Optional[str], error: Exception) -> None:
+    """
+    Collect failure stats and emit limited logs (sampled warnings + periodic summaries).
+    """
+    key = context or "default"
+    stats = _failure_stats.setdefault(key, {"count": 0, "samples": []})
+    stats["count"] += 1
+    count = stats["count"]
+
+    if len(stats["samples"]) < FAILED_SAMPLE_LIMIT:
+        stats["samples"].append(value)
+        logger.warning("Failed to parse date%s value '%s': %s", f" ({key})" if context else "", value, error)
+        return
+
+    # Emit a single summary when suppression starts, then periodically.
+    if count == FAILED_SAMPLE_LIMIT + 1 or count % SUPPRESSION_NOTICE_EVERY == 0:
+        logger.info(
+            "Suppressed additional date parse warnings after %d failures%s; sample values=%s",
+            count,
+            f" ({key})" if context else "",
+            stats["samples"],
+        )
+
+
+def parse_flexible_date(value: Any, *, log_context: Optional[str] = None, log_failures: bool = True) -> Optional[str]:
     """
     Parse a date value from various formats and return ISO 8601 string.
     
@@ -93,10 +122,9 @@ def parse_flexible_date(value: Any) -> Optional[str]:
             continue
     
     if dt is None:
-        if last_error:
-            logger.warning(f"Failed to parse date value '{value}': {last_error}")
-        else:
-            logger.warning(f"Failed to parse date value '{value}': Unable to determine format")
+        if log_failures:
+            error_to_log = last_error or Exception("Unable to determine format")
+            _record_parse_failure(value, log_context, error_to_log)
         return None
     
     # Convert to ISO 8601 format with Z suffix
@@ -133,7 +161,7 @@ def detect_date_column(values: list) -> bool:
     total_checked = min(len(non_null_values), 20)  # Check up to 20 values
     
     for value in non_null_values[:total_checked]:
-        if parse_flexible_date(value) is not None:
+        if parse_flexible_date(value, log_failures=False) is not None:
             successful_parses += 1
     
     # If 50% or more parse successfully, consider it a date column
