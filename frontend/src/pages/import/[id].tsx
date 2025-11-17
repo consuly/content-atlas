@@ -237,7 +237,10 @@ export const ImportMappingPage: React.FC = () => {
     };
   }, [effectiveArchiveResult]);
 
-  const displayJobInfo: ImportJobInfo | null = useMemo(() => {
+  const displayJobInfo = useMemo<ImportJobInfo | null>(() => {
+    const baseMetadata = jobInfo?.metadata ?? null;
+    const baseResultMetadata = jobInfo?.result_metadata ?? null;
+
     if (jobInfo) {
       return jobInfo;
     }
@@ -267,8 +270,8 @@ export const ImportMappingPage: React.FC = () => {
       created_at: file.active_job_started_at ?? undefined,
       updated_at: undefined,
       completed_at: undefined,
-      metadata: jobInfo?.metadata ?? null,
-      result_metadata: jobInfo?.result_metadata ?? null,
+      metadata: baseMetadata,
+      result_metadata: baseResultMetadata,
     };
   }, [file, isArchiveFile, jobInfo]);
 
