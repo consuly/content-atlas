@@ -596,6 +596,7 @@ def execute_llm_import_decision(
             "mapping_errors": result.get("mapping_errors", []),
             "type_mismatch_summary": result.get("type_mismatch_summary", []),
             "llm_followup": result.get("llm_followup"),
+            "needs_user_input": result.get("needs_user_input"),
             "schema_migration_results": schema_migration_results,
         }
         

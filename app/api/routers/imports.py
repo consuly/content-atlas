@@ -125,6 +125,7 @@ async def map_data_endpoint(
             duplicate_rows_count=result.get("duplicate_rows_count"),
             import_id=result.get("import_id"),
             table_name=result["table_name"],
+            needs_user_input=result.get("needs_user_input"),
             llm_followup=result.get("llm_followup"),
             mapping_errors=result.get("mapping_errors"),
             type_mismatch_summary=result.get("type_mismatch_summary")
@@ -186,6 +187,7 @@ async def map_b2_data_endpoint(
             duplicate_rows_count=result.get("duplicate_rows_count"),
             import_id=result.get("import_id"),
             table_name=result["table_name"],
+            needs_user_input=result.get("needs_user_input"),
             llm_followup=result.get("llm_followup"),
             mapping_errors=result.get("mapping_errors"),
             type_mismatch_summary=result.get("type_mismatch_summary")

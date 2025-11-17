@@ -2396,7 +2396,8 @@ async def execute_interactive_import_endpoint(
                             duplicate_rows_count = history_duplicates
                             duplicate_rows = list_duplicate_rows(
                                 import_id_value,
-                                limit=history_duplicates
+                                limit=history_duplicates,
+                                include_existing_row=True
                             )
                 except Exception as audit_err:
                     logger.warning(
