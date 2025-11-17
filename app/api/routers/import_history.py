@@ -168,7 +168,7 @@ async def get_import_duplicate_rows(
             raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
 
         import_record = ImportHistoryRecord(**records[0])
-        duplicates = list_duplicate_rows(import_id, limit=limit, offset=offset)
+        duplicates = list_duplicate_rows(import_id, limit=limit, offset=offset, include_existing_row=True)
         total_count = import_record.duplicates_found or len(duplicates)
 
         return ImportDuplicateRowsResponse(

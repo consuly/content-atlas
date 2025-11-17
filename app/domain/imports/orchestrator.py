@@ -131,6 +131,54 @@ def _build_type_mismatch_followup(table_name: str, summary: List[Dict[str, Any]]
     return "\n".join(lines)
 
 
+def _determine_uniqueness_columns(mapping_config: MappingConfig, sample_record: Optional[Dict[str, Any]] = None) -> List[str]:
+    """
+    Resolve which columns define uniqueness for duplicate handling.
+    Prefers duplicate_check.uniqueness_columns, then legacy unique_columns, then the sample record keys.
+    """
+    if mapping_config.duplicate_check and mapping_config.duplicate_check.uniqueness_columns:
+        return mapping_config.duplicate_check.uniqueness_columns
+    if mapping_config.unique_columns:
+        return mapping_config.unique_columns
+    if sample_record:
+        return list(sample_record.keys())
+    return []
+
+
+def _build_duplicate_followup(
+    table_name: str,
+    duplicates: List[Dict[str, Any]],
+    uniqueness_columns: List[str],
+    import_id: Optional[str]
+) -> str:
+    """Craft a follow-up prompt for LLM/user to resolve duplicate rows."""
+    if not duplicates:
+        return ""
+
+    uniq_desc = ", ".join(uniqueness_columns) if uniqueness_columns else "all columns"
+    import_hint = import_id or "{import_id}"
+    lines = [
+        f"Duplicates detected in table '{table_name}' (key: {uniq_desc}).",
+        "For each duplicate row decide whether to merge into the existing row, keep as-is, or skip.",
+        f"Fetch full context (incoming vs existing row) via GET /import-history/{import_hint}/duplicates/{{id}} before applying updates.",
+        "Suggested merge policy: prefer non-null values, avoid overwriting trusted values without confirmation, and keep higher-confidence numeric values like revenue."
+    ]
+
+    preview_count = min(len(duplicates), 3)
+    lines.append(f"Preview ({preview_count}):")
+    for dup in duplicates[:preview_count]:
+        record = dup.get("record") or {}
+        if uniqueness_columns:
+            summary_bits = [f"{col}={record.get(col)}" for col in uniqueness_columns]
+            summary = ", ".join(summary_bits)
+        else:
+            summary = ", ".join([f"{k}={v}" for k, v in record.items()])
+        lines.append(f"- id {dup.get('id')}: {summary}")
+
+    lines.append("Reply with merge decisions per duplicate id and the field updates to apply.")
+    return "\n".join(lines)
+
+
 def detect_file_type(filename: str) -> str:
     """Detect file type from filename."""
     if filename.endswith('.csv'):
@@ -707,7 +755,6 @@ def execute_data_import(
         
         # Complete import tracking with structured metadata
         duration = time.time() - start_time
-        followup_message = _build_type_mismatch_followup(mapping_config.table_name, type_mismatch_summary)
         metadata_payload: Optional[Dict[str, Any]] = None
         if type_mismatch_summary:
             metadata_payload = {"type_mismatch_summary": type_mismatch_summary}
@@ -718,10 +765,29 @@ def execute_data_import(
             try:
                 duplicate_rows = list_duplicate_rows(
                     import_id,
-                    limit=DUPLICATE_PREVIEW_LIMIT
+                    limit=DUPLICATE_PREVIEW_LIMIT,
+                    include_existing_row=True
                 )
             except Exception as e:
                 logger.error("Failed to load duplicate rows for preview: %s", str(e))
+
+        uniqueness_columns = _determine_uniqueness_columns(
+            mapping_config,
+            mapped_records[0] if mapped_records else None
+        )
+
+        duplicate_followup = _build_duplicate_followup(
+            mapping_config.table_name,
+            duplicate_rows,
+            uniqueness_columns,
+            import_id
+        )
+        followup_parts = [
+            duplicate_followup,
+            _build_type_mismatch_followup(mapping_config.table_name, type_mismatch_summary)
+        ]
+        followup_message = "\n\n".join([part for part in followup_parts if part]) if any(followup_parts) else ""
+        needs_user_input = duplicates_skipped > 0
 
         complete_import_tracking(
             import_id=import_id,
@@ -748,6 +814,7 @@ def execute_data_import(
             "type_mismatch_summary": type_mismatch_summary,
             "duration_seconds": duration,
             "llm_followup": followup_message or None,
+            "needs_user_input": needs_user_input,
             "duplicate_rows": duplicate_rows if duplicate_rows else None,
             "duplicate_rows_count": duplicate_total if duplicate_total else None,
             "import_id": import_id

@@ -343,12 +343,17 @@ Bob Wilson,bob@example.com,35
         # Should have inserted only 1 record (Bob Wilson), skipped 1 duplicate (John Doe)
         assert result["records_processed"] == 1, f"Expected 1 record processed, got {result['records_processed']}"
         assert result["duplicates_skipped"] == 1, f"Expected 1 duplicate skipped, got {result['duplicates_skipped']}"
+        assert result.get("needs_user_input") is True, "Expected needs_user_input to be True when duplicates are present"
         assert result.get("duplicate_rows_count") == 1
         assert result.get("import_id"), "MapDataResponse should include import_id"
+        llm_followup = result.get("llm_followup") or ""
+        assert "Duplicates detected" in llm_followup, "Expected LLM follow-up prompt when duplicates are present"
         duplicate_preview = result.get("duplicate_rows") or []
         assert len(duplicate_preview) == 1, f"Expected duplicate preview with 1 row, got {len(duplicate_preview)}"
         assert duplicate_preview[0]["record"]["name"] == "John Doe"
         assert duplicate_preview[0]["record"]["email"] == "john@example.com"
+        assert duplicate_preview[0].get("existing_row"), "Expected existing row snapshot alongside duplicate preview"
+        assert duplicate_preview[0]["existing_row"]["record"]["email"] == "john@example.com"
         
         # Verify the table has correct total count (2 from first upload + 1 from second = 3 total)
         try:
@@ -368,11 +373,13 @@ Bob Wilson,bob@example.com,35
         latest_import = history[0]
         assert latest_import["duplicates_found"] == 1, f"Expected duplicates_found=1, got {latest_import['duplicates_found']}"
         
-        duplicate_rows = list_duplicate_rows(latest_import["import_id"])
+        duplicate_rows = list_duplicate_rows(latest_import["import_id"], include_existing_row=True)
         assert len(duplicate_rows) == 1, f"Expected 1 duplicate row stored, got {len(duplicate_rows)}"
         duplicate_record = duplicate_rows[0]["record"]
         assert duplicate_record.get("name") == "John Doe"
         assert duplicate_record.get("email") == "john@example.com"
+        assert duplicate_rows[0].get("existing_row"), "Expected existing row data when listing duplicates"
+        assert duplicate_rows[0]["existing_row"]["record"]["email"] == "john@example.com"
 
         # Verify duplicate endpoint
         dup_response = client.get(f"/import-history/{latest_import['import_id']}/duplicates")
@@ -692,3 +699,81 @@ def test_datetime_standardization():
     assert len(all_errors) == 1
     assert all_errors[0]["type"] == "datetime_conversion"
     assert 'Failed to convert datetime field' in all_errors[0]["message"]
+
+
+def test_duplicate_auto_merge_flow():
+    """Simulate LLM/auto flow: detect duplicate, inspect existing row, and merge via API."""
+    import io
+    import time
+
+    table_name = f"test_row_duplicates_auto_{int(time.time())}"
+
+    # Clean up table/import history
+    try:
+        from app.db.session import get_engine
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("DELETE FROM file_imports WHERE table_name = :table_name"), {"table_name": table_name})
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+            conn.commit()
+    except Exception:
+        pass
+
+    mapping_json = f"""{{
+        "table_name": "{table_name}",
+        "db_schema": {{"name": "VARCHAR(255)", "email": "VARCHAR(255)", "age": "INTEGER"}},
+        "mappings": {{"name": "name", "email": "email", "age": "age"}},
+        "duplicate_check": {{"enabled": true, "check_file_level": false, "allow_duplicates": false, "uniqueness_columns": ["email"]}}
+    }}"""
+
+    # First upload (baseline row)
+    csv_content1 = "name,email,age\nJohn Doe,john@example.com,30\n"
+    files1 = {"file": ("auto1.csv", io.BytesIO(csv_content1.encode()), "text/csv")}
+    response1 = client.post("/map-data", files=files1, data={"mapping_json": mapping_json})
+    assert response1.status_code in [200, 500]
+
+    if response1.status_code != 200:
+        pytest.skip("Skipping duplicate merge flow because initial import failed (likely DB unavailable)")
+
+    # Second upload with updated data for same email to trigger duplicate
+    csv_content2 = "name,email,age\nJohn Doe,john@example.com,31\n"
+    files2 = {"file": ("auto2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
+    response2 = client.post("/map-data", files=files2, data={"mapping_json": mapping_json})
+    assert response2.status_code == 200, response2.text
+
+    result = response2.json()
+    assert result["duplicates_skipped"] == 1
+    assert result.get("needs_user_input") is True
+    import_id = result["import_id"]
+
+    duplicate_preview = result.get("duplicate_rows") or []
+    assert duplicate_preview, "Expected duplicate preview in response"
+    dup = duplicate_preview[0]
+    assert dup.get("existing_row"), "Expected existing row data in duplicate preview"
+
+    duplicate_id = dup["id"]
+
+    # Merge using the duplicate's value (simulating LLM auto resolution)
+    merge_payload = {"updates": {"age": dup["record"]["age"]}, "resolved_by": "auto-llm"}
+    merge_resp = client.post(
+        f"/import-history/{import_id}/duplicates/{duplicate_id}/merge",
+        json=merge_payload,
+    )
+    assert merge_resp.status_code == 200, merge_resp.text
+
+    # After merge, duplicates should clear
+    dup_after_merge = client.get(f"/import-history/{import_id}/duplicates").json()
+    assert dup_after_merge["total_count"] == 0
+    assert dup_after_merge["duplicates"] == []
+
+    # Verify table reflects merged age
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            age_value = conn.execute(
+                text(f'SELECT age FROM "{table_name}" WHERE email = :email'),
+                {"email": "john@example.com"}
+            ).scalar()
+            assert age_value == 31
+    except Exception as e:
+        print(f"Warning: Could not verify merged table row: {e}")

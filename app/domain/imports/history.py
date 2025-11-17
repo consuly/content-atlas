@@ -586,12 +586,23 @@ def list_duplicate_rows(
     import_id: str,
     limit: int = 100,
     offset: int = 0,
-    include_resolved: bool = False
+    include_resolved: bool = False,
+    include_existing_row: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Retrieve duplicate rows that were detected for an import.
     """
     engine = get_engine()
+    table_name: Optional[str] = None
+    uniqueness_columns: List[str] = []
+    mapping_config: Optional[MappingConfig] = None
+
+    if include_existing_row:
+        history_records = get_import_history(import_id=import_id, limit=1)
+        if history_records:
+            table_name = history_records[0].get("table_name")
+            mapping_config = _load_mapping_config(history_records[0].get("mapping_config"))
+
     where_clause = "import_id = :import_id"
     if not include_resolved:
         where_clause += " AND resolved_at IS NULL"
@@ -645,10 +656,27 @@ def list_duplicate_rows(
                 resolution_details = {"value": resolution_details}
             if resolution_details is not None:
                 resolution_details = _make_json_safe(resolution_details)
+            existing_row_payload = None
+            if include_existing_row and table_name:
+                effective_uniqueness = uniqueness_columns or _get_uniqueness_columns(mapping_config, record_data)
+                existing_row = _fetch_existing_row(conn, table_name, record_data, effective_uniqueness) if effective_uniqueness else None
+                if existing_row:
+                    row_id, row_values = existing_row
+                    cleaned_record = {
+                        key: _make_json_safe(value)
+                        for key, value in row_values.items()
+                        if not key.startswith("_")
+                    }
+                    existing_row_payload = {
+                        "row_id": row_id,
+                        "record": cleaned_record
+                    }
+
             duplicates.append({
                 "id": row[0],
                 "record_number": row[1],
                 "record": record_data,
+                "existing_row": existing_row_payload,
                 "detected_at": row[3].isoformat() if row[3] else None,
                 "resolved_at": row[4].isoformat() if row[4] else None,
                 "resolved_by": row[5],

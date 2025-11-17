@@ -119,20 +119,21 @@ class MapDataRequest(BaseModel):
     mapping: MappingConfig
 
 
+class DuplicateExistingRow(BaseModel):
+    row_id: int
+    record: Dict[str, Any]
+
+
 class DuplicateRow(BaseModel):
     """Represents a row that was skipped because it was a duplicate."""
     id: int
     record_number: Optional[int] = None
     record: Dict[str, Any]
+    existing_row: Optional[DuplicateExistingRow] = None
     detected_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
     resolved_by: Optional[str] = None
     resolution_details: Optional[Dict[str, Any]] = None
-
-
-class DuplicateExistingRow(BaseModel):
-    row_id: int
-    record: Dict[str, Any]
 
 
 class DuplicateDetailResponse(BaseModel):

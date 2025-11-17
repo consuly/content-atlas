@@ -107,6 +107,9 @@ pytest --cov=app --cov-report=html
 # Run duplicate detection tests
 pytest tests/test_api.py -k duplicate -v
 
+# LLM-ready row-level duplicate handling (checks existing_row in preview)
+python -m pytest tests/test_api.py::test_duplicate_detection_row_level -q
+
 # Run a specific test
 pytest tests/test_api.py::test_map_data_csv -v
 ```
