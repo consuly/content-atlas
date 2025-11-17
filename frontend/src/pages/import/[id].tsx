@@ -316,6 +316,22 @@ export const ImportMappingPage: React.FC = () => {
     };
   }, [displayJobInfo]);
 
+  const jobStatus = displayJobInfo?.status;
+  const isArchiveMappingActive =
+    isArchive &&
+    !!displayJobInfo &&
+    jobStatus !== 'succeeded' &&
+    jobStatus !== 'failed';
+  const archiveProgressPercent =
+    displayJobInfo?.progress ?? file?.active_job_progress ?? 0;
+  const archiveProgressStatus: 'success' | 'exception' | 'active' =
+    jobStatus === 'failed'
+      ? 'exception'
+      : jobStatus === 'succeeded'
+        ? 'success'
+        : 'active';
+  const disableMappingActions = isArchiveMappingActive;
+
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
   const [importHistory, setImportHistory] = useState<ImportHistory | null>(null);
@@ -2200,6 +2216,7 @@ export const ImportMappingPage: React.FC = () => {
               icon={<ThunderboltOutlined />}
               onClick={handleArchiveAutoProcess}
               loading={archiveProcessing}
+              disabled={disableMappingActions}
               block
             >
               {archiveProcessing ? 'Processing Archive...' : 'Auto Process Archive'}
@@ -2301,6 +2318,7 @@ export const ImportMappingPage: React.FC = () => {
                     : '';
                 handleInteractiveStart(previousError ? { previousError } : undefined);
               }}
+              disabled={disableMappingActions}
               block
             >
               Start Interactive Analysis
@@ -2487,31 +2505,26 @@ export const ImportMappingPage: React.FC = () => {
         />
       )}
 
-      {displayJobInfo && archiveJobProgress && (
+      {isArchiveMappingActive && (
         <Card size="small" style={{ marginBottom: 16 }}>
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <Text strong>Archive mapping progress</Text>
             <Progress
-              percent={
-                displayJobInfo.progress ??
-                file?.active_job_progress ??
-                0
-              }
-              status={
-                displayJobInfo.status === 'failed'
-                  ? 'exception'
-                  : displayJobInfo.status === 'succeeded'
-                    ? 'success'
-                    : 'active'
-              }
+              percent={archiveProgressPercent}
+              status={archiveProgressStatus}
               size="small"
             />
-            {archiveJobProgress.currentFile && (
+            {displayJobInfo?.stage && (
+              <Text type="secondary">
+                Stage: {displayJobInfo.stage.replace(/_/g, ' ')}
+              </Text>
+            )}
+            {archiveJobProgress?.currentFile && (
               <Text>
                 Currently processing: <Text code>{archiveJobProgress.currentFile}</Text>
               </Text>
             )}
-            {archiveJobProgress.completed.length > 0 && (
+            {archiveJobProgress?.completed.length ? (
               <Space direction="vertical" size={4} style={{ width: '100%' }}>
                 <Text strong>Completed files</Text>
                 <Space wrap size={[4, 4]}>
@@ -2534,8 +2547,8 @@ export const ImportMappingPage: React.FC = () => {
                   )}
                 </Space>
               </Space>
-            )}
-            {archiveJobProgress.remaining.length > 0 && (
+            ) : null}
+            {archiveJobProgress?.remaining.length ? (
               <Space direction="vertical" size={4} style={{ width: '100%' }}>
                 <Text strong>Remaining files</Text>
                 <Space wrap size={[4, 4]}>
@@ -2547,7 +2560,7 @@ export const ImportMappingPage: React.FC = () => {
                   )}
                 </Space>
               </Space>
-            )}
+            ) : null}
           </Space>
         </Card>
       )}
