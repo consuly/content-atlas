@@ -237,12 +237,47 @@ export const ImportMappingPage: React.FC = () => {
     };
   }, [effectiveArchiveResult]);
 
-  const archiveJobProgress = useMemo(() => {
-    if (!jobInfo || jobInfo.trigger_source !== 'archive_auto_process') {
+  const displayJobInfo: ImportJobInfo | null = useMemo(() => {
+    if (jobInfo) {
+      return jobInfo;
+    }
+
+    if (!file) {
       return null;
     }
 
-    const metadata = (jobInfo.metadata || {}) as ArchiveJobMetadata;
+    const hasActiveState =
+      file.active_job_id || file.active_job_status || file.active_job_stage || file.active_job_progress;
+
+    if (!hasActiveState) {
+      return null;
+    }
+
+    return {
+      id: file.active_job_id ?? 'untracked-job',
+      file_id: file.id,
+      status: file.active_job_status ?? 'running',
+      stage: file.active_job_stage,
+      progress: file.active_job_progress ?? undefined,
+      retry_attempt: 1,
+      error_message: file.error_message,
+      trigger_source: isArchiveFile ? 'archive_auto_process' : undefined,
+      analysis_mode: undefined,
+      conflict_mode: undefined,
+      created_at: file.active_job_started_at ?? undefined,
+      updated_at: undefined,
+      completed_at: undefined,
+      metadata: jobInfo?.metadata ?? null,
+      result_metadata: jobInfo?.result_metadata ?? null,
+    };
+  }, [file, isArchiveFile, jobInfo]);
+
+  const archiveJobProgress = useMemo(() => {
+    if (!displayJobInfo || displayJobInfo.trigger_source !== 'archive_auto_process') {
+      return null;
+    }
+
+    const metadata = (displayJobInfo.metadata || {}) as ArchiveJobMetadata;
     const remainingRaw = Array.isArray(metadata.remaining_files)
       ? metadata.remaining_files
       : [];
@@ -276,7 +311,7 @@ export const ImportMappingPage: React.FC = () => {
       remaining,
       completed,
     };
-  }, [jobInfo]);
+  }, [displayJobInfo]);
 
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -336,6 +371,34 @@ export const ImportMappingPage: React.FC = () => {
         }
       } catch (error) {
         console.error('Failed to fetch job info', error);
+      }
+      return null;
+    },
+    []
+  );
+
+  const fetchLatestJobForFile = useCallback(
+    async (fileId: string): Promise<ImportJobInfo | null> => {
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const response = await axios.get(`${API_URL}/import-jobs`, {
+          params: { file_id: fileId, limit: 1 },
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        if (
+          response.data?.success &&
+          Array.isArray(response.data.jobs) &&
+          response.data.jobs.length > 0
+        ) {
+          const job: ImportJobInfo = response.data.jobs[0];
+          setJobInfo(job);
+          return job;
+        }
+      } catch (error) {
+        console.error('Failed to fetch latest job for file', error);
       }
       return null;
     },
@@ -777,6 +840,20 @@ export const ImportMappingPage: React.FC = () => {
       cancelled = true;
     };
   }, [API_URL, archiveResult, file?.id, file?.status, isArchiveFile]);
+
+  useEffect(() => {
+    if (!file?.id) {
+      return;
+    }
+
+    if (file.active_job_id) {
+      return;
+    }
+
+    if (file.status === 'mapping' || (isArchiveFile && file.status === 'mapped')) {
+      fetchLatestJobForFile(file.id);
+    }
+  }, [fetchLatestJobForFile, file?.active_job_id, file?.id, file?.status, isArchiveFile]);
 
   useEffect(() => {
     if (!isArchiveFile) {
@@ -2380,26 +2457,26 @@ export const ImportMappingPage: React.FC = () => {
         Back to Import List
       </Button>
 
-      {jobInfo && (
+      {displayJobInfo && (
         <Alert
           type={
-            jobInfo.status === 'failed'
+            displayJobInfo.status === 'failed'
               ? 'error'
-              : jobInfo.status === 'succeeded'
+              : displayJobInfo.status === 'succeeded'
                 ? 'success'
                 : 'info'
           }
           showIcon
-          message={`Import job: ${jobInfo.status}`}
+          message={`Import job: ${displayJobInfo.status}`}
           description={
             <Space direction="vertical" size={4}>
               <Text>
-                {jobInfo.stage
-                  ? `Stage: ${jobInfo.stage.replace(/_/g, ' ')}`
+                {displayJobInfo.stage
+                  ? `Stage: ${displayJobInfo.stage.replace(/_/g, ' ')}`
                   : 'Processing in progress'}
               </Text>
-              {jobInfo.error_message && (
-                <Text type="secondary">Last error: {jobInfo.error_message}</Text>
+              {displayJobInfo.error_message && (
+                <Text type="secondary">Last error: {displayJobInfo.error_message}</Text>
               )}
             </Space>
           }
@@ -2407,16 +2484,20 @@ export const ImportMappingPage: React.FC = () => {
         />
       )}
 
-      {jobInfo && archiveJobProgress && (
+      {displayJobInfo && archiveJobProgress && (
         <Card size="small" style={{ marginBottom: 16 }}>
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <Text strong>Archive mapping progress</Text>
             <Progress
-              percent={jobInfo.progress ?? 0}
+              percent={
+                displayJobInfo.progress ??
+                file?.active_job_progress ??
+                0
+              }
               status={
-                jobInfo.status === 'failed'
+                displayJobInfo.status === 'failed'
                   ? 'exception'
-                  : jobInfo.status === 'succeeded'
+                  : displayJobInfo.status === 'succeeded'
                     ? 'success'
                     : 'active'
               }

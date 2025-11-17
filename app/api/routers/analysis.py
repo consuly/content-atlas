@@ -166,7 +166,7 @@ def _extract_supported_archive_entries(
         zip_file.close()
 
 
-async def _run_archive_auto_process_job(
+def _run_archive_auto_process_job(
     *,
     file_id: str,
     archive_name: str,
@@ -180,7 +180,7 @@ async def _run_archive_auto_process_job(
     job_id: str,
     prefilled_results: Optional[List[ArchiveAutoProcessFileResult]] = None,
 ) -> None:
-    """Execute archive auto-processing in the background so it survives client disconnects."""
+    """Execute archive auto-processing off the main event loop."""
     SessionLocal = get_session_local()
     db_session = SessionLocal()
 
@@ -301,15 +301,17 @@ async def _run_archive_auto_process_job(
                         summary = _summarize_archive_execution(marketing_response)
                     else:
                         _preloaded_file_contents[uploaded_file_id] = entry_bytes
-                        analyze_response = await analyze_file_endpoint(
-                            file=None,
-                            file_id=uploaded_file_id,
-                            sample_size=None,
-                            analysis_mode=analysis_mode,
-                            conflict_resolution=conflict_resolution,
-                            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
-                            max_iterations=max_iterations,
-                            db=db_session,
+                        analyze_response = asyncio.run(
+                            analyze_file_endpoint(
+                                file=None,
+                                file_id=uploaded_file_id,
+                                sample_size=None,
+                                analysis_mode=analysis_mode,
+                                conflict_resolution=conflict_resolution,
+                                auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                                max_iterations=max_iterations,
+                                db=db_session,
+                            )
                         )
                         summary = _summarize_archive_execution(analyze_response)
                 except HTTPException as exc:
@@ -1784,8 +1786,10 @@ async def auto_process_archive_endpoint(
     job_id = job["id"]
     update_file_status(file_id, "mapping", expected_active_job_id=job_id)
 
-    asyncio.create_task(
-        _run_archive_auto_process_job(
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        lambda: _run_archive_auto_process_job(
             file_id=file_id,
             archive_name=archive_name,
             archive_bytes=archive_bytes,
@@ -1796,7 +1800,7 @@ async def auto_process_archive_endpoint(
             auto_execute_confidence_threshold=auto_execute_confidence_threshold,
             max_iterations=max_iterations,
             job_id=job_id,
-        )
+        ),
     )
 
     return ArchiveAutoProcessResponse(
@@ -1919,8 +1923,10 @@ async def resume_auto_process_archive_endpoint(
     job_id = job["id"]
     update_file_status(file_id, "mapping", expected_active_job_id=job_id)
 
-    asyncio.create_task(
-        _run_archive_auto_process_job(
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        lambda: _run_archive_auto_process_job(
             file_id=file_id,
             archive_name=archive_name,
             archive_bytes=archive_bytes,
@@ -1932,7 +1938,7 @@ async def resume_auto_process_archive_endpoint(
             max_iterations=max_iterations,
             job_id=job_id,
             prefilled_results=prefilled_results,
-        )
+        ),
     )
 
     processed_prefilled = sum(1 for res in prefilled_results if res.status == "processed")
