@@ -208,6 +208,7 @@ export const ImportMappingPage: React.FC = () => {
   ];
 
   const isArchiveFile = file?.file_name?.toLowerCase().endsWith('.zip') ?? false;
+  const isArchive = isArchiveFile;
 
   const effectiveArchiveResult = archiveResult ?? archiveHistorySummary?.result ?? null;
 
@@ -2091,8 +2092,6 @@ export const ImportMappingPage: React.FC = () => {
       ),
     },
   ];
-
-  const isArchive = isArchiveFile;
 
   const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
     {
