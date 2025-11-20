@@ -342,6 +342,7 @@ class AnalyzeFileResponse(BaseModel):
     success: bool
     llm_response: str
     suggested_mapping: Optional[MappingConfig] = None
+    llm_decision: Optional[Dict[str, Any]] = None
     conflicts: Optional[List[SchemaConflict]] = None
     confidence_score: Optional[float] = None
     can_auto_execute: bool = False

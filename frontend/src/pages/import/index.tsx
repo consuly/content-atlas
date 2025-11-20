@@ -32,15 +32,17 @@ export const ImportPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('all');
   const [totalCount, setTotalCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const { message: messageApi } = AntdApp.useApp();
 
-  const fetchFiles = async (status?: string) => {
+  const fetchFiles = async (status: string = activeTab, page: number = currentPage, size: number = pageSize) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('refine-auth');
       const params: { status?: string; limit: number; offset: number } = {
-        limit: 100,
-        offset: 0,
+        limit: size,
+        offset: (page - 1) * size,
       };
       
       if (status && status !== 'all') {
@@ -67,15 +69,15 @@ export const ImportPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchFiles(activeTab);
+    fetchFiles(activeTab, currentPage, pageSize);
     
     // Auto-refresh every 10 seconds
     const interval = setInterval(() => {
-      fetchFiles(activeTab);
+      fetchFiles(activeTab, currentPage, pageSize);
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [activeTab]);
+  }, [activeTab, currentPage, pageSize]);
 
   const handleDelete = async (fileId: string, fileName: string) => {
     try {
@@ -88,7 +90,7 @@ export const ImportPage: React.FC = () => {
 
       if (response.data.success) {
         messageApi.success(`${fileName} deleted successfully`);
-        fetchFiles(activeTab);
+        fetchFiles(activeTab, currentPage, pageSize);
       }
     } catch (error) {
       messageApi.error(`Failed to delete ${fileName}`);
@@ -115,6 +117,20 @@ export const ImportPage: React.FC = () => {
   const formatDate = (dateString?: string): string => {
     if (!dateString) return '-';
     return new Date(dateString).toLocaleString();
+  };
+
+  const handlePaginationChange = (page: number, nextPageSize?: number) => {
+    setCurrentPage(page);
+    if (nextPageSize && nextPageSize !== pageSize) {
+      setPageSize(nextPageSize);
+    }
+  };
+
+  const handlePageSizeChange = (_: number, nextPageSize: number) => {
+    setCurrentPage(1);
+    if (nextPageSize !== pageSize) {
+      setPageSize(nextPageSize);
+    }
   };
 
   const getStatusBadge = (file: UploadedFile) => {
@@ -240,7 +256,7 @@ export const ImportPage: React.FC = () => {
         <FileUpload
           onUploadSuccess={() => {
             messageApi.success('File uploaded successfully! Refreshing list...');
-            setTimeout(() => fetchFiles(activeTab), 1000);
+            setTimeout(() => fetchFiles(activeTab, currentPage, pageSize), 1000);
           }}
           multiple={true}
         />
@@ -251,7 +267,7 @@ export const ImportPage: React.FC = () => {
         extra={
           <Button
             icon={<ReloadOutlined />}
-            onClick={() => fetchFiles(activeTab)}
+            onClick={() => fetchFiles(activeTab, currentPage, pageSize)}
             loading={loading}
           >
             Refresh
@@ -260,7 +276,10 @@ export const ImportPage: React.FC = () => {
       >
         <Tabs
           activeKey={activeTab}
-          onChange={setActiveTab}
+          onChange={(key) => {
+            setActiveTab(key);
+            setCurrentPage(1);
+          }}
           items={tabItems}
           style={{ marginBottom: '16px' }}
         />
@@ -271,9 +290,14 @@ export const ImportPage: React.FC = () => {
           rowKey="id"
           loading={loading}
           pagination={{
-            pageSize: 20,
+            current: currentPage,
+            pageSize,
+            total: totalCount,
             showSizeChanger: true,
+            pageSizeOptions: ['20', '50', '100'],
             showTotal: (total) => `Total ${total} files`,
+            onChange: handlePaginationChange,
+            onShowSizeChange: handlePageSizeChange,
           }}
         />
       </Card>
