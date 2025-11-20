@@ -6,6 +6,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { FileUpload } from '../../components/file-upload';
 import axios from 'axios';
 import { API_URL } from '../../config';
+import type { Key } from 'react';
 
 interface UploadedFile {
   id: string;
@@ -31,6 +32,7 @@ export const ImportPage: React.FC = () => {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('all');
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
@@ -59,6 +61,9 @@ export const ImportPage: React.FC = () => {
       if (response.data.success) {
         setFiles(response.data.files);
         setTotalCount(response.data.total_count);
+        setSelectedRowKeys((prev) =>
+          prev.filter((key) => response.data.files.some((file: UploadedFile) => file.id === key))
+        );
       }
     } catch (error) {
       messageApi.error('Failed to fetch files');
@@ -131,6 +136,73 @@ export const ImportPage: React.FC = () => {
     if (nextPageSize !== pageSize) {
       setPageSize(nextPageSize);
     }
+  };
+
+  const selectedFiles = files.filter((file) => selectedRowKeys.includes(file.id));
+  const mappableFiles = selectedFiles.filter((file) =>
+    ['uploaded', 'failed', 'mapping'].includes(file.status)
+  );
+  const remappableFiles = selectedFiles.filter((file) => file.status === 'mapped');
+
+  const handleBulkOpen = (targets: UploadedFile[], actionLabel: string) => {
+    if (!targets.length) {
+      messageApi.info(`Select files that can be ${actionLabel}.`);
+      return;
+    }
+
+    targets.forEach((file, index) => {
+      const path = `/import/${file.id}`;
+      if (index === 0) {
+        navigate(path);
+      } else if (typeof window !== 'undefined') {
+        window.open(path, '_blank', 'noopener');
+      }
+    });
+
+    const skipped = selectedFiles.length - targets.length;
+    if (skipped > 0) {
+      messageApi.warning(`Skipped ${skipped} file(s) not eligible to ${actionLabel}.`);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedFiles.length) {
+      messageApi.info('Select at least one file to delete.');
+      return;
+    }
+    setLoading(true);
+    const token = localStorage.getItem('refine-auth');
+    let deleted = 0;
+    let failed = 0;
+
+    for (const file of selectedFiles) {
+      try {
+        const response = await axios.delete(`${API_URL}/uploaded-files/${file.id}`, {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+        if (response.data.success) {
+          deleted += 1;
+        } else {
+          failed += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        console.error(`Error deleting file ${file.file_name}:`, error);
+      }
+    }
+
+    if (deleted) {
+      messageApi.success(`Deleted ${deleted} file(s).`);
+    }
+    if (failed) {
+      messageApi.error(`Failed to delete ${failed} file(s).`);
+    }
+
+    setSelectedRowKeys([]);
+    await fetchFiles(activeTab, currentPage, pageSize);
+    setLoading(false);
   };
 
   const getStatusBadge = (file: UploadedFile) => {
@@ -274,11 +346,46 @@ export const ImportPage: React.FC = () => {
           </Button>
         }
       >
+        <Space style={{ marginBottom: 12 }} wrap>
+          <Button
+            type="primary"
+            disabled={!mappableFiles.length}
+            onClick={() => handleBulkOpen(mappableFiles, 'map')}
+          >
+            Map selected
+          </Button>
+          <Button
+            disabled={!remappableFiles.length}
+            onClick={() => handleBulkOpen(remappableFiles, 'remap')}
+          >
+            Remap selected
+          </Button>
+          <Popconfirm
+            title="Delete selected files"
+            description="Are you sure you want to delete the selected files?"
+            onConfirm={handleBulkDelete}
+            okText="Yes"
+            cancelText="No"
+            disabled={!selectedFiles.length}
+          >
+            <Button danger disabled={!selectedFiles.length}>
+              Delete selected
+            </Button>
+          </Popconfirm>
+          {selectedFiles.length > 0 && (
+            <Button onClick={() => setSelectedRowKeys([])}>Clear selection</Button>
+          )}
+          <span style={{ marginLeft: 8, color: '#888' }}>
+            {selectedFiles.length ? `${selectedFiles.length} selected` : 'No files selected'}
+          </span>
+        </Space>
+
         <Tabs
           activeKey={activeTab}
           onChange={(key) => {
             setActiveTab(key);
             setCurrentPage(1);
+            setSelectedRowKeys([]);
           }}
           items={tabItems}
           style={{ marginBottom: '16px' }}
@@ -289,6 +396,11 @@ export const ImportPage: React.FC = () => {
           dataSource={files}
           rowKey="id"
           loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (nextKeys) => setSelectedRowKeys(nextKeys),
+            preserveSelectedRowKeys: true,
+          }}
           pagination={{
             current: currentPage,
             pageSize,
