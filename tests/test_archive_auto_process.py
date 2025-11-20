@@ -217,6 +217,78 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_stor
 
 
 @pytest.mark.not_b2
+def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_b2_storage):
+    analysis_module = importlib.import_module("app.api.routers.analysis")
+    analysis_calls = {"count": 0}
+    execution_calls = {"count": 0}
+
+    def fake_analyze(**_kwargs):
+        analysis_calls["count"] += 1
+        return {
+            "success": True,
+            "response": "ok",
+            "iterations_used": 1,
+            "llm_decision": {
+                "strategy": "NEW_TABLE",
+                "target_table": "cached_reuse",
+                "column_mapping": {"name": "name"},
+            },
+        }
+
+    monkeypatch.setattr(
+        analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze
+    )
+
+    def fake_execute(**_kwargs):
+        execution_calls["count"] += 1
+        return {
+            "success": True,
+            "strategy_attempted": "NEW_TABLE",
+            "strategy_executed": "NEW_TABLE",
+            "target_table": "cached_reuse",
+            "table_name": "cached_reuse",
+            "records_processed": 2,
+            "duplicates_skipped": 0,
+        }
+
+    monkeypatch.setattr(
+        "app.integrations.auto_import.execute_llm_import_decision", fake_execute
+    )
+    monkeypatch.setattr(
+        "app.main.execute_llm_import_decision", fake_execute, raising=False
+    )
+
+    csv_bytes = "name\nalpha\nbeta\n".encode()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("first.csv", csv_bytes)
+        zf.writestr("second.csv", csv_bytes)
+
+    archive_id = _upload_zip(buffer.getvalue(), filename="cached.zip")
+    response = client.post(
+        "/auto-process-archive",
+        data={
+            "file_id": archive_id,
+            "analysis_mode": "auto_always",
+            "conflict_resolution": "llm_decide",
+            "max_iterations": "5",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["success"] is True
+    job_id = payload["job_id"]
+    job = _wait_for_job(job_id)
+    assert job["status"] == "succeeded"
+
+    metadata = job["result_metadata"]
+    assert metadata["processed_files"] == 2
+    assert metadata["failed_files"] == 0
+    assert analysis_calls["count"] == 1  # second entry reused cached decision
+    assert execution_calls["count"] == 2  # still executes both files
+
+
+@pytest.mark.not_b2
 def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_b2_storage):
     analysis_module = importlib.import_module("app.api.routers.analysis")
     execution_calls = {"count": 0}

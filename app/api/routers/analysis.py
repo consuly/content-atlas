@@ -14,20 +14,21 @@ from sqlalchemy.orm import Session
 from typing import Optional, Any, List, Dict
 from dataclasses import dataclass, field
 
+import pandas as pd
 from app.db.session import get_db, get_session_local
 from app.api.schemas.shared import (
     AnalyzeFileResponse, AnalyzeB2FileRequest, ExecuteRecommendedImportRequest,
     AnalysisMode, ConflictResolutionMode, MapDataResponse,
     AnalyzeFileInteractiveRequest, AnalyzeFileInteractiveResponse, 
-    ExecuteInteractiveImportRequest, MappingConfig, DuplicateCheckConfig,
-    AutoExecutionResult, ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult
+    ExecuteInteractiveImportRequest, MappingConfig, DuplicateCheckConfig, AutoExecutionResult,
+    ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult
 )
 from app.api.dependencies import detect_file_type, analysis_storage, interactive_sessions
 from app.integrations.b2 import (
     download_file_from_b2 as _download_file_from_b2,
     upload_file_to_b2,
 )
-from app.domain.imports.processors.csv_processor import process_csv, process_excel, extract_raw_csv_rows
+from app.domain.imports.processors.csv_processor import process_csv, process_excel, extract_raw_csv_rows, detect_csv_header
 from app.domain.imports.processors.json_processor import process_json
 from app.domain.imports.processors.xml_processor import process_xml
 from app.domain.queries.analyzer import analyze_file_for_import as _analyze_file_for_import, sample_file_data
@@ -57,6 +58,108 @@ def _build_archive_entry_name(archive_stem: str, entry_name: str, index: int) ->
     sanitized = entry_name.replace("\\", "_").replace("/", "_")
     sanitized = sanitized or f"archive_entry_{index:03d}"
     return f"{archive_stem}__{index:03d}__{sanitized}"
+
+
+def _normalize_columns(columns: List[Any]) -> List[str]:
+    """Normalize column labels when building structure fingerprints."""
+    normalized: List[str] = []
+    for index, column in enumerate(columns, start=1):
+        if column is None:
+            normalized.append(f"col_{index}")
+            continue
+        token = str(column).strip().lower()
+        normalized.append(token or f"col_{index}")
+    return normalized
+
+
+def _build_structure_fingerprint(entry_bytes: bytes, entry_name: str) -> Optional[str]:
+    """
+    Build a lightweight structure fingerprint so similar files can reuse the same mapping decision.
+
+    The fingerprint focuses on column shape (count + normalized labels) to avoid hashing entire content.
+    """
+    try:
+        file_type = detect_file_type(entry_name)
+    except Exception:
+        return None
+
+    try:
+        if file_type == "csv":
+            raw_rows = extract_raw_csv_rows(entry_bytes, num_rows=5) or []
+            if not raw_rows:
+                return None
+            try:
+                has_header = detect_csv_header(entry_bytes)
+            except Exception:
+                has_header = True
+            header_row = raw_rows[0] if raw_rows else []
+            columns = header_row if has_header else [f"col_{idx+1}" for idx in range(len(header_row))]
+            normalized = _normalize_columns(columns)
+            return f"csv:{len(normalized)}:{'|'.join(normalized)}"
+        if file_type == "excel":
+            df = pd.read_excel(io.BytesIO(entry_bytes), engine="openpyxl", nrows=5)
+            normalized = _normalize_columns(list(df.columns))
+            return f"excel:{len(normalized)}:{'|'.join(normalized)}"
+        if file_type == "json":
+            return "json"
+        if file_type == "xml":
+            return "xml"
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not build fingerprint for %s: %s", entry_name, exc)
+        return None
+    return None
+
+
+def _parse_records_for_execution(file_content: bytes, file_type: str) -> List[Dict[str, Any]]:
+    """Parse file bytes into records for cached execution paths."""
+    if file_type == "csv":
+        return process_csv(file_content, has_header=None)
+    if file_type == "excel":
+        return process_excel(file_content)
+    if file_type == "json":
+        return process_json(file_content)
+    if file_type == "xml":
+        return process_xml(file_content)
+    raise ValueError(f"Unsupported file type: {file_type}")
+
+
+def _execute_cached_archive_decision(
+    entry_bytes: bytes, entry_name: str, llm_decision: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Execute a cached LLM decision for an archive entry without re-running analysis.
+    Returns a summary shape compatible with _summarize_archive_execution.
+    """
+    try:
+        file_type = detect_file_type(entry_name)
+        records = _parse_records_for_execution(entry_bytes, file_type)
+        execution_result = _get_execute_llm_import_decision()(
+            file_content=entry_bytes,
+            file_name=entry_name,
+            all_records=records,
+            llm_decision=llm_decision,
+        )
+        response = AnalyzeFileResponse(
+            success=execution_result.get("success", False),
+            llm_response="Reused cached decision",
+            llm_decision=llm_decision,
+            iterations_used=0,
+            max_iterations=1,
+            can_auto_execute=True,
+        )
+        if execution_result.get("success"):
+            response.auto_execution_result = AutoExecutionResult(**execution_result)
+        else:
+            response.auto_execution_error = execution_result.get("error")
+            response.error = execution_result.get("error")
+        return _summarize_archive_execution(response)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Cached execution failed for %s: %s", entry_name, exc)
+        return {
+            "status": "failed",
+            "message": f"Cached execution failed: {exc}",
+            "auto_retry_used": False,
+        }
 
 
 def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any]:
@@ -193,6 +296,7 @@ def _run_archive_auto_process_job(
     processed_files = 0
     failed_files = 0
     skipped_files = len(skipped_results)
+    fingerprint_cache: Dict[str, Dict[str, Any]] = {}
     results: List[ArchiveAutoProcessFileResult] = list(prefilled_results) + list(skipped_results)
     remaining_archive_paths = [path for path in supported_archive_paths if path not in prefilled_lookup]
     processing_paths = list(remaining_archive_paths)
@@ -263,6 +367,15 @@ def _run_archive_auto_process_job(
                     failed_files += 1
                     continue
 
+                fingerprint: Optional[str] = None
+                cached_plan: Optional[Dict[str, Any]] = None
+                try:
+                    fingerprint = _build_structure_fingerprint(entry_bytes, entry_name)
+                    if fingerprint:
+                        cached_plan = fingerprint_cache.get(fingerprint)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Fingerprinting failed for %s: %s", entry_name, exc)
+
                 try:
                     marketing_response: Optional[AnalyzeFileResponse] = None
                     if settings.enable_marketing_fixture_shortcuts:
@@ -299,6 +412,12 @@ def _run_archive_auto_process_job(
 
                     if marketing_response is not None:
                         summary = _summarize_archive_execution(marketing_response)
+                    elif cached_plan and cached_plan.get("llm_decision"):
+                        summary = _execute_cached_archive_decision(
+                            entry_bytes=entry_bytes,
+                            entry_name=entry_name,
+                            llm_decision=cached_plan["llm_decision"],
+                        )
                     else:
                         _preloaded_file_contents[uploaded_file_id] = entry_bytes
                         analyze_response = asyncio.run(
@@ -314,6 +433,10 @@ def _run_archive_auto_process_job(
                             )
                         )
                         summary = _summarize_archive_execution(analyze_response)
+                        if fingerprint and analyze_response.llm_decision:
+                            fingerprint_cache[fingerprint] = {
+                                "llm_decision": analyze_response.llm_decision,
+                            }
                 except HTTPException as exc:
                     summary = {
                         "status": "failed",
@@ -1544,7 +1667,8 @@ async def analyze_file_endpoint(
             llm_response=analysis_result["response"],
             iterations_used=analysis_result["iterations_used"],
             max_iterations=max_iterations,
-            can_auto_execute=False  # Will be set below based on analysis_mode
+            can_auto_execute=False,  # Will be set below based on analysis_mode
+            llm_decision=llm_decision
         )
         if job_id:
             response.job_id = job_id

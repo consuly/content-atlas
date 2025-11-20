@@ -98,6 +98,7 @@ See [API Reference](docs/API_REFERENCE.md) for detailed documentation.
 - `POST /auto-process-archive` downloads the ZIP from B2 once, streams each supported entry (CSV/XLSX/XLS) from memory for analysis/import, and uploads each entry a single time for persistence.
 - Reprocessing a specific file later uses the stored B2 path for that entry (not the whole ZIP), so day-to-day runs avoid per-entry B2 downloads and stay under bandwidth caps.
 - Unsupported entries (non-CSV/Excel) are marked as skipped; processing results and any failures are recorded on the import job.
+- Entries are fingerprinted by structure (normalized headers/column count) so the first analyzed file seeds the LLM decision and matching siblings reuse that mapping and target table automatically—keeping grouped files together and avoiding duplicate analysis work while preserving archive order.
 
 ## Usage Example
 
