@@ -205,6 +205,56 @@ export const ImportPage: React.FC = () => {
     setLoading(false);
   };
 
+  const handleBulkProcess = async () => {
+    if (!mappableFiles.length) {
+      messageApi.info('Select uploads that can be auto-processed.');
+      return;
+    }
+
+    setLoading(true);
+    const token = localStorage.getItem('refine-auth');
+    let processed = 0;
+    const failures: string[] = [];
+
+    for (const file of mappableFiles) {
+      const formData = new FormData();
+      formData.append('file_id', file.id);
+      formData.append('analysis_mode', 'auto_always');
+      formData.append('conflict_resolution', 'llm_decide');
+      formData.append('max_iterations', '5');
+
+      try {
+        const response = await axios.post(`${API_URL}/analyze-file`, formData, {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+        if (response.data.success) {
+          processed += 1;
+        } else {
+          failures.push(`${file.file_name}: ${response.data.error || 'Processing failed'}`);
+        }
+      } catch (error: any) {
+        const errorMsg =
+          error?.response?.data?.detail ||
+          error?.message ||
+          'Processing failed';
+        failures.push(`${file.file_name}: ${errorMsg}`);
+      }
+    }
+
+    if (processed) {
+      messageApi.success(`Auto-processed ${processed} file(s).`);
+    }
+    if (failures.length) {
+      messageApi.error(`Failed to process ${failures.length} file(s).\n${failures.join('\n')}`);
+    }
+
+    setSelectedRowKeys([]);
+    await fetchFiles(activeTab, currentPage, pageSize);
+    setLoading(false);
+  };
+
   const getStatusBadge = (file: UploadedFile) => {
     const { status } = file;
     const statusConfig: Record<string, { status: 'success' | 'processing' | 'error' | 'default'; text: string }> = {
@@ -349,6 +399,12 @@ export const ImportPage: React.FC = () => {
         <Space style={{ marginBottom: 12 }} wrap>
           <Button
             type="primary"
+            disabled={!mappableFiles.length || loading}
+            onClick={() => handleBulkProcess()}
+          >
+            Auto-process selected
+          </Button>
+          <Button
             disabled={!mappableFiles.length}
             onClick={() => handleBulkOpen(mappableFiles, 'map')}
           >
