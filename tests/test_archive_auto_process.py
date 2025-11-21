@@ -383,3 +383,106 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_b2_storage
     assert resumed_metadata["failed_files"] == 0
     assert len(resumed_metadata["results"]) == 2
     assert all(result["status"] == "processed" for result in resumed_metadata["results"])
+
+
+@pytest.mark.not_b2
+def test_auto_process_archive_resume_all(monkeypatch, fake_b2_storage):
+    """
+    When resume_failed_entries_only=False, the endpoint should reprocess the entire archive
+    regardless of prior success/failure state.
+    """
+    analysis_module = importlib.import_module("app.api.routers.analysis")
+    execution_calls = {"count": 0}
+
+    def fake_analyze(**_kwargs):
+        return {
+            "success": True,
+            "response": "ok",
+            "iterations_used": 1,
+            "llm_decision": {
+                "strategy": "NEW_TABLE",
+                "target_table": "archive_resume_all",
+                "column_mapping": {"name": "name"},
+            },
+        }
+
+    monkeypatch.setattr(
+        analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze
+    )
+
+    def fake_execute(**_kwargs):
+        execution_calls["count"] += 1
+        if execution_calls["count"] == 1:
+            return {
+                "success": False,
+                "error": "transient",
+                "strategy_attempted": "NEW_TABLE",
+                "target_table": "archive_resume_all",
+            }
+        return {
+            "success": True,
+            "strategy_attempted": "NEW_TABLE",
+            "strategy_executed": "NEW_TABLE",
+            "target_table": "archive_resume_all",
+            "table_name": "archive_resume_all",
+            "records_processed": 2,
+            "duplicates_skipped": 0,
+        }
+
+    monkeypatch.setattr(
+        "app.integrations.auto_import.execute_llm_import_decision", fake_execute
+    )
+    monkeypatch.setattr(
+        "app.core.config.settings.enable_auto_retry_failed_imports",
+        False,
+        raising=False,
+    )
+
+    csv_bytes = "name\nalpha\nbeta\n".encode()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("first.csv", csv_bytes)
+        zf.writestr("second.csv", csv_bytes)
+
+    archive_id = _upload_zip(buffer.getvalue(), filename="resume-all.zip")
+    response = client.post(
+        "/auto-process-archive",
+        data={
+            "file_id": archive_id,
+            "analysis_mode": "auto_always",
+            "conflict_resolution": "llm_decide",
+            "max_iterations": "5",
+        },
+    )
+    assert response.status_code == 200, response.text
+    first_job_id = response.json()["job_id"]
+
+    first_job = _wait_for_job(first_job_id)
+    assert first_job["status"] == "failed"
+    first_metadata = first_job["result_metadata"]
+    assert first_metadata["processed_files"] == 1
+    assert first_metadata["failed_files"] == 1
+
+    resume_response = client.post(
+        "/auto-process-archive/resume",
+        data={
+            "file_id": archive_id,
+            "from_job_id": first_job_id,
+            "resume_failed_entries_only": "false",
+            "analysis_mode": "auto_always",
+            "conflict_resolution": "llm_decide",
+            "max_iterations": "5",
+        },
+    )
+    assert resume_response.status_code == 200, resume_response.text
+    second_job_id = resume_response.json()["job_id"]
+    assert second_job_id
+
+    resumed_job = _wait_for_job(second_job_id)
+    assert resumed_job["status"] == "succeeded"
+    resumed_metadata = resumed_job["result_metadata"]
+    assert resumed_metadata["processed_files"] == 2
+    assert resumed_metadata["failed_files"] == 0
+    assert len(resumed_metadata["results"]) == 2
+    assert all(result["status"] == "processed" for result in resumed_metadata["results"])
+    assert execution_calls["count"] == 4  # two executions on first run, two on full reprocess
