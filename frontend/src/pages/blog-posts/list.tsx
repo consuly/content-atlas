@@ -34,7 +34,7 @@ export const BlogPostList = () => {
         <Table.Column
           dataIndex="content"
           title={"Content"}
-          render={(value: any) => {
+          render={(value?: string) => {
             if (!value) return "-";
             return <MarkdownField value={value.slice(0, 80) + "..."} />;
           }}
@@ -54,7 +54,7 @@ export const BlogPostList = () => {
         <Table.Column
           dataIndex={["createdAt"]}
           title={"Created at"}
-          render={(value: any) => <DateField value={value} />}
+          render={(value?: string | Date) => <DateField value={value} />}
         />
         <Table.Column
           title={"Actions"}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Popconfirm, Tooltip } from 'antd';
 import {
   ReloadOutlined,
@@ -27,39 +27,42 @@ export const ApiKeysPage: React.FC = () => {
   const [showRevealModal, setShowRevealModal] = useState(false);
   const { message: messageApi } = AntdApp.useApp();
 
-  const fetchKeys = async (status?: string) => {
-    setLoading(true);
-    try {
-      const token = localStorage.getItem('refine-auth');
-      const params: Record<string, string> = {};
+  const fetchKeys = useCallback(
+    async (status?: string) => {
+      setLoading(true);
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const params: Record<string, string> = {};
 
-      if (status === 'active') {
-        params.is_active = 'true';
-      } else if (status === 'revoked') {
-        params.is_active = 'false';
-      } else if (status === 'expired') {
-        params.expired = 'true';
+        if (status === 'active') {
+          params.is_active = 'true';
+        } else if (status === 'revoked') {
+          params.is_active = 'false';
+        } else if (status === 'expired') {
+          params.expired = 'true';
+        }
+
+        const response = await axios.get(`${API_URL}/admin/api-keys`, {
+          params,
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        setKeys(response.data.api_keys || []);
+      } catch (error) {
+        messageApi.error('Failed to fetch API keys');
+        console.error('Error fetching API keys:', error);
+      } finally {
+        setLoading(false);
       }
-
-      const response = await axios.get(`${API_URL}/admin/api-keys`, {
-        params,
-        headers: {
-          ...(token && { Authorization: `Bearer ${token}` }),
-        },
-      });
-
-      setKeys(response.data.api_keys || []);
-    } catch (error) {
-      messageApi.error('Failed to fetch API keys');
-      console.error('Error fetching API keys:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [messageApi]
+  );
 
   useEffect(() => {
     fetchKeys(activeTab);
-  }, [activeTab]);
+  }, [activeTab, fetchKeys]);
 
   const handleDelete = async (keyId: string, appName: string) => {
     try {

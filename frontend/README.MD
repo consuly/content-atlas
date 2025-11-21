@@ -41,6 +41,14 @@ Refine's hooks and components simplifies the development process and eliminates 
     npm run start
 ```
 
+### Linting and type-checking.
+
+```bash
+    npm run lint        # ESLint over TS/TSX
+    npm run typecheck   # TypeScript without emitting
+    npm test            # runs lint then typecheck
+```
+
 ## Environment Variables
 
 - `VITE_API_URL`: URL of the Content Atlas API (default: http://localhost:8000)
