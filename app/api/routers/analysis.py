@@ -230,10 +230,19 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
     ):
         retry_details = response.auto_retry_error or "Auto retry could not complete"
 
+    interactive_hint = None
+    if retry_details and "interactive assistant requires user input" in retry_details.lower():
+        interactive_hint = (
+            "Auto-retry paused: the assistant needs your input. "
+            "Use the import page to resume failed archive entries or open the Interactive tab to continue."
+        )
+
+    message_parts = [base_message]
     if retry_details and retry_details not in (base_message or ""):
-        message = f"{base_message} (Try Again: {retry_details})"
-    else:
-        message = base_message
+        message_parts.append(f"Try Again: {retry_details}")
+    if interactive_hint:
+        message_parts.append(interactive_hint)
+    message = " | ".join(part for part in message_parts if part)
 
     return {
         "status": "failed",
@@ -777,8 +786,15 @@ async def _auto_retry_failed_auto_import(
             return result
 
         if not interactive_response.can_execute or not interactive_response.llm_decision:
-            result["error"] = (
+            prompt_needed_msg = (
                 "Interactive assistant requires user input before executing the retry plan."
+            )
+            if previous_error_message:
+                prompt_needed_msg = (
+                    f"{prompt_needed_msg} Last error: {previous_error_message}"
+                )
+            result["error"] = (
+                f"{prompt_needed_msg} Open the Interactive tab for this file to review and approve the plan."
             )
             # Cleanup since we cannot move forward automatically
             interactive_sessions.pop(interactive_response.thread_id, None)

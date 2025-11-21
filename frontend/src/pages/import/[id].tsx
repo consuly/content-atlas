@@ -180,6 +180,7 @@ export const ImportMappingPage: React.FC = () => {
   const [result, setResult] = useState<ProcessingResult | null>(null);
   const [jobInfo, setJobInfo] = useState<ImportJobInfo | null>(null);
   const [archiveProcessing, setArchiveProcessing] = useState(false);
+  const [archiveResumeLoading, setArchiveResumeLoading] = useState(false);
   const [archiveResult, setArchiveResult] = useState<ArchiveAutoProcessResult | null>(null);
   const [archiveHistorySummary, setArchiveHistorySummary] = useState<ArchiveHistorySummary | null>(null);
   const [archiveJobDetails, setArchiveJobDetails] = useState<ImportJobInfo | null>(null);
@@ -790,7 +791,8 @@ export const ImportMappingPage: React.FC = () => {
       return;
     }
 
-    if (archiveResult || file.status !== 'mapped') {
+    const allowFetch = file.status === 'mapped' || file.status === 'failed';
+    if (archiveResult || !allowFetch) {
       setArchiveHistorySummary(null);
       return;
     }
@@ -883,7 +885,11 @@ export const ImportMappingPage: React.FC = () => {
       return;
     }
 
-    if (file.status === 'mapping' || (isArchiveFile && file.status === 'mapped')) {
+    if (
+      file.status === 'mapping' ||
+      (isArchiveFile &&
+        (file.status === 'mapped' || file.status === 'failed'))
+    ) {
       fetchLatestJobForFile(file.id);
     }
   }, [fetchLatestJobForFile, file?.active_job_id, file?.id, file?.status, isArchiveFile]);
@@ -1175,6 +1181,67 @@ export const ImportMappingPage: React.FC = () => {
       messageApi.error(errorMsg);
     } finally {
       setArchiveProcessing(false);
+    }
+  };
+
+  const handleArchiveResume = async (options?: { resumeAll?: boolean }) => {
+    if (!id) {
+      return;
+    }
+
+    const sourceJobId = archiveJobDetails?.id ?? archiveHistorySummary?.job?.id ?? jobInfo?.id;
+    if (!sourceJobId) {
+      messageApi.error('No previous archive job found to resume.');
+      return;
+    }
+
+    setArchiveResumeLoading(true);
+    setProcessing(false);
+    setResult(null);
+    setError(null);
+
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const formData = new FormData();
+      formData.append('file_id', id);
+      formData.append('from_job_id', sourceJobId);
+      formData.append('resume_failed_entries_only', options?.resumeAll ? 'false' : 'true');
+      formData.append('analysis_mode', 'auto_always');
+      formData.append('conflict_resolution', 'llm_decide');
+      formData.append('max_iterations', '5');
+
+      const response = await axios.post(`${API_URL}/auto-process-archive/resume`, formData, {
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+      });
+
+      const payload: ArchiveAutoProcessResult = response.data;
+      setArchiveResult(null);
+      setArchiveHistorySummary(null);
+
+      if (payload.job_id) {
+        const job = await fetchJobDetails(payload.job_id);
+        if (job) {
+          setArchiveJobDetails(job);
+        }
+        messageApi.success(
+          options?.resumeAll
+            ? 'Archive reprocessing started. We will rebuild every supported file.'
+            : 'Retrying failed archive files. Stay on this page for updates.'
+        );
+      } else {
+        messageApi.warning('Archive resume started, but job tracking is unavailable.');
+      }
+
+      await fetchFileDetails();
+      setActiveTab('auto');
+    } catch (err) {
+      const error = err as AxiosError<{ detail?: string }>;
+      const errorMsg = error.response?.data?.detail || error.message || 'Resume failed';
+      messageApi.error(errorMsg);
+    } finally {
+      setArchiveResumeLoading(false);
     }
   };
 
@@ -2168,6 +2235,93 @@ export const ImportMappingPage: React.FC = () => {
       }))
     : [];
 
+  const failedArchiveResults = useMemo(
+    () => effectiveArchiveResult?.results.filter((item) => item.status === 'failed') ?? [],
+    [effectiveArchiveResult]
+  );
+
+  const archiveResultsPanel = effectiveArchiveResult ? (
+    <Card title="Archive Results" style={{ marginTop: 24 }}>
+      <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Col span={6}>
+          <Statistic title="Processed" value={effectiveArchiveResult.processed_files} />
+        </Col>
+        <Col span={6}>
+          <Statistic title="Failed" value={effectiveArchiveResult.failed_files} />
+        </Col>
+        <Col span={6}>
+          <Statistic title="Skipped" value={effectiveArchiveResult.skipped_files} />
+        </Col>
+        <Col span={6}>
+          <Statistic title="Total Files" value={effectiveArchiveResult.total_files} />
+        </Col>
+      </Row>
+      {archiveAggregates && (
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col span={8}>
+            <Statistic
+              title="Rows Inserted"
+              value={archiveAggregates.totalRecords}
+            />
+          </Col>
+          <Col span={8}>
+            <Statistic
+              title="Duplicates Skipped"
+              value={archiveAggregates.totalDuplicates}
+            />
+          </Col>
+          <Col span={8}>
+            <Statistic
+              title="Tables Updated"
+              value={archiveAggregates.tablesTouched}
+            />
+          </Col>
+        </Row>
+      )}
+      {effectiveArchiveResult.failed_files > 0 && (
+        <>
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`We could not import ${effectiveArchiveResult.failed_files} file${
+              effectiveArchiveResult.failed_files === 1 ? '' : 's'
+            } from this archive.`}
+            description={
+              failedArchiveResults.length > 0
+                ? `First failure: ${failedArchiveResults[0].archive_path} — ${failedArchiveResults[0].message || 'No details reported.'}`
+                : undefined
+            }
+          />
+          <Space style={{ marginBottom: 12 }} wrap>
+            <Button
+              type="primary"
+              onClick={() => handleArchiveResume({ resumeAll: false })}
+              disabled={disableMappingActions || archiveResumeLoading}
+              loading={archiveResumeLoading}
+            >
+              Retry Failed Files
+            </Button>
+            <Button
+              onClick={() => handleArchiveResume({ resumeAll: true })}
+              disabled={disableMappingActions || archiveResumeLoading}
+              loading={archiveResumeLoading}
+            >
+              Reprocess Entire Archive
+            </Button>
+          </Space>
+        </>
+      )}
+      <Table
+        dataSource={archiveResultRows}
+        columns={archiveResultsColumns}
+        pagination={false}
+        size="small"
+        scroll={{ x: 'max-content' }}
+      />
+    </Card>
+  ) : null;
+
   const autoTabContent = (
     <div style={{ padding: '24px 0' }}>
       <Alert
@@ -2233,53 +2387,7 @@ export const ImportMappingPage: React.FC = () => {
         </Space>
       )}
 
-        {effectiveArchiveResult && (
-          <Card title="Archive Results" style={{ marginTop: 24 }}>
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              <Col span={6}>
-                <Statistic title="Processed" value={effectiveArchiveResult.processed_files} />
-              </Col>
-              <Col span={6}>
-                <Statistic title="Failed" value={effectiveArchiveResult.failed_files} />
-              </Col>
-              <Col span={6}>
-                <Statistic title="Skipped" value={effectiveArchiveResult.skipped_files} />
-              </Col>
-              <Col span={6}>
-                <Statistic title="Total Files" value={effectiveArchiveResult.total_files} />
-              </Col>
-            </Row>
-            {archiveAggregates && (
-              <Row gutter={16} style={{ marginBottom: 16 }}>
-                <Col span={8}>
-                  <Statistic
-                    title="Rows Inserted"
-                    value={archiveAggregates.totalRecords}
-                  />
-                </Col>
-                <Col span={8}>
-                  <Statistic
-                    title="Duplicates Skipped"
-                    value={archiveAggregates.totalDuplicates}
-                  />
-                </Col>
-                <Col span={8}>
-                  <Statistic
-                    title="Tables Updated"
-                    value={archiveAggregates.tablesTouched}
-                  />
-                </Col>
-              </Row>
-            )}
-            <Table
-              dataSource={archiveResultRows}
-              columns={archiveResultsColumns}
-              pagination={false}
-              size="small"
-              scroll={{ x: 'max-content' }}
-            />
-          </Card>
-        )}
+        {archiveResultsPanel}
     </div>
   );
 
@@ -2616,6 +2724,7 @@ export const ImportMappingPage: React.FC = () => {
                 <ErrorLogViewer error={file.error_message} showRetry={false} />
               </Card>
             )}
+            {isArchiveFile && archiveResultsPanel}
             <Space>
               {!showInteractiveRetry && (
                 <Button 
