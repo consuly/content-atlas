@@ -72,6 +72,7 @@ class DuplicateCheckConfig(BaseModel):
     check_file_level: bool = True  # Check if entire file was already imported
     allow_duplicates: bool = False  # If True, skip row-level duplicate checking
     force_import: bool = False  # If True, skip all duplicate checks
+    dedupe_within_file: bool = False  # Opt-in: quickly drop duplicates inside the uploaded file before mapping
     uniqueness_columns: Optional[List[str]] = None  # Columns to check for uniqueness
     error_message: Optional[str] = None  # Custom error message for duplicates
 
@@ -163,6 +164,7 @@ class MapDataResponse(BaseModel):
     message: str
     records_processed: int
     duplicates_skipped: int = 0
+    intra_file_duplicates_skipped: int = 0
     table_name: str
     import_id: Optional[str] = None
     duplicate_rows: Optional[List[DuplicateRow]] = None
