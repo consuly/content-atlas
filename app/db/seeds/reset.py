@@ -2,7 +2,7 @@
 Database Reset Utilities for Development
 
 This module provides functions to reset the database for testing purposes.
-It preserves user accounts while clearing all data tables and tracking information.
+It clears all application tables (including user accounts) and tracking information.
 
 SAFETY: This module includes production environment checks to prevent accidental
 data loss in production environments.
@@ -48,7 +48,7 @@ def is_production_environment() -> bool:
 
 def get_user_created_tables(engine: Engine) -> List[str]:
     """
-    Get list of all user-created tables (excluding system tables).
+    Get list of all application tables (excluding system tables).
     
     Args:
         engine: SQLAlchemy engine
@@ -63,9 +63,7 @@ def get_user_created_tables(engine: Engine) -> List[str]:
             WHERE table_schema = 'public'
             AND table_name NOT IN (
                 'spatial_ref_sys', 'geography_columns', 'geometry_columns', 
-                'raster_columns', 'raster_overviews',
-                'file_imports', 'table_metadata', 'import_history', 
-                'uploaded_files', 'users', 'api_keys', 'mapping_errors', 'import_jobs', 'import_duplicates', 'query_messages', 'query_threads'
+                'raster_columns', 'raster_overviews'
             )
             AND table_name NOT LIKE 'pg_%'
             ORDER BY table_name
@@ -160,14 +158,11 @@ def delete_all_b2_files() -> Dict[str, Any]:
 
 def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
     """
-    Reset database data while preserving user accounts.
+    Reset database data, including user accounts.
     
     This function:
-    1. Drops all user-created tables
-    2. Drops tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
-       - These will be recreated on startup with the latest schema
-    3. Deletes all files from B2 storage
-    4. Preserves the users table
+    1. Drops all application tables (public schema, excluding system tables)
+    2. Deletes all files from B2 storage
     
     Args:
         force_production: If True, allows reset in production (DANGEROUS!)
@@ -196,12 +191,12 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
     
     try:
         with engine.begin() as conn:
-            # Get list of user-created tables
-            user_tables = get_user_created_tables(engine)
-            logger.info(f"Found {len(user_tables)} user-created tables to drop")
+            # Get list of application tables
+            application_tables = get_user_created_tables(engine)
+            logger.info(f"Found {len(application_tables)} application tables to drop")
             
-            # Drop all user-created tables
-            for table_name in user_tables:
+            # Drop all application tables
+            for table_name in application_tables:
                 try:
                     conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
                     results['tables_dropped'].append(table_name)
@@ -211,25 +206,6 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
             
-            # Drop all tracking tables (to ensure schema updates are applied)
-            # These tables will be recreated by the application on startup with the latest schema
-            tracking_tables_to_drop = [
-                'uploaded_files',
-                'file_imports',
-                'table_metadata',
-                'import_history',
-                'import_jobs'
-            ]
-            for table_name in tracking_tables_to_drop:
-                try:
-                    conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
-                    results['tables_dropped'].append(table_name)
-                    logger.info(f"Dropped tracking table: {table_name} (will be recreated on startup)")
-                except Exception as e:
-                    error_msg = f"Failed to drop table {table_name}: {e}"
-                    results['errors'].append(error_msg)
-                    logger.error(error_msg)
-        
         # Database operations successful, now clean up B2
         logger.info("Database reset successful, cleaning up B2 files...")
         b2_result = delete_all_b2_files()

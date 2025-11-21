@@ -42,6 +42,7 @@ from .history import (
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from .schema_mapper import analyze_schema_compatibility, transform_record
 from app.core.config import settings
+from app.utils.locks import TableLockManager
 
 logger = logging.getLogger(__name__)
 
@@ -1099,43 +1100,46 @@ def execute_data_import(
         inspector = inspect(engine)
         table_exists = inspector.has_table(mapping_config.table_name)
         
-        if not table_exists or import_strategy == "NEW_TABLE":
-            create_table_if_not_exists(engine, mapping_config)
-            logger.info(f"Created table: {mapping_config.table_name}")
-        
-        # Insert records
+        # Acquire table lock for safe sequential insertion
+        # This prevents race conditions when multiple files target the same table in parallel
         insert_start = time.time()
-        records_inserted, duplicates_skipped = insert_records(
-            engine,
-            mapping_config.table_name,
-            mapped_records,
-            config=mapping_config,
-            file_content=file_content,
-            file_name=file_name
-        )
+        with TableLockManager.acquire(mapping_config.table_name):
+            if not table_exists or import_strategy == "NEW_TABLE":
+                create_table_if_not_exists(engine, mapping_config)
+                logger.info(f"Created table: {mapping_config.table_name}")
+            
+            # Insert records
+            records_inserted, duplicates_skipped = insert_records(
+                engine,
+                mapping_config.table_name,
+                mapped_records,
+                config=mapping_config,
+                file_content=file_content,
+                file_name=file_name
+            )
+            
+            # Manage table metadata (inside lock to ensure consistency)
+            if metadata_info:
+                if import_strategy == "NEW_TABLE" or not table_exists:
+                    # Store metadata for new table
+                    store_table_metadata(
+                        table_name=mapping_config.table_name,
+                        purpose_short=metadata_info.get("purpose_short", "Data imported from file"),
+                        data_domain=metadata_info.get("data_domain"),
+                        key_entities=metadata_info.get("key_entities", [])
+                    )
+                    logger.info(f"Stored metadata for table '{mapping_config.table_name}'")
+                else:
+                    # Enrich existing table metadata
+                    enrich_table_metadata(
+                        table_name=mapping_config.table_name,
+                        additional_purpose=f"Merged data from {file_name}",
+                        new_entities=metadata_info.get("key_entities")
+                    )
+                    logger.info(f"Enriched metadata for table '{mapping_config.table_name}'")
+                    
         insert_time = time.time() - insert_start
-        
         logger.info(f"Inserted {records_inserted} records in {insert_time:.2f}s (skipped {duplicates_skipped} duplicates)")
-        
-        # Manage table metadata
-        if metadata_info:
-            if import_strategy == "NEW_TABLE" or not table_exists:
-                # Store metadata for new table
-                store_table_metadata(
-                    table_name=mapping_config.table_name,
-                    purpose_short=metadata_info.get("purpose_short", "Data imported from file"),
-                    data_domain=metadata_info.get("data_domain"),
-                    key_entities=metadata_info.get("key_entities", [])
-                )
-                logger.info(f"Stored metadata for table '{mapping_config.table_name}'")
-            else:
-                # Enrich existing table metadata
-                enrich_table_metadata(
-                    table_name=mapping_config.table_name,
-                    additional_purpose=f"Merged data from {file_name}",
-                    new_entities=metadata_info.get("key_entities")
-                )
-                logger.info(f"Enriched metadata for table '{mapping_config.table_name}'")
         
         # Complete import tracking with structured metadata
         duration = time.time() - start_time
