@@ -12,7 +12,13 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait, FIRST_COMPLETED
 
-from .processors.csv_processor import process_csv, process_excel, process_large_excel
+from .processors.csv_processor import (
+    process_csv,
+    process_excel,
+    process_large_excel,
+    stream_csv_records,
+    detect_csv_header,
+)
 from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
 from .mapper import map_data
@@ -45,6 +51,7 @@ CHUNK_SIZE = 20000
 MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
 MAP_PARALLEL_MAX_WORKERS = max(1, settings.map_parallel_max_workers)
 DUPLICATE_PREVIEW_LIMIT = 20
+STREAMING_CSV_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10MB threshold to stream huge CSVs
 
 
 def _records_look_like_mappings(records: Any, sample_size: int = 5) -> bool:
@@ -102,6 +109,30 @@ def _summarize_type_mismatches(mapping_errors: List[Any]) -> List[Dict[str, Any]
             if value_str not in entry["samples"] and len(entry["samples"]) < 5:
                 entry["samples"].append(value_str)
     return sorted(summary.values(), key=lambda item: item["column"])
+
+
+def _merge_type_mismatch_summaries(
+    aggregated: Dict[str, Dict[str, Any]],
+    new_summary: List[Dict[str, Any]],
+) -> None:
+    """Accumulate type mismatch summaries across streaming chunks."""
+    for item in new_summary:
+        col = item.get("column")
+        if not col:
+            continue
+        target = aggregated.setdefault(
+            col,
+            {
+                "column": col,
+                "expected_type": item.get("expected_type"),
+                "occurrences": 0,
+                "samples": [],
+            },
+        )
+        target["occurrences"] += item.get("occurrences", 0)
+        for sample in item.get("samples", []) or []:
+            if sample not in target["samples"] and len(target["samples"]) < 5:
+                target["samples"].append(sample)
 
 
 def _build_type_mismatch_followup(table_name: str, summary: List[Dict[str, Any]]) -> str:
@@ -248,6 +279,51 @@ def _dedupe_records_in_memory(
     return deduped_records, skipped
 
 
+def _dedupe_records_streaming_chunk(
+    records: List[Dict[str, Any]],
+    mapping_config: MappingConfig,
+    seen_fingerprints: set,
+    import_id: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Deduplicate a streaming CSV chunk while tracking seen fingerprints across chunks."""
+    dedupe_cfg = mapping_config.duplicate_check
+    if (
+        not mapping_config.check_duplicates
+        or not dedupe_cfg.enabled
+        or dedupe_cfg.force_import
+        or dedupe_cfg.allow_duplicates
+        or not dedupe_cfg.dedupe_within_file
+    ):
+        return records, 0
+
+    uniqueness_columns = _determine_uniqueness_columns(
+        mapping_config,
+        records[0] if records else None,
+    )
+    if not uniqueness_columns:
+        return records, 0
+
+    deduped_records: List[Dict[str, Any]] = []
+    duplicate_entries: List[Dict[str, Any]] = []
+
+    for idx, record in enumerate(records, start=1):
+        fingerprint = tuple(_normalize_uniqueness_value(record.get(col)) for col in uniqueness_columns)
+        if fingerprint in seen_fingerprints:
+            duplicate_entries.append({"record_number": idx, "record": record.copy()})
+            continue
+        seen_fingerprints.add(fingerprint)
+        deduped_records.append(record)
+
+    skipped = len(duplicate_entries)
+    if skipped and import_id:
+        try:
+            record_duplicate_rows(import_id, duplicate_entries)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("Failed to persist in-file duplicate rows: %s", str(e))
+
+    return deduped_records, skipped
+
+
 def detect_file_type(filename: str) -> str:
     """Detect file type from filename."""
     if filename.endswith('.csv'):
@@ -286,6 +362,186 @@ def process_file_content(file_content: bytes, file_type: str) -> List[Dict[str, 
         return process_xml(file_content)
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
+
+
+def _execute_streaming_csv_import(
+    *,
+    file_content: bytes,
+    file_name: str,
+    mapping_config: MappingConfig,
+    source_type: str,
+    source_path: Optional[str],
+    import_strategy: Optional[str],
+    metadata_info: Optional[Dict[str, Any]],
+    import_id: str,
+) -> Dict[str, Any]:
+    """Stream CSV chunks to avoid loading huge files into memory."""
+    parse_time_total = 0.0
+    map_time_total = 0.0
+    insert_time_total = 0.0
+    raw_total_rows = 0
+    mapped_total_rows = 0
+    records_inserted_total = 0
+    duplicates_skipped_total = 0
+    intra_file_duplicates_skipped = 0
+    mapping_errors_count = 0
+    type_mismatch_agg: Dict[str, Dict[str, Any]] = {}
+    duplicate_rows: List[Dict[str, Any]] = []
+    uniqueness_columns: List[str] = []
+
+    update_mapping_status(import_id, "in_progress")
+    engine = get_engine()
+    type_mismatch_summary: List[Dict[str, Any]] = []
+
+    # Maintain cross-chunk dedupe fingerprints when requested
+    seen_fingerprints: set = set()
+    has_header = detect_csv_header(file_content)
+    chunk_iter = stream_csv_records(
+        file_content,
+        has_header=has_header,
+        chunk_size=CHUNK_SIZE,
+    )
+
+    first_chunk = True
+    for chunk_num, chunk_records in enumerate(chunk_iter, start=1):
+        chunk_start = time.time()
+        raw_total_rows += len(chunk_records)
+
+        # Optional in-file dedupe across the entire stream
+        chunk_records, intra_chunk_skipped = _dedupe_records_streaming_chunk(
+            chunk_records,
+            mapping_config,
+            seen_fingerprints,
+            import_id=import_id,
+        )
+        intra_file_duplicates_skipped += intra_chunk_skipped
+        parse_time_total += time.time() - chunk_start
+
+        if not chunk_records:
+            continue
+
+        map_start = time.time()
+        mapped_records, mapping_errors = map_data(chunk_records, mapping_config)
+        map_time_total += time.time() - map_start
+        mapping_errors_count += len(mapping_errors)
+        type_summary = _summarize_type_mismatches(mapping_errors)
+        _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
+
+        mapped_records = handle_schema_transformation(
+            mapped_records,
+            mapping_config.table_name,
+            import_strategy,
+        )
+
+        insert_start = time.time()
+        chunk_file_content = file_content if first_chunk else None
+        inserted, chunk_duplicates = insert_records(
+            engine,
+            mapping_config.table_name,
+            mapped_records,
+            config=mapping_config,
+            file_content=chunk_file_content,
+            file_name=file_name,
+        )
+        insert_time_total += time.time() - insert_start
+        first_chunk = False
+
+        records_inserted_total += inserted
+        duplicates_skipped_total += chunk_duplicates
+        mapped_total_rows += len(mapped_records)
+
+        if not uniqueness_columns and mapped_records:
+            uniqueness_columns = _determine_uniqueness_columns(
+                mapping_config,
+                mapped_records[0],
+            )
+
+    type_mismatch_summary = sorted(type_mismatch_agg.values(), key=lambda item: item["column"])
+
+    # Update mapping status
+    mapping_status = "completed_with_errors" if mapping_errors_count else "completed"
+    update_mapping_status(
+        import_id,
+        mapping_status,
+        errors_count=mapping_errors_count,
+        duration_seconds=map_time_total,
+    )
+
+    # Manage table metadata
+    if metadata_info:
+        inspector = inspect(engine)
+        table_exists = inspector.has_table(mapping_config.table_name)
+        if import_strategy == "NEW_TABLE" or not table_exists:
+            store_table_metadata(
+                table_name=mapping_config.table_name,
+                purpose_short=metadata_info.get("purpose_short", "Data imported from file"),
+                data_domain=metadata_info.get("data_domain"),
+                key_entities=metadata_info.get("key_entities", []),
+            )
+        else:
+            enrich_table_metadata(
+                table_name=mapping_config.table_name,
+                additional_purpose=f"Merged data from {file_name}",
+                new_entities=metadata_info.get("key_entities"),
+            )
+
+    duration = parse_time_total + map_time_total + insert_time_total
+
+    if duplicates_skipped_total > 0:
+        try:
+            duplicate_rows = list_duplicate_rows(
+                import_id,
+                limit=DUPLICATE_PREVIEW_LIMIT,
+                include_existing_row=True,
+            )
+        except Exception as e:
+            logger.error("Failed to load duplicate rows for preview: %s", str(e))
+
+    duplicate_followup = _build_duplicate_followup(
+        mapping_config.table_name,
+        duplicate_rows,
+        uniqueness_columns,
+        import_id,
+    )
+    duplicate_total = duplicates_skipped_total
+    followup_message = duplicate_followup or ""
+    needs_user_input = duplicates_skipped_total > 0
+
+    metadata_payload: Dict[str, Any] = {}
+    if type_mismatch_summary:
+        metadata_payload["type_mismatch_summary"] = type_mismatch_summary
+    if intra_file_duplicates_skipped:
+        metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
+
+    complete_import_tracking(
+        import_id=import_id,
+        status="success",
+        total_rows_in_file=raw_total_rows,
+        rows_processed=mapped_total_rows,
+        rows_inserted=records_inserted_total,
+        rows_skipped=duplicates_skipped_total,
+        duplicates_found=duplicates_skipped_total,
+        duration_seconds=duration,
+        parsing_time_seconds=parse_time_total,
+        insert_time_seconds=insert_time_total,
+        metadata=metadata_payload or None,
+    )
+
+    return {
+        "success": True,
+        "records_processed": records_inserted_total,
+        "duplicates_skipped": duplicates_skipped_total,
+        "intra_file_duplicates_skipped": intra_file_duplicates_skipped,
+        "table_name": mapping_config.table_name,
+        "mapping_errors": [],
+        "type_mismatch_summary": type_mismatch_summary,
+        "duration_seconds": duration,
+        "llm_followup": followup_message or None,
+        "needs_user_input": needs_user_input,
+        "duplicate_rows": duplicate_rows or None,
+        "duplicate_rows_count": duplicate_total if duplicate_total else None,
+        "import_id": import_id,
+    }
 
 
 def _map_chunk(
@@ -616,6 +872,9 @@ def execute_data_import(
         
         logger.info(f"Starting import: {file_name} → {mapping_config.table_name} (strategy: {import_strategy})")
         
+        # Stream large CSVs to avoid materializing everything in memory
+        streaming_csv = file_type == "csv" and len(file_content) >= STREAMING_CSV_THRESHOLD_BYTES
+
         # Process file (or use cached records)
         parse_start = time.time()
         used_cached_records = pre_parsed_records is not None
@@ -624,6 +883,22 @@ def execute_data_import(
             records = pre_parsed_records
             parse_time = 0.0  # No parsing time since we used cache
             logger.info(f"Using {len(records)} cached records (skipped file parsing)")
+        elif streaming_csv:
+            logger.info(
+                "Streaming CSV import for %s (size=%d bytes)",
+                file_name,
+                len(file_content),
+            )
+            return _execute_streaming_csv_import(
+                file_content=file_content,
+                file_name=file_name,
+                mapping_config=mapping_config,
+                source_type=source_type,
+                source_path=source_path,
+                import_strategy=import_strategy,
+                metadata_info=metadata_info,
+                import_id=import_id,
+            )
         else:
             # Parse file normally
             records = process_file_content(file_content, file_type)
