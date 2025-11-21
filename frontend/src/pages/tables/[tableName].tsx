@@ -102,7 +102,7 @@ export const TableViewerPage: React.FC = () => {
       });
 
       if (response.data.success) {
-        const nextColumns = response.data.columns;
+        const nextColumns: ColumnDefinition[] = response.data.columns || [];
         setColumns(nextColumns);
         // Limit initial render cost by only showing a subset of columns; users can expand as needed.
         setVisibleColumns((prev) =>

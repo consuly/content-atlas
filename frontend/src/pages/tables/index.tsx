@@ -18,7 +18,13 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import type { SortOrder, SorterResult, TablePaginationConfig } from 'antd/es/table/interface';
+import type {
+  FilterValue,
+  SortOrder,
+  SorterResult,
+  TableCurrentDataSource,
+  TablePaginationConfig,
+} from 'antd/es/table/interface';
 import { ArrowRightOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
 
 const { Title, Text, Link } = Typography;
@@ -118,8 +124,9 @@ export const TablesListPage: React.FC = () => {
 
   const handleTableChange = (
     _pagination: TablePaginationConfig,
-    _filters: Record<string, React.Key[] | null>,
+    _filters: Record<string, FilterValue | null>,
     sorterInfo: SorterResult<TableInfo> | SorterResult<TableInfo>[],
+    _extra: TableCurrentDataSource<TableInfo>,
   ) => {
     const currentSorter = Array.isArray(sorterInfo) ? sorterInfo[0] : sorterInfo;
     setSorter({
