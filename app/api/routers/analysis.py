@@ -3,11 +3,15 @@ AI-powered file analysis endpoints for intelligent import recommendations.
 """
 import asyncio
 import io
+import json
 import logging
 import mimetypes
 import os
 import uuid
 import zipfile
+import threading
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.orm import Session
@@ -53,6 +57,26 @@ router = APIRouter(tags=["analysis"])
 logger = logging.getLogger(__name__)
 _preloaded_file_contents: Dict[str, bytes] = {}
 ARCHIVE_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xls")
+ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_auto_process.log")
+_archive_log_lock = threading.Lock()
+
+
+def _log_archive_debug(payload: Dict[str, Any]) -> None:
+    """
+    Append a structured JSON line to the archive debug log.
+    Failures should never break the worker.
+    """
+    try:
+        os.makedirs(os.path.dirname(ARCHIVE_DEBUG_LOG), exist_ok=True)
+        record = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            **payload,
+        }
+        with _archive_log_lock:
+            with open(ARCHIVE_DEBUG_LOG, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, default=str) + "\n")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Archive debug log write failed: %s", exc)
 
 
 def _guess_content_type(file_name: str) -> str:
@@ -222,6 +246,185 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
     }
 
 
+def _process_archive_entry(
+    *,
+    archive_path: str,
+    entry_name: str,
+    stored_file_name: str,
+    archive_folder: str,
+    zip_file: zipfile.ZipFile,
+    zip_lock: threading.Lock,
+    fingerprint_cache: Dict[str, Dict[str, Any]],
+    fingerprint_lock: threading.Lock,
+    analysis_mode: AnalysisMode,
+    conflict_resolution: ConflictResolutionMode,
+    auto_execute_confidence_threshold: float,
+    max_iterations: int,
+) -> ArchiveAutoProcessFileResult:
+    """Process a single archive entry in a thread."""
+    # Create a new database session for this thread
+    SessionLocal = get_session_local()
+    db_session = SessionLocal()
+    
+    try:
+        # 1. Safe file reading (serialized)
+        with zip_lock:
+            try:
+                entry_bytes = zip_file.read(archive_path)
+            except KeyError:
+                return ArchiveAutoProcessFileResult(
+                    archive_path=archive_path,
+                    stored_file_name=stored_file_name,
+                    status="failed",
+                    message="Unable to read archive member",
+                )
+
+        # 2. B2 Upload (parallel)
+        try:
+            upload_result = upload_file_to_b2(
+                file_content=entry_bytes,
+                file_name=stored_file_name,
+                folder=archive_folder,
+            )
+            # Insert uploaded file record using the thread-local session
+            # Note: insert_uploaded_file typically uses its own session context manager,
+            # checking app/domain/uploads/uploaded_files.py might be needed.
+            # Assuming insert_uploaded_file handles its own DB connection or we need to pass one.
+            # Looking at the imports, insert_uploaded_file is imported.
+            # Let's check if it accepts a db session. It usually does or creates one.
+            # If it creates one, that's fine.
+            uploaded_file = insert_uploaded_file(
+                file_name=entry_name,
+                b2_file_id=upload_result["file_id"],
+                b2_file_path=upload_result["file_path"],
+                file_size=len(entry_bytes),
+                content_type=_guess_content_type(entry_name),
+                user_id=None,
+            )
+            uploaded_file_id = uploaded_file["id"]
+        except Exception as exc:
+            logger.exception("Failed staging archive entry %s: %s", archive_path, exc)
+            return ArchiveAutoProcessFileResult(
+                archive_path=archive_path,
+                stored_file_name=stored_file_name,
+                status="failed",
+                message=f"Unable to stage file: {exc}",
+            )
+
+        # 3. Fingerprinting (parallel calculation, serialized cache access)
+        fingerprint: Optional[str] = None
+        cached_plan: Optional[Dict[str, Any]] = None
+        try:
+            fingerprint = _build_structure_fingerprint(entry_bytes, entry_name)
+            if fingerprint:
+                with fingerprint_lock:
+                    cached_plan = fingerprint_cache.get(fingerprint)
+        except Exception as exc:
+            logger.debug("Fingerprinting failed for %s: %s", entry_name, exc)
+
+        # 4. Analysis & Execution (parallel analysis, serialized insertion via TableLockManager)
+        summary = {}
+        try:
+            marketing_response: Optional[AnalyzeFileResponse] = None
+            if settings.enable_marketing_fixture_shortcuts:
+                normalized_entry = _normalize_marketing_fixture_name(entry_name)
+                if "marketing agency" in normalized_entry:
+                    try:
+                        file_type = detect_file_type(entry_name)
+                        if file_type == "csv":
+                            candidate_records = process_csv(entry_bytes, has_header=None)
+                        elif file_type == "excel":
+                            candidate_records = process_excel(entry_bytes)
+                        else:
+                            candidate_records = None
+                    except Exception as exc:
+                        logger.warning("Unable to parse marketing agency fixture %s: %s", entry_name, exc)
+                        candidate_records = None
+
+                    if candidate_records:
+                        marketing_response = _handle_marketing_agency_special_case(
+                            file_name=entry_name,
+                            file_content=entry_bytes,
+                            raw_records=candidate_records,
+                            analysis_mode=analysis_mode,
+                            conflict_mode=conflict_resolution,
+                            max_iterations=max_iterations,
+                            file_id=uploaded_file_id,
+                            update_file_status_fn=update_file_status,
+                            metadata_name=entry_name,
+                        )
+
+            if marketing_response is not None:
+                summary = _summarize_archive_execution(marketing_response)
+            elif cached_plan and cached_plan.get("llm_decision"):
+                summary = _execute_cached_archive_decision(
+                    entry_bytes=entry_bytes,
+                    entry_name=entry_name,
+                    llm_decision=cached_plan["llm_decision"],
+                )
+            else:
+                # Preload content for analysis to avoid re-downloading from B2
+                # We need to use a thread-safe way if _preloaded_file_contents is global
+                # Actually, _preloaded_file_contents is a global dict.
+                # It's better to pass content directly if possible, but analyze_file_endpoint relies on it or B2.
+                # Since we are running in a thread, global dict access is risky if keys collide (UUIDs shouldn't).
+                # But we should clean it up.
+                _preloaded_file_contents[uploaded_file_id] = entry_bytes
+                
+                try:
+                    analyze_response = asyncio.run(
+                        analyze_file_endpoint(
+                            file=None,
+                            file_id=uploaded_file_id,
+                            sample_size=None,
+                            analysis_mode=analysis_mode,
+                            conflict_resolution=conflict_resolution,
+                            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                            max_iterations=max_iterations,
+                            db=db_session,
+                        )
+                    )
+                    summary = _summarize_archive_execution(analyze_response)
+                    
+                    if fingerprint and analyze_response.llm_decision:
+                        with fingerprint_lock:
+                            fingerprint_cache[fingerprint] = {
+                                "llm_decision": analyze_response.llm_decision,
+                            }
+                finally:
+                    _preloaded_file_contents.pop(uploaded_file_id, None)
+
+        except HTTPException as exc:
+            summary = {
+                "status": "failed",
+                "message": getattr(exc, "detail", str(exc)),
+                "auto_retry_used": False,
+            }
+        except Exception as exc:
+            logger.exception("Archive auto-process failed for %s: %s", archive_path, exc)
+            summary = {
+                "status": "failed",
+                "message": str(exc),
+                "auto_retry_used": False,
+            }
+
+        return ArchiveAutoProcessFileResult(
+            archive_path=archive_path,
+            stored_file_name=stored_file_name,
+            uploaded_file_id=uploaded_file_id,
+            status=summary.get("status", "failed"),
+            table_name=summary.get("table_name"),
+            records_processed=summary.get("records_processed"),
+            duplicates_skipped=summary.get("duplicates_skipped"),
+            import_id=summary.get("import_id"),
+            auto_retry_used=summary.get("auto_retry_used", False),
+            message=summary.get("message"),
+        )
+        
+    finally:
+        db_session.close()
+
+
 def _extract_supported_archive_entries(
     archive_bytes: bytes, allowed_paths: Optional[set[str]] = None
 ) -> tuple[list[zipfile.ZipInfo], list[ArchiveAutoProcessFileResult]]:
@@ -290,9 +493,8 @@ def _run_archive_auto_process_job(
     prefilled_results: Optional[List[ArchiveAutoProcessFileResult]] = None,
 ) -> None:
     """Execute archive auto-processing off the main event loop."""
-    SessionLocal = get_session_local()
-    db_session = SessionLocal()
-
+    import threading
+    
     prefilled_results = prefilled_results or []
     prefilled_lookup = {result.archive_path: result for result in prefilled_results}
     initial_processed = sum(1 for result in prefilled_results if result.status == "processed")
@@ -303,6 +505,9 @@ def _run_archive_auto_process_job(
     failed_files = 0
     skipped_files = len(skipped_results)
     fingerprint_cache: Dict[str, Dict[str, Any]] = {}
+    fingerprint_lock = threading.Lock()
+    zip_lock = threading.Lock()
+    
     results: List[ArchiveAutoProcessFileResult] = list(prefilled_results) + list(skipped_results)
     remaining_archive_paths = [path for path in supported_archive_paths if path not in prefilled_lookup]
     processing_paths = list(remaining_archive_paths)
@@ -315,208 +520,185 @@ def _run_archive_auto_process_job(
     archive_stem = os.path.splitext(os.path.basename(archive_name))[0] or "archive"
     archive_folder = f"uploads/archive_{file_id}"
 
+    _log_archive_debug(
+        {
+            "event": "job_started",
+            "job_id": job_id,
+            "file_id": file_id,
+            "archive_name": archive_name,
+            "supported_entries": list(processing_paths),
+            "prefilled_processed": initial_processed,
+            "prefilled_failed": initial_failed,
+            "prefilled_skipped": initial_skipped,
+        }
+    )
+
     try:
         try:
+            # ZipFile is not thread-safe for concurrent reads/seeks, so we must lock access
             zip_file = zipfile.ZipFile(io.BytesIO(archive_bytes))
         except zipfile.BadZipFile as exc:
             fail_active_job(file_id, job_id, f"Archive is corrupted: {exc}")
             return
 
         try:
-            for index, archive_path in enumerate(processing_paths, start=1):
-                entry_name = os.path.basename(archive_path) or f"entry_{index:03d}"
-                stored_file_name = _build_archive_entry_name(
-                    archive_stem, entry_name, index
-                )
+            # Determine max workers - default to 4, but cap at CPU count
+            max_workers = min(4, os.cpu_count() or 2)
+            logger.info(f"Processing archive with {max_workers} parallel workers")
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {}
+                for index, archive_path in enumerate(processing_paths, start=1):
+                    entry_name = os.path.basename(archive_path) or f"entry_{index:03d}"
+                    stored_file_name = _build_archive_entry_name(
+                        archive_stem, entry_name, index
+                    )
+                    
+                    future = executor.submit(
+                        _process_archive_entry,
+                        archive_path=archive_path,
+                        entry_name=entry_name,
+                        stored_file_name=stored_file_name,
+                        archive_folder=archive_folder,
+                        zip_file=zip_file,
+                        zip_lock=zip_lock,
+                        fingerprint_cache=fingerprint_cache,
+                        fingerprint_lock=fingerprint_lock,
+                        analysis_mode=analysis_mode,
+                        conflict_resolution=conflict_resolution,
+                        auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                        max_iterations=max_iterations,
+                    )
+                    futures[future] = archive_path
 
-                try:
-                    entry_bytes = zip_file.read(archive_path)
-                except KeyError:
-                    results.append(
-                        ArchiveAutoProcessFileResult(
-                            archive_path=archive_path,
-                            stored_file_name=stored_file_name,
-                            status="failed",
-                            message="Unable to read archive member",
-                        )
-                    )
-                    failed_files += 1
-                    continue
-
-                try:
-                    upload_result = upload_file_to_b2(
-                        file_content=entry_bytes,
-                        file_name=stored_file_name,
-                        folder=archive_folder,
-                    )
-                    uploaded_file = insert_uploaded_file(
-                        file_name=entry_name,
-                        b2_file_id=upload_result["file_id"],
-                        b2_file_path=upload_result["file_path"],
-                        file_size=len(entry_bytes),
-                        content_type=_guess_content_type(entry_name),
-                        user_id=None,
-                    )
-                    uploaded_file_id = uploaded_file["id"]
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    logger.exception(
-                        "Failed staging archive entry %s: %s", archive_path, exc
-                    )
-                    results.append(
-                        ArchiveAutoProcessFileResult(
-                            archive_path=archive_path,
-                            stored_file_name=stored_file_name,
-                            status="failed",
-                            message=f"Unable to stage file: {exc}",
-                        )
-                    )
-                    failed_files += 1
-                    continue
-
-                fingerprint: Optional[str] = None
-                cached_plan: Optional[Dict[str, Any]] = None
-                try:
-                    fingerprint = _build_structure_fingerprint(entry_bytes, entry_name)
-                    if fingerprint:
-                        cached_plan = fingerprint_cache.get(fingerprint)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug("Fingerprinting failed for %s: %s", entry_name, exc)
-
-                try:
-                    marketing_response: Optional[AnalyzeFileResponse] = None
-                    if settings.enable_marketing_fixture_shortcuts:
-                        normalized_entry = _normalize_marketing_fixture_name(entry_name)
-                        if "marketing agency" in normalized_entry:
+                # Process results as they complete
+                for future in as_completed(futures):
+                    archive_path = futures[future]
+                    try:
+                        file_result = future.result()
+                        results.append(file_result)
+                        
+                        uploaded_file_id = getattr(file_result, "uploaded_file_id", None)
+                        if file_result.status == "processed" and uploaded_file_id:
                             try:
-                                file_type = detect_file_type(entry_name)
-                                if file_type == "csv":
-                                    candidate_records = process_csv(entry_bytes, has_header=None)
-                                elif file_type == "excel":
-                                    candidate_records = process_excel(entry_bytes)
-                                else:
-                                    candidate_records = None
-                            except Exception as exc:  # pragma: no cover - defensive parsing
+                                update_file_status(
+                                    uploaded_file_id,
+                                    "mapped",
+                                    mapped_table_name=getattr(file_result, "table_name", None),
+                                    mapped_rows=getattr(file_result, "records_processed", None),
+                                )
+                            except Exception as status_exc:  # pragma: no cover - defensive
                                 logger.warning(
-                                    "Unable to parse marketing agency fixture %s: %s",
-                                    entry_name,
-                                    exc,
+                                    "Archive entry %s mapped but status update failed for %s: %s",
+                                    archive_path,
+                                    uploaded_file_id,
+                                    status_exc,
                                 )
-                                candidate_records = None
-
-                            if candidate_records:
-                                marketing_response = _handle_marketing_agency_special_case(
-                                    file_name=entry_name,
-                                    file_content=entry_bytes,
-                                    raw_records=candidate_records,
-                                    analysis_mode=analysis_mode,
-                                    conflict_mode=conflict_resolution,
-                                    max_iterations=max_iterations,
-                                    file_id=uploaded_file_id,
-                                    update_file_status_fn=update_file_status,
-                                    metadata_name=entry_name,
+                        elif file_result.status == "failed" and uploaded_file_id:
+                            try:
+                                update_file_status(
+                                    uploaded_file_id,
+                                    "failed",
+                                    error_message=getattr(file_result, "message", None),
+                                )
+                            except Exception as status_exc:  # pragma: no cover - defensive
+                                logger.warning(
+                                    "Archive entry %s failed but status update failed for %s: %s",
+                                    archive_path,
+                                    uploaded_file_id,
+                                    status_exc,
                                 )
 
-                    if marketing_response is not None:
-                        summary = _summarize_archive_execution(marketing_response)
-                    elif cached_plan and cached_plan.get("llm_decision"):
-                        summary = _execute_cached_archive_decision(
-                            entry_bytes=entry_bytes,
-                            entry_name=entry_name,
-                            llm_decision=cached_plan["llm_decision"],
-                        )
-                    else:
-                        _preloaded_file_contents[uploaded_file_id] = entry_bytes
-                        analyze_response = asyncio.run(
-                            analyze_file_endpoint(
-                                file=None,
-                                file_id=uploaded_file_id,
-                                sample_size=None,
-                                analysis_mode=analysis_mode,
-                                conflict_resolution=conflict_resolution,
-                                auto_execute_confidence_threshold=auto_execute_confidence_threshold,
-                                max_iterations=max_iterations,
-                                db=db_session,
-                            )
-                        )
-                        summary = _summarize_archive_execution(analyze_response)
-                        if fingerprint and analyze_response.llm_decision:
-                            fingerprint_cache[fingerprint] = {
-                                "llm_decision": analyze_response.llm_decision,
+                        if file_result.status == "processed":
+                            processed_files += 1
+                        elif file_result.status == "failed":
+                            failed_files += 1
+
+                        _log_archive_debug(
+                            {
+                                "event": "entry_finished",
+                                "job_id": job_id,
+                                "file_id": file_id,
+                                "archive_name": archive_name,
+                                "archive_path": getattr(file_result, "archive_path", archive_path),
+                                "stored_file_name": getattr(file_result, "stored_file_name", None),
+                                "uploaded_file_id": getattr(file_result, "uploaded_file_id", None),
+                                "status": getattr(file_result, "status", None),
+                                "table_name": getattr(file_result, "table_name", None),
+                                "records_processed": getattr(file_result, "records_processed", None),
+                                "duplicates_skipped": getattr(file_result, "duplicates_skipped", None),
+                                "import_id": getattr(file_result, "import_id", None),
+                                "auto_retry_used": getattr(file_result, "auto_retry_used", None),
+                                "message": getattr(file_result, "message", None),
                             }
-                except HTTPException as exc:
-                    summary = {
-                        "status": "failed",
-                        "message": getattr(exc, "detail", str(exc)),
-                        "auto_retry_used": False,
-                    }
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.exception(
-                        "Archive auto-process failed for %s: %s", archive_path, exc
-                    )
-                    summary = {
-                        "status": "failed",
-                        "message": str(exc),
-                        "auto_retry_used": False,
-                    }
-
-                file_result = ArchiveAutoProcessFileResult(
-                    archive_path=archive_path,
-                    stored_file_name=stored_file_name,
-                    uploaded_file_id=uploaded_file_id,
-                    status=summary["status"],
-                    table_name=summary.get("table_name"),
-                    records_processed=summary.get("records_processed"),
-                    duplicates_skipped=summary.get("duplicates_skipped"),
-                    import_id=summary.get("import_id"),
-                    auto_retry_used=summary.get("auto_retry_used", False),
-                    message=summary.get("message"),
-                )
-                results.append(file_result)
-
-                if summary["status"] == "processed":
-                    processed_files += 1
-                elif summary["status"] == "failed":
-                    failed_files += 1
-
-                if archive_path in remaining_archive_paths:
-                    remaining_archive_paths.remove(archive_path)
-                completed_archive_entries.append(
-                    {
-                        "archive_path": archive_path,
-                        "status": summary["status"],
-                    }
-                )
-
-                total_handled = initial_processed + initial_failed + processed_files + failed_files
-                progress_denominator = total_work_items or 1
-                progress = int((total_handled / progress_denominator) * 100)
-                updated_processed = initial_processed + processed_files
-                updated_failed = initial_failed + failed_files
-                updated_skipped = initial_skipped + skipped_files
-                update_import_job(
-                    job_id,
-                    stage="execution",
-                    progress=progress,
-                    metadata={
-                        "current_file": archive_path,
-                        "processed": updated_processed,
-                        "failed": updated_failed,
-                        "skipped": updated_skipped,
-                        "total": total_work_items,
-                        "completed_files": list(completed_archive_entries),
-                        "remaining_files": list(remaining_archive_paths),
-                        "files_in_archive": total_work_items + updated_skipped,
-                        "source": "auto-process-archive",
-                    },
-                )
+                        )
+                            
+                        completed_archive_entries.append(
+                            {
+                                "archive_path": archive_path,
+                                "status": file_result.status,
+                            }
+                        )
+                        if archive_path in remaining_archive_paths:
+                            remaining_archive_paths.remove(archive_path)
+                            
+                        # Update job progress
+                        total_handled = initial_processed + initial_failed + processed_files + failed_files
+                        progress_denominator = total_work_items or 1
+                        progress = int((total_handled / progress_denominator) * 100)
+                        updated_processed = initial_processed + processed_files
+                        updated_failed = initial_failed + failed_files
+                        updated_skipped = initial_skipped + skipped_files
+                        
+                        update_import_job(
+                            job_id,
+                            stage="execution",
+                            progress=progress,
+                            metadata={
+                                "current_file": archive_path,
+                                "processed": updated_processed,
+                                "failed": updated_failed,
+                                "skipped": updated_skipped,
+                                "total": total_work_items,
+                                "completed_files": list(completed_archive_entries),
+                                "remaining_files": list(remaining_archive_paths),
+                                "files_in_archive": total_work_items + updated_skipped,
+                                "source": "auto-process-archive",
+                            },
+                        )
+                        
+                    except Exception as exc:
+                        logger.exception(f"Error processing archive entry {archive_path}: {exc}")
+                        # Handle catastrophic worker failure
+                        failed_files += 1
+                        if archive_path in remaining_archive_paths:
+                            remaining_archive_paths.remove(archive_path)
+                        _log_archive_debug(
+                            {
+                                "event": "entry_error",
+                                "job_id": job_id,
+                                "file_id": file_id,
+                                "archive_name": archive_name,
+                                "archive_path": archive_path,
+                                "error": str(exc),
+                            }
+                        )
         finally:
             zip_file.close()
+            
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("Archive auto-process background task failed: %s", exc)
         fail_active_job(file_id, job_id, f"Archive processing failed: {exc}")
+        _log_archive_debug(
+            {
+                "event": "job_failed",
+                "job_id": job_id,
+                "file_id": file_id,
+                "archive_name": archive_name,
+                "error": str(exc),
+            }
+        )
         return
-    finally:
-        db_session.close()
 
     processed_total = initial_processed + processed_files
     failed_total = initial_failed + failed_files
@@ -539,6 +721,21 @@ def _run_archive_auto_process_job(
         success=success,
         error_message=error_message,
         result_metadata=result_metadata,
+    )
+    _log_archive_debug(
+        {
+            "event": "job_completed",
+            "job_id": job_id,
+            "file_id": file_id,
+            "archive_name": archive_name,
+            "processed_files": processed_total,
+            "failed_files": failed_total,
+            "skipped_files": skipped_total,
+            "total_supported": total_supported,
+            "total_files": total_files,
+            "success": success,
+            "error_message": error_message,
+        }
     )
 
 async def _auto_retry_failed_auto_import(
@@ -1399,7 +1596,8 @@ def _handle_client_list_special_case(
     max_iterations: int,
     file_id: Optional[str],
     update_file_status_fn,
-    metadata_name: str
+    metadata_name: str,
+    job_id: Optional[str] = None
 ) -> Optional[AnalyzeFileResponse]:
     """Deterministic handling for client list CSV fixtures used in integration tests.
     Bypasses the LLM and performs a controlled import/merge so tests are stable."""
@@ -1620,7 +1818,8 @@ async def analyze_file_endpoint(
             max_iterations=max_iterations,
             file_id=file_id,
             update_file_status_fn=update_file_status,
-            metadata_name=file_name
+            metadata_name=file_name,
+            job_id=job_id
         )
         if special_response is not None:
             analysis_id = str(uuid.uuid4())
@@ -1764,6 +1963,28 @@ async def analyze_file_endpoint(
                         response.llm_response += f"- Duplicates Skipped: {retry_result.duplicates_skipped}\n"
                         response.can_auto_execute = True
                         response.needs_user_input = False
+                        if file_id:
+                            if job_id:
+                                complete_import_job(
+                                    job_id,
+                                    success=True,
+                                    result_metadata={
+                                        "table_name": retry_result.table_name,
+                                        "records_processed": retry_result.records_processed,
+                                        "duplicates_skipped": retry_result.duplicates_skipped,
+                                        "import_id": retry_result.import_id,
+                                    },
+                                    mapped_table_name=retry_result.table_name,
+                                    mapped_rows=retry_result.records_processed,
+                                )
+                                job_id = None
+                            else:
+                                update_file_status(
+                                    file_id,
+                                    "mapped",
+                                    mapped_table_name=retry_result.table_name,
+                                    mapped_rows=retry_result.records_processed,
+                                )
                     else:
                         if auto_retry_details:
                             response.auto_retry_error = auto_retry_details.get("error")
@@ -1826,6 +2047,28 @@ async def analyze_file_endpoint(
                     response.llm_response += f"- Records Processed: {retry_result.records_processed}\n"
                     response.llm_response += f"- Duplicates Skipped: {retry_result.duplicates_skipped}\n"
                     response.can_auto_execute = True
+                    if file_id:
+                        if job_id:
+                            complete_import_job(
+                                job_id,
+                                success=True,
+                                result_metadata={
+                                    "table_name": retry_result.table_name,
+                                    "records_processed": retry_result.records_processed,
+                                    "duplicates_skipped": retry_result.duplicates_skipped,
+                                    "import_id": retry_result.import_id,
+                                },
+                                mapped_table_name=retry_result.table_name,
+                                mapped_rows=retry_result.records_processed,
+                            )
+                            job_id = None
+                        else:
+                            update_file_status(
+                                file_id,
+                                "mapped",
+                                mapped_table_name=retry_result.table_name,
+                                mapped_rows=retry_result.records_processed,
+                            )
                 else:
                     if auto_retry_details:
                         response.auto_retry_error = auto_retry_details.get("error")
@@ -2147,7 +2390,8 @@ async def analyze_b2_file_endpoint(
             max_iterations=request.max_iterations,
             file_id=None,
             update_file_status_fn=lambda *_args, **_kwargs: None,
-            metadata_name=request.file_name
+            metadata_name=request.file_name,
+            job_id=None
         )
         if special_response is not None:
             analysis_id = str(uuid.uuid4())
@@ -2348,7 +2592,8 @@ async def analyze_file_interactive_endpoint(
             max_iterations=request.max_iterations,
             file_id=request.file_id,
             update_file_status_fn=update_file_status,
-            metadata_name=file_record["file_name"]
+            metadata_name=file_record["file_name"],
+            job_id=job_id
         )
 
         thread_id = str(uuid.uuid4())

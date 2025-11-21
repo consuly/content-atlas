@@ -332,6 +332,20 @@ export const ImportMappingPage: React.FC = () => {
         ? 'success'
         : 'active';
   const disableMappingActions = isArchiveMappingActive;
+  const mappingJobActive =
+    !!displayJobInfo && displayJobInfo.status !== 'succeeded' && displayJobInfo.status !== 'failed';
+  const isMappingInProgress = processing || file?.status === 'mapping' || mappingJobActive;
+  const mappingStageLabel = displayJobInfo?.stage ?? file?.active_job_stage ?? file?.active_job_status ?? null;
+  const mappingProgress =
+    typeof displayJobInfo?.progress === 'number'
+      ? displayJobInfo.progress
+      : typeof file?.active_job_progress === 'number'
+        ? file.active_job_progress
+        : null;
+  const normalizedMappingProgress =
+    typeof mappingProgress === 'number' && Number.isFinite(mappingProgress)
+      ? Math.min(100, Math.max(0, mappingProgress))
+      : null;
 
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -2501,60 +2515,88 @@ export const ImportMappingPage: React.FC = () => {
 
       {isArchiveMappingActive && (
         <Card size="small" style={{ marginBottom: 16 }}>
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Text strong>Archive mapping progress</Text>
-            <Progress
-              percent={archiveProgressPercent}
-              status={archiveProgressStatus}
-              size="small"
-            />
-            {displayJobInfo?.stage && (
+          <Space align="start" size={16} style={{ width: '100%' }}>
+            <Spin size="large" />
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text strong>Archive mapping progress</Text>
+              <Progress
+                percent={archiveProgressPercent}
+                status={archiveProgressStatus}
+                size="small"
+              />
+              {displayJobInfo?.stage && (
+                <Text type="secondary">
+                  Stage: {displayJobInfo.stage.replace(/_/g, ' ')}
+                </Text>
+              )}
+              {archiveJobProgress?.currentFile && (
+                <Text>
+                  Currently processing: <Text code>{archiveJobProgress.currentFile}</Text>
+                </Text>
+              )}
+              {archiveJobProgress?.completed.length ? (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  <Text strong>Completed files</Text>
+                  <Space wrap size={[4, 4]}>
+                    {archiveJobProgress.completed.slice(0, 8).map((item) => (
+                      <Tag
+                        key={`done-${item.archive_path}`}
+                        color={
+                          item.status === 'processed'
+                            ? 'green'
+                            : item.status === 'failed'
+                              ? 'red'
+                              : 'default'
+                        }
+                      >
+                        {item.archive_path}
+                      </Tag>
+                    ))}
+                    {archiveJobProgress.completed.length > 8 && (
+                      <Tag>+{archiveJobProgress.completed.length - 8} more</Tag>
+                    )}
+                  </Space>
+                </Space>
+              ) : null}
+              {archiveJobProgress?.remaining.length ? (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  <Text strong>Remaining files</Text>
+                  <Space wrap size={[4, 4]}>
+                    {archiveJobProgress.remaining.slice(0, 8).map((name) => (
+                      <Tag key={`pending-${name}`}>{name}</Tag>
+                    ))}
+                    {archiveJobProgress.remaining.length > 8 && (
+                      <Tag>+{archiveJobProgress.remaining.length - 8} more</Tag>
+                    )}
+                  </Space>
+                </Space>
+              ) : null}
+            </Space>
+          </Space>
+        </Card>
+      )}
+
+      {!isArchiveMappingActive && isMappingInProgress && (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space align="start" size={16}>
+            <Spin size="large" />
+            <Space direction="vertical" size={4}>
+              <Text strong>Mapping in progress</Text>
               <Text type="secondary">
-                Stage: {displayJobInfo.stage.replace(/_/g, ' ')}
+                We are mapping {file.file_name}. You can stay on this page to see live updates.
               </Text>
-            )}
-            {archiveJobProgress?.currentFile && (
-              <Text>
-                Currently processing: <Text code>{archiveJobProgress.currentFile}</Text>
-              </Text>
-            )}
-            {archiveJobProgress?.completed.length ? (
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                <Text strong>Completed files</Text>
-                <Space wrap size={[4, 4]}>
-                  {archiveJobProgress.completed.slice(0, 8).map((item) => (
-                    <Tag
-                      key={`done-${item.archive_path}`}
-                      color={
-                        item.status === 'processed'
-                          ? 'green'
-                          : item.status === 'failed'
-                            ? 'red'
-                            : 'default'
-                      }
-                    >
-                      {item.archive_path}
-                    </Tag>
-                  ))}
-                  {archiveJobProgress.completed.length > 8 && (
-                    <Tag>+{archiveJobProgress.completed.length - 8} more</Tag>
-                  )}
-                </Space>
-              </Space>
-            ) : null}
-            {archiveJobProgress?.remaining.length ? (
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                <Text strong>Remaining files</Text>
-                <Space wrap size={[4, 4]}>
-                  {archiveJobProgress.remaining.slice(0, 8).map((name) => (
-                    <Tag key={`pending-${name}`}>{name}</Tag>
-                  ))}
-                  {archiveJobProgress.remaining.length > 8 && (
-                    <Tag>+{archiveJobProgress.remaining.length - 8} more</Tag>
-                  )}
-                </Space>
-              </Space>
-            ) : null}
+              {mappingStageLabel && (
+                <Text type="secondary">Stage: {mappingStageLabel.replace(/_/g, ' ')}</Text>
+              )}
+              {normalizedMappingProgress !== null && (
+                <Progress
+                  percent={normalizedMappingProgress}
+                  status="active"
+                  size="small"
+                  style={{ width: 260 }}
+                />
+              )}
+            </Space>
           </Space>
         </Card>
       )}

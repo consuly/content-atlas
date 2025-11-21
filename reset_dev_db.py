@@ -2,7 +2,7 @@
 """
 Development Database Reset Script
 
-This script resets the database for testing purposes while preserving user accounts.
+This script resets the database for testing purposes and drops all data, including user accounts.
 
 Usage:
     python reset_dev_db.py              # Interactive mode with confirmation
@@ -10,12 +10,9 @@ Usage:
     python reset_dev_db.py --force-production --yes  # Force reset in production (DANGEROUS!)
 
 What gets reset:
-    - All user-created data tables (contacts, products, etc.)
+    - All tables, including users and API keys
     - Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
     - All files in B2 storage under "uploads/" folder
-
-What is preserved:
-    - Users table (login accounts remain intact)
 """
 
 import sys
@@ -34,12 +31,10 @@ def print_banner():
 def print_warning():
     """Print what will be reset."""
     print("\n⚠️  WARNING: This will reset the following:")
-    print("   • All user-created data tables (contacts, products, etc.)")
+    print("   • All tables, including user accounts and API keys")
     print("   • Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)")
-    print("     - These will be dropped and recreated with the latest schema on startup")
+    print("     - Tables will be dropped and need to be recreated via migrations/app startup")
     print("   • All files in B2 storage (uploads folder)")
-    print("\n✓  The following will be PRESERVED:")
-    print("   • Users table (your login accounts)")
     print()
 
 
@@ -58,7 +53,7 @@ def confirm_reset() -> bool:
 def main():
     """Main entry point for the reset script."""
     parser = argparse.ArgumentParser(
-        description="Reset development database while preserving user accounts",
+        description="Reset development database (drops all data, including users)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -151,7 +146,7 @@ Examples:
                 print(f"   • {error}")
         
         print("\n" + "=" * 80)
-        print("✅ Reset complete! Your user accounts are preserved.")
+        print("✅ Reset complete! All tables were dropped (including users).")
         print("=" * 80 + "\n")
         
         sys.exit(0)
