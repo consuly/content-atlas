@@ -30,7 +30,8 @@ import {
 
 const { Title, Text } = Typography;
 const { Search } = Input;
-const DEFAULT_PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 25;
+const DEFAULT_VISIBLE_COLUMNS = 20;
 
 type FilterOperator = 'eq' | 'contains';
 
@@ -80,6 +81,7 @@ export const TableViewerPage: React.FC = () => {
   const [searchInput, setSearchInput] = useState('');
   const [filters, setFilters] = useState<FilterCondition[]>([]);
   const [filterDraft, setFilterDraft] = useState<Partial<FilterCondition>>({ operator: 'eq' });
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
 
   const encodedTableName = useMemo(() => {
     if (!tableName) return '';
@@ -100,7 +102,12 @@ export const TableViewerPage: React.FC = () => {
       });
 
       if (response.data.success) {
-        setColumns(response.data.columns);
+        const nextColumns = response.data.columns;
+        setColumns(nextColumns);
+        // Limit initial render cost by only showing a subset of columns; users can expand as needed.
+        setVisibleColumns((prev) =>
+          prev.length ? prev : nextColumns.slice(0, DEFAULT_VISIBLE_COLUMNS).map((col) => col.name),
+        );
       }
     } catch (err) {
       console.error('Failed to load table schema', err);
@@ -129,16 +136,17 @@ export const TableViewerPage: React.FC = () => {
     }
   }, [encodedTableName, tableName]);
 
+  const currentPage = pagination.current;
+  const pageSize = pagination.pageSize;
+
   const fetchRows = useCallback(async () => {
     if (!tableName) return;
-
-    const { current, pageSize } = pagination;
 
     setLoadingTable(true);
     try {
       const params: Record<string, unknown> = {
         limit: pageSize,
-        offset: (current - 1) * pageSize,
+        offset: (currentPage - 1) * pageSize,
       };
 
       if (sorter.field) {
@@ -164,7 +172,7 @@ export const TableViewerPage: React.FC = () => {
         const enrichedRows: TableRow[] = rawData.map((row, index) => {
           const candidate =
             (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as string | number | undefined;
-          const fallback = `${tableName}-${current}-${index}`;
+          const fallback = `${tableName}-${currentPage}-${index}`;
 
           return {
             __rowKey: candidate ? String(candidate) : fallback,
@@ -173,10 +181,14 @@ export const TableViewerPage: React.FC = () => {
         });
 
         setRows(enrichedRows);
-        setPagination((prev) => ({
-          ...prev,
-          total: response.data.total_rows,
-        }));
+        setPagination((prev) => {
+          const nextTotal = response.data.total_rows;
+          // Avoid rerenders/fetch loops when the total hasn't changed
+          if (prev.total === nextTotal) {
+            return prev;
+          }
+          return { ...prev, total: nextTotal };
+        });
       }
     } catch (err) {
       console.error('Failed to load table data', err);
@@ -187,7 +199,8 @@ export const TableViewerPage: React.FC = () => {
   }, [
     tableName,
     encodedTableName,
-    pagination,
+    currentPage,
+    pageSize,
     sorter.field,
     sorter.order,
     searchValue,
@@ -265,28 +278,30 @@ export const TableViewerPage: React.FC = () => {
     setPagination((prev) => ({ ...prev, current: 1 }));
   };
 
-  const activeColumns = columns.map((column) => ({
-    title: column.name,
-    dataIndex: column.name,
-    key: column.name,
-    width: 200,
-    sorter: true,
-    sortOrder: sorter.field === column.name ? sorter.order : null,
-    ellipsis: true,
-    render: (value: unknown) => {
-      if (value === null || value === undefined || value === '') {
-        return <Text type="secondary">—</Text>;
-      }
-      if (typeof value === 'object') {
-        try {
-          return JSON.stringify(value);
-        } catch {
-          return String(value);
+  const activeColumns = columns
+    .filter((column) => visibleColumns.length === 0 || visibleColumns.includes(column.name))
+    .map((column) => ({
+      title: column.name,
+      dataIndex: column.name,
+      key: column.name,
+      width: 200,
+      sorter: true,
+      sortOrder: sorter.field === column.name ? sorter.order : null,
+      ellipsis: true,
+      render: (value: unknown) => {
+        if (value === null || value === undefined || value === '') {
+          return <Text type="secondary">—</Text>;
         }
-      }
-      return String(value);
-    },
-  }));
+        if (typeof value === 'object') {
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        }
+        return String(value);
+      },
+    }));
 
   const breadcrumbItems: BreadcrumbProps['items'] = [
     {
@@ -349,7 +364,7 @@ export const TableViewerPage: React.FC = () => {
               Use the controls below to search, filter, and sort {tableStats?.total_rows?.toLocaleString() ?? '0'}{' '}
               rows across {tableStats?.columns_count ?? columns.length} columns.
             </Text>
-          </Space>
+        </Space>
 
           <Space wrap style={{ width: '100%' }} size="large">
             <Search
@@ -395,6 +410,38 @@ export const TableViewerPage: React.FC = () => {
                 Add Filter
               </Button>
             </Space>
+          </Space>
+
+          <Space wrap>
+            <Select
+              mode="multiple"
+              allowClear
+              style={{ minWidth: 260, maxWidth: 520 }}
+              placeholder="Select columns to display"
+              value={visibleColumns}
+              onChange={(value) => setVisibleColumns(value)}
+              options={columns.map((col) => ({ label: col.name, value: col.name }))}
+              maxTagCount="responsive"
+            />
+            <Button
+              type="link"
+              onClick={() => setVisibleColumns(columns.map((col) => col.name))}
+              disabled={visibleColumns.length === columns.length}
+            >
+              Show all columns
+            </Button>
+            <Button
+              type="link"
+              onClick={() =>
+                setVisibleColumns(columns.slice(0, DEFAULT_VISIBLE_COLUMNS).map((col) => col.name))
+              }
+              disabled={
+                visibleColumns.length === DEFAULT_VISIBLE_COLUMNS &&
+                visibleColumns.every((name, idx) => columns[idx]?.name === name)
+              }
+            >
+              Show first {DEFAULT_VISIBLE_COLUMNS}
+            </Button>
           </Space>
 
           {filters.length > 0 && (
