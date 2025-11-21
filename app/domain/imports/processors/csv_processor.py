@@ -171,6 +171,60 @@ def process_csv(file_content: bytes, has_header: Optional[bool] = None) -> List[
     return records
 
 
+def load_csv_sample(file_content: bytes, sample_rows: int = 1000) -> List[Dict[str, Any]]:
+    """Load a small CSV sample without materializing the whole file.
+
+    This keeps CSV analysis lightweight for very large uploads by reading only
+    the first N rows and normalizing header handling the same way as `process_csv`.
+    """
+    has_header = detect_csv_header(file_content)
+    df = pd.read_csv(
+        io.BytesIO(file_content),
+        nrows=sample_rows,
+        header=0 if has_header else None,
+    )
+    if not has_header:
+        df.columns = [f"col_{i+1}" for i in range(len(df.columns))]
+
+    records = df.to_dict("records")
+    for record in records:
+        for key, value in record.items():
+            if pd.isna(value):
+                record[key] = None
+    return records
+
+
+def stream_csv_records(
+    file_content: bytes,
+    *,
+    has_header: Optional[bool] = None,
+    chunk_size: int = 50000,
+):
+    """Yield CSV rows in chunks to avoid loading the full file in memory."""
+    if has_header is None:
+        has_header = detect_csv_header(file_content)
+
+    header_arg = 0 if has_header else None
+    generated_columns: Optional[List[str]] = None
+
+    for df in pd.read_csv(
+        io.BytesIO(file_content),
+        header=header_arg,
+        chunksize=chunk_size,
+    ):
+        if not has_header:
+            if generated_columns is None:
+                generated_columns = [f"col_{i+1}" for i in range(len(df.columns))]
+            df.columns = generated_columns
+
+        records = df.to_dict("records")
+        for record in records:
+            for key, value in record.items():
+                if pd.isna(value):
+                    record[key] = None
+        yield records
+
+
 def process_excel(file_content: bytes) -> List[Dict[str, Any]]:
     """Process Excel file and return list of dictionaries using optimized settings."""
     # Use openpyxl with read_only mode for better performance on large files

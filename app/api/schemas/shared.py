@@ -357,6 +357,7 @@ class AnalyzeFileResponse(BaseModel):
     auto_execution_error: Optional[str] = None
     auto_retry_attempted: bool = False
     auto_retry_error: Optional[str] = None
+    needs_user_input: bool = False
 
 
 class AnalyzeB2FileRequest(BaseModel):

@@ -28,7 +28,13 @@ from app.integrations.b2 import (
     download_file_from_b2 as _download_file_from_b2,
     upload_file_to_b2,
 )
-from app.domain.imports.processors.csv_processor import process_csv, process_excel, extract_raw_csv_rows, detect_csv_header
+from app.domain.imports.processors.csv_processor import (
+    process_csv,
+    process_excel,
+    extract_raw_csv_rows,
+    detect_csv_header,
+    load_csv_sample,
+)
 from app.domain.imports.processors.json_processor import process_json
 from app.domain.imports.processors.xml_processor import process_xml
 from app.domain.queries.analyzer import analyze_file_for_import as _analyze_file_for_import, sample_file_data
@@ -1574,12 +1580,9 @@ async def analyze_file_endpoint(
         
         if file_type == 'csv':
             raw_csv_rows = extract_raw_csv_rows(file_content, num_rows=100)
-            
-            # IMPORTANT: Do NOT parse the CSV file yet!
-            # The LLM needs to analyze the raw structure first to determine if it has headers
-            # We'll parse it later in auto_import.py with the correct has_header value
-            # For now, just use auto-detection to get a sample for the LLM
-            records = process_csv(file_content, has_header=None)
+
+            # Load only a lightweight sample to avoid pulling whole multi-GB files into memory
+            records = load_csv_sample(file_content, sample_rows=1000)
         elif file_type == 'excel':
             records = process_excel(file_content)
         elif file_type == 'json':
@@ -1668,14 +1671,15 @@ async def analyze_file_endpoint(
             iterations_used=analysis_result["iterations_used"],
             max_iterations=max_iterations,
             can_auto_execute=False,  # Will be set below based on analysis_mode
-            llm_decision=llm_decision
+            llm_decision=llm_decision,
+            needs_user_input=llm_decision is None,
         )
         if job_id:
             response.job_id = job_id
         
         # Determine can_auto_execute based on analysis_mode
         if analysis_mode == AnalysisMode.AUTO_ALWAYS:
-            response.can_auto_execute = True
+            response.can_auto_execute = llm_decision is not None
         elif analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
             # Would need to parse confidence from LLM response
             response.can_auto_execute = False  # Conservative default
@@ -1730,6 +1734,7 @@ async def analyze_file_endpoint(
                     response.llm_response += f"- Strategy: {execution_result['strategy_executed']}\n"
                     response.llm_response += f"- Table: {execution_result['table_name']}\n"
                     response.llm_response += f"- Records Processed: {execution_result['records_processed']}\n"
+                    response.needs_user_input = False
                 else:
                     # Update file status to 'failed' if file_id was provided
                     error_msg = execution_result.get('error', 'Unknown error')
@@ -1758,6 +1763,7 @@ async def analyze_file_endpoint(
                         response.llm_response += f"- Records Processed: {retry_result.records_processed}\n"
                         response.llm_response += f"- Duplicates Skipped: {retry_result.duplicates_skipped}\n"
                         response.can_auto_execute = True
+                        response.needs_user_input = False
                     else:
                         if auto_retry_details:
                             response.auto_retry_error = auto_retry_details.get("error")
@@ -1790,7 +1796,9 @@ async def analyze_file_endpoint(
                             response.llm_response += (
                                 f"- Auto-retry attempt failed: {auto_retry_details['error']}\n"
                             )
-            
+                        response.can_auto_execute = False
+                        response.needs_user_input = True
+
             except Exception as e:
                 # Update file status to 'failed' if file_id was provided
                 error_msg = str(e)
@@ -1843,7 +1851,9 @@ async def analyze_file_endpoint(
                         response.llm_response += (
                             f"- Auto-retry attempt failed: {auto_retry_details['error']}\n"
                         )
-        
+                    response.can_auto_execute = False
+                    response.needs_user_input = True
+
         return response
         
     except HTTPException:
