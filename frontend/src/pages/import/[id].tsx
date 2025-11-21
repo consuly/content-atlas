@@ -600,7 +600,7 @@ export const ImportMappingPage: React.FC = () => {
         setMergeDetailLoading(false);
       }
     },
-    [API_URL, importHistory, messageApi]
+    [importHistory, messageApi]
   );
 
   const handleMergeSelectionChange = (column: string, checked: boolean) => {
@@ -728,7 +728,6 @@ export const ImportMappingPage: React.FC = () => {
     setSelectedDuplicateRowIds([]);
     setBulkMergeLoading(false);
   }, [
-    API_URL,
     duplicateData,
     fetchDuplicateRows,
     fetchMappedFileDetails,
@@ -859,7 +858,7 @@ export const ImportMappingPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [API_URL, archiveResult, file?.id, file?.status, isArchiveFile]);
+  }, [archiveResult, file?.id, file?.status, isArchiveFile]);
 
   useEffect(() => {
     if (!file?.id) {
@@ -918,7 +917,7 @@ export const ImportMappingPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [API_URL, archiveHistorySummary?.job, archiveResult?.job_id, isArchiveFile]);
+  }, [archiveHistorySummary?.job, archiveResult?.job_id, isArchiveFile]);
 
   useEffect(() => {
     if (file && file.status !== 'failed' && showInteractiveRetry) {
@@ -933,7 +932,6 @@ export const ImportMappingPage: React.FC = () => {
     }
 
     let cancelled = false;
-    let interval: ReturnType<typeof setInterval> | undefined;
 
     const pollJob = async () => {
       const job = await fetchJobDetails(file.active_job_id!);
@@ -942,21 +940,17 @@ export const ImportMappingPage: React.FC = () => {
       }
 
       if (job.status === 'succeeded' || job.status === 'failed') {
-        if (interval) {
-          clearInterval(interval);
-        }
+        clearInterval(intervalId);
         await fetchFileDetails();
       }
     };
 
-    pollJob();
-    interval = setInterval(pollJob, 5000);
+    const intervalId = setInterval(pollJob, 5000);
+    void pollJob();
 
     return () => {
       cancelled = true;
-      if (interval) {
-        clearInterval(interval);
-      }
+      clearInterval(intervalId);
     };
   }, [file?.active_job_id, fetchJobDetails, fetchFileDetails]);
 
@@ -1392,6 +1386,7 @@ export const ImportMappingPage: React.FC = () => {
           </Text>
         );
       } catch (err) {
+        console.error('Failed to render duplicate value as JSON', err);
         return String(value);
       }
     }

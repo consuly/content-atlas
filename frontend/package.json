@@ -45,7 +45,10 @@
     "dev": "npx refine dev",
     "build": "tsc && npx refine build",
     "start": "npx refine start",
-    "refine": "npx refine"
+    "refine": "npx refine",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run lint && npm run typecheck"
   },
   "browserslist": {
     "production": [

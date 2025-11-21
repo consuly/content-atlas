@@ -957,8 +957,41 @@ def _check_chunks_parallel(
     if not uniqueness_columns:
         logger.warning("No uniqueness columns specified, skipping duplicate check")
         return 0, []
+
+    def _resolve_cast_type(col_name: str, table_column_types: Dict[str, str]) -> Optional[str]:
+        """Determine the safest cast type for a column based on table schema or mapping config."""
+        sql_type: Optional[str] = None
+        if col_name in table_column_types:
+            sql_type = table_column_types[col_name]
+        elif config and config.db_schema:
+            sql_type = config.db_schema.get(col_name)
+
+        if not sql_type:
+            return None
+
+        normalized = sql_type.upper()
+        if 'TIMESTAMP' in normalized:
+            return 'TIMESTAMP'
+        if normalized == 'DATE' or 'DATE' in normalized:
+            return 'DATE'
+        if 'UUID' in normalized:
+            return 'UUID'
+        if any(token in normalized for token in ('CHAR', 'TEXT', 'CITEXT')):
+            return 'TEXT'
+        if any(token in normalized for token in ('DECIMAL', 'NUMERIC')):
+            return 'NUMERIC'
+        if 'DOUBLE' in normalized:
+            return 'DOUBLE PRECISION'
+        if 'REAL' in normalized:
+            return 'REAL'
+        if any(token in normalized for token in ('SMALLINT', 'BIGINT', 'INTEGER')):
+            return 'BIGINT'
+        if any(token in normalized for token in ('BOOL', 'BOOLEAN')):
+            return 'BOOLEAN'
+        return None
     
     # Quick check: does table exist and have data?
+    table_column_types: Dict[str, str] = {}
     with engine.connect() as conn:
         table_exists_result = conn.execute(text("""
             SELECT COUNT(*) FROM information_schema.tables
@@ -976,7 +1009,17 @@ def _check_chunks_parallel(
         if row_count == 0:
             logger.info(f"Table '{table_name}' is empty, no duplicates possible")
             return 0, []
-        
+
+        # Cache column data types for casting parameters in duplicate checks
+        schema_result = conn.execute(text("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            AND table_name = :table_name
+            AND column_name = ANY(:columns)
+        """), {"table_name": table_name, "columns": uniqueness_columns})
+        table_column_types = {row[0]: row[1] for row in schema_result}
+
         logger.info(f"Table '{table_name}' has {row_count} existing rows, checking for duplicates")
     
     # Check chunks in parallel using database-side queries
@@ -1022,7 +1065,11 @@ def _check_chunks_parallel(
                     value_placeholders = []
                     for col in uniqueness_columns:
                         param_name = f"p{chunk_num}_{batch_start}_{idx}_{col}"
-                        value_placeholders.append(f":{param_name}")
+                        cast_type = _resolve_cast_type(col, table_column_types)
+                        if cast_type:
+                            value_placeholders.append(f"CAST(:{param_name} AS {cast_type})")
+                        else:
+                            value_placeholders.append(f":{param_name}")
                         params[param_name] = record.get(col)
                     values_list.append(f"({','.join(value_placeholders)})")
                 

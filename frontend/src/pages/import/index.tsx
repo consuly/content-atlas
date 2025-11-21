@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Popconfirm } from 'antd';
 import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
@@ -27,51 +27,200 @@ interface UploadedFile {
   active_job_progress?: number;
   active_job_started_at?: string;
 }
+
+interface ImportSummary {
+  import_id?: string;
+  duplicates_found?: number;
+}
 export const ImportPage: React.FC = () => {
   const navigate = useNavigate();
-  const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [files, setFiles] = useState<Array<UploadedFile & ImportSummary>>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('all');
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
+  const [tabCounts, setTabCounts] = useState<Record<string, number>>({
+    all: 0,
+    uploaded: 0,
+    mapped: 0,
+    needs_mapping: 0,
+  });
+  const [importSummaryCache, setImportSummaryCache] = useState<Record<string, ImportSummary>>({});
   const { message: messageApi } = AntdApp.useApp();
 
-  const fetchFiles = async (status: string = activeTab, page: number = currentPage, size: number = pageSize) => {
-    setLoading(true);
-    try {
-      const token = localStorage.getItem('refine-auth');
-      const params: { status?: string; limit: number; offset: number } = {
-        limit: size,
-        offset: (page - 1) * size,
-      };
-      
-      if (status && status !== 'all') {
-        params.status = status;
-      }
+  const attachImportSummaries = useCallback(async (
+    fileList: UploadedFile[],
+    token: string | null
+  ): Promise<Array<UploadedFile & ImportSummary>> => {
+    if (!fileList.length) {
+      return fileList;
+    }
 
-      const response = await axios.get(`${API_URL}/uploaded-files`, {
-        params,
-        headers: {
-          ...(token && { Authorization: `Bearer ${token}` }),
-        },
+    const headers = {
+      ...(token && { Authorization: `Bearer ${token}` }),
+    };
+
+    const mappedFilesNeedingSummary = fileList.filter(
+      (file) => file.status === 'mapped' && !importSummaryCache[file.id]
+    );
+    let mergedCache = importSummaryCache;
+
+    if (mappedFilesNeedingSummary.length > 0) {
+      const summaries = await Promise.all(
+        mappedFilesNeedingSummary.map(async (file) => {
+          try {
+            const params: Record<string, unknown> = { file_name: file.file_name, limit: 1 };
+            if (typeof file.file_size === 'number') {
+              params.file_size_bytes = file.file_size;
+            }
+            if (file.b2_file_path) {
+              params.source_path = file.b2_file_path;
+            }
+
+            let response = await axios.get(`${API_URL}/import-history`, {
+              params,
+              headers,
+            });
+
+            let importRecord = response.data.success && response.data.imports.length > 0
+              ? response.data.imports[0]
+              : null;
+
+            if (!importRecord && file.mapped_table_name) {
+              response = await axios.get(`${API_URL}/import-history`, {
+                params: { table_name: file.mapped_table_name, limit: 1 },
+                headers,
+              });
+              importRecord =
+                response.data.success && response.data.imports.length > 0
+                  ? response.data.imports[0]
+                  : null;
+            }
+
+            if (importRecord) {
+              return {
+                fileId: file.id,
+                summary: {
+                  import_id: importRecord.import_id,
+                  duplicates_found: importRecord.duplicates_found ?? 0,
+                },
+              };
+            }
+          } catch (err) {
+            console.error(`Error fetching import history for ${file.file_name}:`, err);
+          }
+
+          return { fileId: file.id, summary: { duplicates_found: undefined } };
+        })
+      );
+
+      const updates: Record<string, ImportSummary> = {};
+      summaries.forEach(({ fileId, summary }) => {
+        updates[fileId] = summary;
       });
 
-      if (response.data.success) {
-        setFiles(response.data.files);
-        setTotalCount(response.data.total_count);
-        setSelectedRowKeys((prev) =>
-          prev.filter((key) => response.data.files.some((file: UploadedFile) => file.id === key))
-        );
-      }
-    } catch (error) {
-      messageApi.error('Failed to fetch files');
-      console.error('Error fetching files:', error);
-    } finally {
-      setLoading(false);
+      mergedCache = { ...importSummaryCache, ...updates };
+      setImportSummaryCache(mergedCache);
     }
-  };
+
+    return fileList.map((file) => ({
+      ...file,
+      ...(mergedCache[file.id] || {}),
+    }));
+  }, [importSummaryCache]);
+
+  const statusGroups: Record<string, string[]> = useMemo(
+    () => ({
+      needs_mapping: ['uploaded', 'mapping', 'failed'],
+    }),
+    []
+  );
+
+  const fetchFiles = useCallback(
+    async (
+      status: string = activeTab,
+      page: number = currentPage,
+      size: number = pageSize
+    ) => {
+      setLoading(true);
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const headers = {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        };
+        const groupedStatuses = statusGroups[status];
+        let fetchedFiles: UploadedFile[] = [];
+        let nextTotal = 0;
+
+        if (groupedStatuses) {
+          const limit = page * size;
+          const responses = await Promise.all(
+            groupedStatuses.map((groupStatus) =>
+              axios.get(`${API_URL}/uploaded-files`, {
+                params: {
+                  status: groupStatus,
+                  limit,
+                  offset: 0,
+                },
+                headers,
+              })
+            )
+          );
+
+          const combinedFiles = responses
+            .filter((response) => response.data.success)
+            .flatMap((response) => response.data.files as UploadedFile[]);
+          nextTotal = responses.reduce(
+            (sum, response) => sum + (response?.data?.total_count ?? 0),
+            0
+          );
+
+          combinedFiles.sort((a, b) => {
+            const aDate = a.upload_date ? new Date(a.upload_date).getTime() : 0;
+            const bDate = b.upload_date ? new Date(b.upload_date).getTime() : 0;
+            return bDate - aDate;
+          });
+
+          const sliceStart = (page - 1) * size;
+          fetchedFiles = combinedFiles.slice(sliceStart, sliceStart + size);
+        } else {
+          const params: { status?: string; limit: number; offset: number } = {
+            limit: size,
+            offset: (page - 1) * size,
+          };
+          if (status && status !== 'all') {
+            params.status = status;
+          }
+
+          const response = await axios.get(`${API_URL}/uploaded-files`, {
+            params,
+            headers,
+          });
+
+          if (response.data.success) {
+            fetchedFiles = response.data.files;
+            nextTotal = response.data.total_count;
+          }
+        }
+
+        const filesWithImports = await attachImportSummaries(fetchedFiles, token);
+        setFiles(filesWithImports);
+        setTotalCount(nextTotal);
+        setTabCounts((prev) => ({ ...prev, [status || 'all']: nextTotal }));
+        setSelectedRowKeys((prev) =>
+          prev.filter((key) => filesWithImports.some((file: UploadedFile) => file.id === key))
+        );
+      } catch (error) {
+        messageApi.error('Failed to fetch files');
+        console.error('Error fetching files:', error);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [activeTab, attachImportSummaries, currentPage, messageApi, pageSize, statusGroups]
+  );
 
   useEffect(() => {
     fetchFiles(activeTab, currentPage, pageSize);
@@ -82,7 +231,7 @@ export const ImportPage: React.FC = () => {
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [activeTab, currentPage, pageSize]);
+  }, [activeTab, currentPage, pageSize, fetchFiles]);
 
   const handleDelete = async (fileId: string, fileName: string) => {
     try {
@@ -234,10 +383,10 @@ export const ImportPage: React.FC = () => {
         } else {
           failures.push(`${file.file_name}: ${response.data.error || 'Processing failed'}`);
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         const errorMsg =
-          error?.response?.data?.detail ||
-          error?.message ||
+          (axios.isAxiosError(error) && error.response?.data?.detail) ||
+          (error instanceof Error ? error.message : null) ||
           'Processing failed';
         failures.push(`${file.file_name}: ${errorMsg}`);
       }
@@ -271,53 +420,105 @@ export const ImportPage: React.FC = () => {
     return <Badge status={config.status} text={`${config.text}${extra}`} />;
   };
 
-  const columns: ColumnsType<UploadedFile> = [
+  const columns: ColumnsType<UploadedFile & ImportSummary> = [
     {
       title: 'File Name',
       dataIndex: 'file_name',
       key: 'file_name',
       width: 250,
       ellipsis: true,
+      sorter: (a, b) => (a.file_name || '').localeCompare(b.file_name || ''),
     },
     {
       title: 'Size',
       dataIndex: 'file_size',
       key: 'file_size',
-      width: 100,
+      width: 110,
+      sorter: (a, b) => (a.file_size || 0) - (b.file_size || 0),
       render: (size: number) => formatBytes(size),
     },
     {
       title: 'Upload Date',
       dataIndex: 'upload_date',
       key: 'upload_date',
-      width: 180,
+      width: 190,
+      sorter: (a, b) => {
+        const aDate = a.upload_date ? new Date(a.upload_date).getTime() : 0;
+        const bDate = b.upload_date ? new Date(b.upload_date).getTime() : 0;
+        return aDate - bDate;
+      },
+      defaultSortOrder: 'descend',
       render: (date: string) => formatDate(date),
     },
     {
       title: 'Status',
       key: 'status',
-      width: 160,
-      render: (_: string, record: UploadedFile) => getStatusBadge(record),
+      width: 180,
+      filters: [
+        { text: 'Uploaded', value: 'uploaded' },
+        { text: 'Mapping', value: 'mapping' },
+        { text: 'Failed', value: 'failed' },
+        { text: 'Mapped', value: 'mapped' },
+      ],
+      onFilter: (value, record) => record.status === value,
+      sorter: (a, b) => (a.status || '').localeCompare(b.status || ''),
+      render: (_: string, record: UploadedFile & ImportSummary) => getStatusBadge(record),
     },
     {
       title: 'Table',
       dataIndex: 'mapped_table_name',
       key: 'mapped_table_name',
-      width: 150,
+      width: 170,
+      sorter: (a, b) => (a.mapped_table_name || '').localeCompare(b.mapped_table_name || ''),
+      filters: [
+        { text: 'Mapped', value: 'mapped' },
+        { text: 'Not mapped', value: 'unmapped' },
+      ],
+      onFilter: (value, record) =>
+        value === 'mapped'
+          ? !!record.mapped_table_name
+          : !record.mapped_table_name,
       render: (tableName?: string) => tableName || '-',
     },
     {
       title: 'Rows',
       dataIndex: 'mapped_rows',
       key: 'mapped_rows',
-      width: 100,
+      width: 110,
+      sorter: (a, b) => (a.mapped_rows || 0) - (b.mapped_rows || 0),
       render: (rows?: number) => rows?.toLocaleString() || '-',
+    },
+    {
+      title: 'Duplicates',
+      dataIndex: 'duplicates_found',
+      key: 'duplicates_found',
+      width: 150,
+      sorter: (a, b) => (a.duplicates_found ?? 0) - (b.duplicates_found ?? 0),
+      filters: [
+        { text: 'Has duplicates', value: 'has' },
+        { text: 'No duplicates', value: 'none' },
+      ],
+      onFilter: (value, record) => {
+        const duplicates = record.duplicates_found ?? 0;
+        return value === 'has' ? duplicates > 0 : duplicates === 0;
+      },
+      render: (_: number | undefined, record: UploadedFile & ImportSummary) => {
+        if (record.status !== 'mapped') {
+          return '-';
+        }
+        const duplicates = record.duplicates_found;
+        if (duplicates === undefined) {
+          return <Badge status="default" text="Unknown" />;
+        }
+        const label = `${duplicates.toLocaleString()} duplicate${duplicates === 1 ? '' : 's'}`;
+        return <Badge status={duplicates > 0 ? 'warning' : 'success'} text={label} />;
+      },
     },
     {
       title: 'Actions',
       key: 'actions',
-      width: 200,
-      render: (_: unknown, record: UploadedFile) => (
+      width: 220,
+      render: (_: unknown, record: UploadedFile & ImportSummary) => (
         <Space size="small">
           {record.status === 'uploaded' && (
             <Button
@@ -357,15 +558,19 @@ export const ImportPage: React.FC = () => {
   const tabItems = [
     {
       key: 'all',
-      label: `All (${totalCount})`,
+      label: `All (${tabCounts.all || totalCount})`,
+    },
+    {
+      key: 'needs_mapping',
+      label: `Needs Mapping (${tabCounts.needs_mapping || 0})`,
     },
     {
       key: 'uploaded',
-      label: 'Uploaded',
+      label: `Uploaded (${tabCounts.uploaded || 0})`,
     },
     {
       key: 'mapped',
-      label: 'Mapped',
+      label: `Mapped (${tabCounts.mapped || 0})`,
     },
   ];
 
@@ -447,7 +652,7 @@ export const ImportPage: React.FC = () => {
           style={{ marginBottom: '16px' }}
         />
 
-        <Table
+        <Table<UploadedFile & ImportSummary>
           columns={columns}
           dataSource={files}
           rowKey="id"

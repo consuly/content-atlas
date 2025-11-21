@@ -19,7 +19,7 @@ import {
 } from 'antd';
 import type { BreadcrumbProps } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
-import type { FilterValue, SortOrder, SorterResult, TableCurrentDataSource } from 'antd/es/table/interface';
+import type { FilterValue, SortOrder, SorterResult } from 'antd/es/table/interface';
 import {
   ArrowLeftOutlined,
   FilterOutlined,
@@ -103,6 +103,7 @@ export const TableViewerPage: React.FC = () => {
         setColumns(response.data.columns);
       }
     } catch (err) {
+      console.error('Failed to load table schema', err);
       message.error('Failed to load table schema.');
     } finally {
       setLoadingSchema(false);
@@ -131,11 +132,13 @@ export const TableViewerPage: React.FC = () => {
   const fetchRows = useCallback(async () => {
     if (!tableName) return;
 
+    const { current, pageSize } = pagination;
+
     setLoadingTable(true);
     try {
       const params: Record<string, unknown> = {
-        limit: pagination.pageSize,
-        offset: (pagination.current - 1) * pagination.pageSize,
+        limit: pageSize,
+        offset: (current - 1) * pageSize,
       };
 
       if (sorter.field) {
@@ -161,7 +164,7 @@ export const TableViewerPage: React.FC = () => {
         const enrichedRows: TableRow[] = rawData.map((row, index) => {
           const candidate =
             (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as string | number | undefined;
-          const fallback = `${tableName}-${pagination.current}-${index}`;
+          const fallback = `${tableName}-${current}-${index}`;
 
           return {
             __rowKey: candidate ? String(candidate) : fallback,
@@ -176,6 +179,7 @@ export const TableViewerPage: React.FC = () => {
         }));
       }
     } catch (err) {
+      console.error('Failed to load table data', err);
       message.error('Failed to load table data.');
     } finally {
       setLoadingTable(false);
@@ -183,8 +187,7 @@ export const TableViewerPage: React.FC = () => {
   }, [
     tableName,
     encodedTableName,
-    pagination.current,
-    pagination.pageSize,
+    pagination,
     sorter.field,
     sorter.order,
     searchValue,
@@ -205,7 +208,6 @@ export const TableViewerPage: React.FC = () => {
     nextPagination: TablePaginationConfig,
     _filters: Record<string, FilterValue | null>,
     sorterInfo: SorterResult<TableRow> | SorterResult<TableRow>[],
-    _extra: TableCurrentDataSource<TableRow>,
   ) => {
     const currentSorter = Array.isArray(sorterInfo) ? sorterInfo[0] : sorterInfo;
     setPagination((prev) => ({
