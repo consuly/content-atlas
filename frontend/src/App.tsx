@@ -31,6 +31,7 @@ import { ImportMappingPage } from "./pages/import/[id]";
 import { QueryPage } from "./pages/query";
 import { ApiKeysPage } from "./pages/api-keys";
 import { TableViewerPage } from "./pages/tables/[tableName]";
+import { TablesListPage } from "./pages/tables";
 function App() {
   return (
     <BrowserRouter>
@@ -58,6 +59,14 @@ function App() {
                     meta: {
                       label: "Import Data",
                       icon: "📤",
+                    },
+                  },
+                  {
+                    name: "tables",
+                    list: "/tables",
+                    meta: {
+                      label: "Tables",
+                      icon: "🗄️",
                     },
                   },
                   {
@@ -101,6 +110,7 @@ function App() {
                       <Route path=":id" element={<ImportMappingPage />} />
                     </Route>
                     <Route path="/tables">
+                      <Route index element={<TablesListPage />} />
                       <Route path=":tableName" element={<TableViewerPage />} />
                     </Route>
                     <Route path="/query">
