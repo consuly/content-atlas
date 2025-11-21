@@ -10,7 +10,6 @@ from collections.abc import Mapping, Sequence
 from sqlalchemy import text, inspect
 import time
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait, FIRST_COMPLETED
 
 from .processors.csv_processor import process_csv, process_excel, process_large_excel
@@ -31,7 +30,8 @@ from .history import (
     complete_import_tracking,
     update_mapping_status,
     record_mapping_errors_batch,
-    list_duplicate_rows
+    list_duplicate_rows,
+    record_duplicate_rows
 )
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from .schema_mapper import analyze_schema_compatibility, transform_record
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # Reduces overhead of chunk management while maintaining parallelism benefits
 CHUNK_SIZE = 20000
 MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
+MAP_PARALLEL_MAX_WORKERS = max(1, settings.map_parallel_max_workers)
 DUPLICATE_PREVIEW_LIMIT = 20
 
 
@@ -179,6 +180,74 @@ def _build_duplicate_followup(
     return "\n".join(lines)
 
 
+def _normalize_uniqueness_value(value: Any) -> Any:
+    """Lightweight normalization so fingerprints are stable for in-file dedupe."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip().lower()
+    if isinstance(value, (int, float, bool)):
+        return value
+    return str(value)
+
+
+def _dedupe_records_in_memory(
+    records: List[Dict[str, Any]],
+    mapping_config: MappingConfig,
+    import_id: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Quickly drop duplicates inside the uploaded file before mapping.
+
+    Respects duplicate_check flags: disabled, force_import, allow_duplicates, or dedupe_within_file=False
+    will all skip this pass to preserve legacy behavior.
+    """
+    if not records:
+        return records, 0
+
+    dedupe_cfg = mapping_config.duplicate_check
+    if (
+        not mapping_config.check_duplicates
+        or not dedupe_cfg.enabled
+        or dedupe_cfg.force_import
+        or dedupe_cfg.allow_duplicates
+        or not dedupe_cfg.dedupe_within_file
+    ):
+        return records, 0
+
+    uniqueness_columns = _determine_uniqueness_columns(mapping_config, records[0])
+    if not uniqueness_columns:
+        logger.info("In-file dedupe skipped: no uniqueness columns available")
+        return records, 0
+
+    seen = set()
+    deduped_records: List[Dict[str, Any]] = []
+    duplicate_entries: List[Dict[str, Any]] = []
+
+    for idx, record in enumerate(records, start=1):
+        fingerprint = tuple(_normalize_uniqueness_value(record.get(col)) for col in uniqueness_columns)
+        if fingerprint in seen:
+            duplicate_entries.append({"record_number": idx, "record": record.copy()})
+            continue
+        seen.add(fingerprint)
+        deduped_records.append(record)
+
+    skipped = len(duplicate_entries)
+    if skipped:
+        logger.info(
+            "In-file dedupe removed %d duplicate rows before mapping (uniqueness: %s)",
+            skipped,
+            ", ".join(uniqueness_columns),
+        )
+        if import_id and duplicate_entries:
+            try:
+                record_duplicate_rows(import_id, duplicate_entries)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.error("Failed to persist in-file duplicate rows: %s", str(e))
+
+    return deduped_records, skipped
+
+
 def detect_file_type(filename: str) -> str:
     """Detect file type from filename."""
     if filename.endswith('.csv'):
@@ -252,7 +321,7 @@ def _map_chunk(
 def _map_chunks_parallel(
     raw_chunks: List[List[Dict[str, Any]]],
     config: MappingConfig,
-    max_workers: int = 4,
+    max_workers: Optional[int] = None,
     timeout_seconds: Optional[int] = None
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
@@ -267,6 +336,8 @@ def _map_chunks_parallel(
     Returns:
         Tuple of (all_mapped_records, all_errors)
     """
+    if max_workers is None:
+        max_workers = MAP_PARALLEL_MAX_WORKERS
     logger.info(f"Starting parallel mapping for {len(raw_chunks)} chunks with {max_workers} workers")
     if timeout_seconds and timeout_seconds > 0:
         logger.info("Enforcing mapping timeout of %d seconds for parallel mapping", timeout_seconds)
@@ -519,6 +590,7 @@ def execute_data_import(
     start_time = time.time()
     import_id = None
     records = []
+    intra_file_duplicates_skipped = 0
     
     try:
         type_mismatch_summary: List[Dict[str, Any]] = []
@@ -578,8 +650,16 @@ def execute_data_import(
                 "Double-check the file format and header configuration."
             )
         
+        raw_total_rows = len(records)
+
+        # Optional quick in-file dedupe before mapping
+        records, intra_file_duplicates_skipped = _dedupe_records_in_memory(
+            records,
+            mapping_config,
+            import_id=import_id
+        )
         total_rows = len(records)
-        
+
         # Start mapping status tracking
         update_mapping_status(import_id, 'in_progress')
         
@@ -604,10 +684,10 @@ def execute_data_import(
                 total_chunks = len(chunks)
                 logger.info(f"Split {total_rows} records into {total_chunks} chunks for parallel mapping")
                 
-                # Determine number of workers
-                max_workers = min(4, os.cpu_count() or 2)
+                # Determine number of workers (configurable via MAP_PARALLEL_MAX_WORKERS)
+                max_workers = MAP_PARALLEL_MAX_WORKERS
                 logger.info(f"Using {max_workers} parallel workers for mapping")
-                
+
                 # Map chunks in parallel
                 timeout_seconds = MAP_STAGE_TIMEOUT_SECONDS if MAP_STAGE_TIMEOUT_SECONDS > 0 else None
                 mapped_records, mapping_errors = _map_chunks_parallel(
@@ -755,9 +835,11 @@ def execute_data_import(
         
         # Complete import tracking with structured metadata
         duration = time.time() - start_time
-        metadata_payload: Optional[Dict[str, Any]] = None
+        metadata_payload: Dict[str, Any] = {}
         if type_mismatch_summary:
-            metadata_payload = {"type_mismatch_summary": type_mismatch_summary}
+            metadata_payload["type_mismatch_summary"] = type_mismatch_summary
+        if intra_file_duplicates_skipped:
+            metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
 
         duplicate_rows: List[Dict[str, Any]] = []
         duplicate_total = duplicates_skipped
@@ -792,7 +874,7 @@ def execute_data_import(
         complete_import_tracking(
             import_id=import_id,
             status="success",
-            total_rows_in_file=total_rows,
+            total_rows_in_file=raw_total_rows,
             rows_processed=len(mapped_records),
             rows_inserted=records_inserted,
             rows_skipped=duplicates_skipped,
@@ -800,7 +882,7 @@ def execute_data_import(
             duration_seconds=duration,
             parsing_time_seconds=parse_time,
             insert_time_seconds=insert_time,
-            metadata=metadata_payload
+            metadata=metadata_payload or None
         )
 
         logger.info(f"Import completed successfully in {duration:.2f}s")
@@ -809,6 +891,7 @@ def execute_data_import(
             "success": True,
             "records_processed": records_inserted,
             "duplicates_skipped": duplicates_skipped,
+            "intra_file_duplicates_skipped": intra_file_duplicates_skipped,
             "table_name": mapping_config.table_name,
             "mapping_errors": mapping_errors if mapping_errors else [],
             "type_mismatch_summary": type_mismatch_summary,
