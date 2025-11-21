@@ -22,6 +22,7 @@ import pandas as pd
 import logging
 import time
 import re
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,68 @@ _TYPE_ALIAS_MAP = {
 _SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "TIMESTAMP", "DATE", "BOOLEAN"}
 
 _SLASHED_DATE_PATTERN = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{2,4})")
+
+
+def _load_previous_uniqueness_columns(engine, table_name: str) -> Optional[List[str]]:
+    """
+    Load uniqueness columns from the most recent successful import for a table.
+
+    Keeping uniqueness stable across imports ensures duplicate detection remains
+    consistent when the LLM proposes different unique keys for later files.
+    """
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT mapping_config
+                    FROM import_history
+                    WHERE table_name = :table_name
+                      AND status = 'success'
+                      AND mapping_config IS NOT NULL
+                    ORDER BY import_timestamp DESC
+                    LIMIT 1
+                    """
+                ),
+                {"table_name": table_name},
+            )
+            row = result.fetchone()
+            if not row:
+                return None
+
+            cfg = row[0]
+            if isinstance(cfg, str):
+                try:
+                    cfg = json.loads(cfg)
+                except Exception:
+                    cfg = None
+
+            if not isinstance(cfg, dict):
+                return None
+
+            unique_cols = cfg.get("unique_columns")
+            if not unique_cols:
+                dc = cfg.get("duplicate_check") or {}
+                unique_cols = (
+                    dc.get("uniqueness_columns")
+                    or dc.get("unique_columns")
+                    or cfg.get("uniqueness_columns")
+                )
+
+            if unique_cols:
+                logger.info(
+                    "AUTO-IMPORT: Reusing previous uniqueness columns for table '%s': %s",
+                    table_name,
+                    unique_cols,
+                )
+            return unique_cols
+    except Exception as exc:
+        logger.warning(
+            "AUTO-IMPORT: Could not load previous uniqueness columns for table '%s': %s",
+            table_name,
+            exc,
+        )
+        return None
 
 
 def _detect_dayfirst(series: pd.Series) -> Optional[bool]:
@@ -476,6 +539,17 @@ def execute_llm_import_decision(
         else:
             final_table_schema = dict(db_schema)
         
+        # Stabilize uniqueness columns for duplicate checks when the table already exists.
+        effective_unique_columns = unique_columns
+        if table_exists:
+            previous_unique = _load_previous_uniqueness_columns(engine, target_table)
+            if previous_unique:
+                effective_unique_columns = previous_unique
+                logger.info(
+                    "AUTO-IMPORT: Using previous uniqueness columns for duplicate detection: %s",
+                    effective_unique_columns,
+                )
+
         schema_migrations = llm_decision.get("schema_migrations") or []
         if table_exists:
             already_targeted = _extract_columns_from_migrations(schema_migrations)
@@ -529,12 +603,12 @@ def execute_llm_import_decision(
                 db_schema=final_table_schema or existing_table_schema or {},
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules={"column_transformations": column_transformations} if column_transformations else {},
-                unique_columns=unique_columns,  # For duplicate detection (legacy)
+                unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=True,
                     check_file_level=True,
                     allow_duplicates=False,
-                    uniqueness_columns=unique_columns  # This is what duplicate checking actually uses
+                    uniqueness_columns=effective_unique_columns  # This is what duplicate checking actually uses
                 )
             )
         else:
@@ -545,12 +619,12 @@ def execute_llm_import_decision(
                 db_schema=db_schema,
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules={"column_transformations": column_transformations} if column_transformations else {},
-                unique_columns=unique_columns,  # For duplicate detection (legacy)
+                unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=True,
                     check_file_level=True,
                     allow_duplicates=False,
-                    uniqueness_columns=unique_columns  # This is what duplicate checking actually uses
+                    uniqueness_columns=effective_unique_columns  # This is what duplicate checking actually uses
                 )
             )
         

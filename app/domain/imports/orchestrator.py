@@ -745,9 +745,36 @@ def handle_schema_transformation(
         source_columns = list(mapped_records[0].keys())
         logger.info(f"Source columns ({len(source_columns)}): {source_columns[:5]}{'...' if len(source_columns) > 5 else ''}")
         
-        # Analyze schema compatibility and get column mapping
+        # Prefer exact/safe mapping when the incoming records already match the
+        # destination schema (common for LLM-produced mappings). Only fall back
+        # to fuzzy matching when the majority of columns don't line up.
         logger.info(f"Analyzing schema compatibility between source and target...")
-        compatibility = analyze_schema_compatibility(source_columns, existing_columns)
+        existing_lower_map = {col.lower(): col for col in existing_columns}
+        matched_columns = [src for src in source_columns if src.lower() in existing_lower_map]
+        exact_match_ratio = (len(matched_columns) / len(source_columns)) if source_columns else 1.0
+
+        if exact_match_ratio >= 0.8:
+            logger.info(
+                "High exact-match ratio detected (%.1f%%). Using safe identity mapping and treating unknown columns as new.",
+                exact_match_ratio * 100,
+            )
+            column_mapping = {
+                src: existing_lower_map.get(src.lower(), src) for src in source_columns
+            }
+            new_columns = [src for src in source_columns if src.lower() not in existing_lower_map]
+            match_percentage = exact_match_ratio * 100
+            compatibility_score = exact_match_ratio * (1 - (len(new_columns) / (len(source_columns) + len(existing_columns) or 1)) * 0.5)
+            compatibility = {
+                "column_mapping": column_mapping,
+                "matched_columns": matched_columns,
+                "new_columns": new_columns,
+                "match_percentage": match_percentage,
+                "matched_count": len(matched_columns),
+                "new_count": len(new_columns),
+                "compatibility_score": compatibility_score,
+            }
+        else:
+            compatibility = analyze_schema_compatibility(source_columns, existing_columns)
         
         logger.info(f"Schema compatibility analysis:")
         logger.info(f"  - Match percentage: {compatibility['match_percentage']:.1f}%")
@@ -770,6 +797,8 @@ def handle_schema_transformation(
         
         # Get target schema with data types
         target_schema = {col: 'TEXT' for col in existing_columns}  # Simplified schema
+        for new_col in compatibility['new_columns']:
+            target_schema[new_col] = 'TEXT'
         
         # Transform records to match target schema
         logger.info(f"Transforming {len(mapped_records)} records...")
