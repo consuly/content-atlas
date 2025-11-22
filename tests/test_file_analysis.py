@@ -168,6 +168,64 @@ def test_analyze_failed_analysis(mock_failed_analysis):
         assert response.status_code == 502
 
 
+@pytest.mark.not_b2
+def test_analyze_file_honors_forced_table(monkeypatch):
+    """target_table_name should override the LLM decision and adjust strategy for existing tables."""
+    forced_table = "forced_existing_table"
+
+    def fake_analyze(**_kwargs):
+        return {
+            "success": True,
+            "response": "ok",
+            "iterations_used": 1,
+            "llm_decision": {
+                "strategy": "NEW_TABLE",
+                "target_table": "llm_pick",
+                "column_mapping": {"name": "name"},
+                "unique_columns": ["name"],
+                "has_header": True,
+                "expected_column_types": {"name": "TEXT"},
+            },
+        }
+
+    captured = {}
+
+    def fake_execute(file_content, file_name, all_records, llm_decision):
+        captured["llm_decision"] = llm_decision
+        assert llm_decision["target_table"] == forced_table
+        assert llm_decision["strategy"] == "ADAPT_DATA"  # switched because mode=existing
+        return {
+            "success": True,
+            "strategy_executed": llm_decision["strategy"],
+            "table_name": llm_decision["target_table"],
+            "records_processed": len(all_records),
+            "duplicates_skipped": 0,
+        }
+
+    monkeypatch.setattr("app.api.routers.analysis._get_analyze_file_for_import", lambda: fake_analyze)
+    monkeypatch.setattr("app.integrations.auto_import.execute_llm_import_decision", fake_execute)
+
+    files = {"file": ("simple.csv", io.BytesIO(b"name\nalpha\nbeta\n"), "text/csv")}
+    response = client.post(
+        "/analyze-file",
+        files=files,
+        data={
+            "analysis_mode": "auto_always",
+            "conflict_resolution": "llm_decide",
+            "max_iterations": 3,
+            "target_table_name": forced_table,
+            "target_table_mode": "existing",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["success"] is True
+    assert data["auto_execution_result"]["table_name"] == forced_table
+    assert captured["llm_decision"]["target_table"] == forced_table
+    assert captured["llm_decision"]["strategy"] == "ADAPT_DATA"
+
+
 # Configuration tests
 
 def test_analysis_mode_manual(require_llm):

@@ -23,7 +23,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
-from app.api.schemas.shared import AnalysisMode, ConflictResolutionMode
+from app.api.schemas.shared import AnalysisMode, ConflictResolutionMode, ensure_safe_table_name
 from app.core.config import settings
 from app.db.context import get_database_schema, format_schema_for_prompt
 from app.utils.date import detect_date_column, infer_date_format
@@ -1379,6 +1379,24 @@ def make_import_decision(
                 )
             }
 
+    forced_table = context.file_metadata.get("forced_target_table")
+    forced_table_mode = context.file_metadata.get("forced_target_table_mode")
+    if forced_table:
+        normalized_forced_table = ensure_safe_table_name(str(forced_table))
+        if normalized_forced_table and target_table != normalized_forced_table:
+            logger.info(
+                "Overriding LLM target table '%s' with user-requested table '%s'",
+                target_table,
+                normalized_forced_table,
+            )
+            target_table = normalized_forced_table
+        if forced_table_mode == "existing" and strategy == "NEW_TABLE":
+            logger.info("Switching strategy to ADAPT_DATA to honor existing-table request")
+            strategy = "ADAPT_DATA"
+        elif forced_table_mode == "new" and strategy != "NEW_TABLE":
+            logger.info("Switching strategy to NEW_TABLE to honor new-table request")
+            strategy = "NEW_TABLE"
+
     # Store decision in context (will be retrieved by caller)
     normalized_transformations = _normalize_column_transformations_for_decision(
         column_transformations
@@ -1399,6 +1417,8 @@ def make_import_decision(
         "expected_column_types": expected_types,
         "schema_migrations": migrations,
         "column_transformations": normalized_transformations,
+        "forced_target_table": target_table if forced_table else None,
+        "forced_table_mode": forced_table_mode if forced_table else None,
     }
     
     return {
@@ -1686,6 +1706,14 @@ Total Rows: {file_metadata.get('total_rows', 'unknown')}
 Sample Size: {len(file_sample)}
 
 Please analyze the file structure, compare it with existing tables, and recommend the best import strategy."""
+            forced_table = file_metadata.get("forced_target_table")
+            if forced_table:
+                mode = file_metadata.get("forced_target_table_mode")
+                mode_text = "existing table" if mode == "existing" else "new table" if mode == "new" else "specified table"
+                prompt += (
+                    f"\nUser request: map the data into the {mode_text} '{forced_table}'. "
+                    "Prioritize this target and avoid recommending a different table."
+                )
             messages_to_send = [{"role": "user", "content": prompt}]
         else:
             messages_to_send = messages

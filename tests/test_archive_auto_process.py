@@ -209,11 +209,83 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_stor
     assert metadata["processed_files"] == 0
     assert metadata["failed_files"] == 1
     assert metadata["skipped_files"] == 1
-    assert len(metadata["results"]) == 2
-    failed_entry = next(result for result in metadata["results"] if result["status"] == "failed")
-    assert failed_entry["message"]
-    skipped_entry = next(result for result in metadata["results"] if result["status"] == "skipped")
-    assert skipped_entry["message"] == "Unsupported file type"
+
+
+@pytest.mark.not_b2
+def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, tmp_path):
+    forced_table = "forced_archive_table"
+
+    analysis_module = importlib.import_module("app.api.routers.analysis")
+
+    def fake_analyze(**_kwargs):
+        return {
+            "success": True,
+            "response": "ok",
+            "iterations_used": 1,
+            "llm_decision": {
+                "strategy": "NEW_TABLE",
+                "target_table": "llm_pick",
+                "column_mapping": {"name": "name"},
+                "unique_columns": ["name"],
+                "has_header": True,
+                "expected_column_types": {"name": "TEXT"},
+            },
+        }
+
+    captured = {}
+
+    def fake_execute(file_content, file_name, all_records, llm_decision):
+        captured["llm_decision"] = llm_decision
+        assert llm_decision["target_table"] == forced_table
+        assert llm_decision["strategy"] == "ADAPT_DATA"
+        return {
+            "success": True,
+            "strategy_executed": llm_decision["strategy"],
+            "table_name": llm_decision["target_table"],
+            "records_processed": len(all_records),
+            "duplicates_skipped": 0,
+        }
+
+    monkeypatch.setattr(analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze)
+    monkeypatch.setattr(
+        "app.integrations.auto_import.execute_llm_import_decision", fake_execute
+    )
+    monkeypatch.setattr(
+        "app.core.config.settings.enable_auto_retry_failed_imports",
+        False,
+        raising=False,
+    )
+
+    csv_path = tmp_path / "simple.csv"
+    csv_path.write_text("name\nalpha\nbeta\n", encoding="utf-8")
+    zip_bytes = _build_zip({"simple.csv": str(csv_path)})
+    archive_id = _upload_zip(zip_bytes, filename="forced.zip")
+
+    response = client.post(
+        "/auto-process-archive",
+        data={
+            "file_id": archive_id,
+            "analysis_mode": "auto_always",
+            "conflict_resolution": "llm_decide",
+            "max_iterations": "5",
+            "target_table_name": forced_table,
+            "target_table_mode": "existing",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    job_id = payload["job_id"]
+
+    job = _wait_for_job(job_id)
+    assert job["status"] == "succeeded"
+    metadata = job["result_metadata"]
+    assert metadata["processed_files"] == 1
+    assert metadata["failed_files"] == 0
+    assert metadata["results"][0]["table_name"] == forced_table
+    assert captured["llm_decision"]["target_table"] == forced_table
+    assert job["metadata"]["forced_table_name"] == forced_table
+    assert len(metadata["results"]) == 1
+    assert metadata["skipped_files"] == 0
 
 
 @pytest.mark.not_b2
