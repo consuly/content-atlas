@@ -32,6 +32,7 @@ from app.db.models import (
     check_file_already_imported,
 )
 from app.db.session import get_engine
+from app.domain.imports.jobs import update_import_job
 from app.api.schemas.shared import MappingConfig
 from .history import (
     start_import_tracking, 
@@ -55,6 +56,22 @@ MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
 MAP_PARALLEL_MAX_WORKERS = max(1, settings.map_parallel_max_workers)
 DUPLICATE_PREVIEW_LIMIT = 20
 STREAMING_CSV_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10MB threshold to stream huge CSVs
+
+
+def _update_job_progress(
+    job_id: Optional[str],
+    *,
+    stage: Optional[str] = None,
+    progress: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Best-effort job progress updates; never fails the import if the job is missing."""
+    if not job_id:
+        return
+    try:
+        update_import_job(job_id, stage=stage, progress=progress, metadata=metadata)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Unable to update job %s progress: %s", job_id, exc)
 
 
 def _records_look_like_mappings(records: Any, sample_size: int = 5) -> bool:
@@ -377,6 +394,7 @@ def _execute_streaming_csv_import(
     import_strategy: Optional[str],
     metadata_info: Optional[Dict[str, Any]],
     import_id: str,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Stream CSV chunks to avoid loading huge files into memory."""
     parse_time_total = 0.0
@@ -459,6 +477,22 @@ def _execute_streaming_csv_import(
                 mapped_records[0],
             )
 
+        # Progress update (best-effort; estimate assumes at least one more chunk)
+        estimated_denominator = max(raw_total_rows + CHUNK_SIZE, 1)
+        progress_pct = min(99, int((raw_total_rows / estimated_denominator) * 100))
+        _update_job_progress(
+            job_id,
+            stage="mapping",
+            progress=progress_pct,
+            metadata={
+                "chunks_completed": chunk_num,
+                "rows_processed": mapped_total_rows,
+                "rows_inserted": records_inserted_total,
+                "duplicates_skipped": duplicates_skipped_total,
+                "source": source_type,
+            },
+        )
+
     type_mismatch_summary = sorted(type_mismatch_agg.values(), key=lambda item: item["column"])
 
     # Update mapping status
@@ -515,6 +549,19 @@ def _execute_streaming_csv_import(
         metadata_payload["type_mismatch_summary"] = type_mismatch_summary
     if intra_file_duplicates_skipped:
         metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
+
+    _update_job_progress(
+        job_id,
+        stage="mapping",
+        progress=100,
+        metadata={
+            "chunks_completed": chunk_num if 'chunk_num' in locals() else 0,
+            "rows_processed": mapped_total_rows,
+            "rows_inserted": records_inserted_total,
+            "duplicates_skipped": duplicates_skipped_total,
+            "source": source_type,
+        },
+    )
 
     complete_import_tracking(
         import_id=import_id,
@@ -581,7 +628,8 @@ def _map_chunks_parallel(
     raw_chunks: List[List[Dict[str, Any]]],
     config: MappingConfig,
     max_workers: Optional[int] = None,
-    timeout_seconds: Optional[int] = None
+    timeout_seconds: Optional[int] = None,
+    job_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map multiple chunks in parallel and aggregate results.
@@ -604,6 +652,10 @@ def _map_chunks_parallel(
     all_mapped_records: List[Dict[str, Any]] = []
     all_errors: List[Dict[str, Any]] = []
     chunk_results: Dict[int, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
+    total_chunks = len(raw_chunks)
+    completed_chunks = 0
+    records_mapped_running = 0
+    errors_running = 0
 
     deadline = time.time() + timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
     
@@ -685,7 +737,24 @@ def _map_chunks_parallel(
                 try:
                     result_chunk_num, mapped_records, errors = future.result()
                     chunk_results[result_chunk_num] = (mapped_records, errors)
+                    records_mapped_running += len(mapped_records)
+                    errors_running += len(errors)
                     logger.info(f"Chunk {result_chunk_num} mapping completed")
+                    completed_chunks += 1
+                    progress_pct = int((completed_chunks / total_chunks) * 100) if total_chunks else None
+                    _update_job_progress(
+                        job_id,
+                        stage="mapping",
+                        progress=progress_pct,
+                        metadata={
+                            "chunks_completed": completed_chunks,
+                            "total_chunks": total_chunks,
+                            "records_mapped_so_far": records_mapped_running,
+                            "errors_so_far": errors_running,
+                            "parallel_workers": max_workers,
+                            "timeout_seconds": timeout_seconds,
+                        },
+                    )
                 except Exception as e:
                     logger.error(f"Error in chunk {chunk_num + 1} mapping: {e}")
                     raise
@@ -843,7 +912,8 @@ def execute_data_import(
     import_strategy: Optional[str] = None,
     metadata_info: Optional[Dict[str, Any]] = None,
     pre_parsed_records: Optional[List[Dict[str, Any]]] = None,
-    pre_mapped: bool = False
+    pre_mapped: bool = False,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Central function for all data imports.
@@ -954,6 +1024,7 @@ def execute_data_import(
                 import_strategy=import_strategy,
                 metadata_info=metadata_info,
                 import_id=import_id,
+                job_id=job_id,
             )
         else:
             # Parse file normally
@@ -1001,6 +1072,18 @@ def execute_data_import(
             mapping_errors = []
             map_time = 0.0
             logger.info(f"Using {len(mapped_records)} pre-mapped records (skipped mapping)")
+            _update_job_progress(
+                job_id,
+                stage="mapping",
+                progress=100,
+                metadata={
+                    "total_chunks": 1,
+                    "chunks_completed": 1,
+                    "rows_to_map": total_rows,
+                    "source": source_type,
+                    "pre_mapped": True,
+                },
+            )
         else:
             # Map data - use parallel mapping for large datasets
             map_start = time.time()
@@ -1014,6 +1097,17 @@ def execute_data_import(
                 
                 total_chunks = len(chunks)
                 logger.info(f"Split {total_rows} records into {total_chunks} chunks for parallel mapping")
+                _update_job_progress(
+                    job_id,
+                    stage="mapping",
+                    progress=0,
+                    metadata={
+                        "total_chunks": total_chunks,
+                        "rows_to_map": total_rows,
+                        "parallel_workers": MAP_PARALLEL_MAX_WORKERS,
+                        "source": source_type,
+                    },
+                )
                 
                 # Determine number of workers (configurable via MAP_PARALLEL_MAX_WORKERS)
                 max_workers = MAP_PARALLEL_MAX_WORKERS
@@ -1025,7 +1119,8 @@ def execute_data_import(
                     chunks,
                     mapping_config,
                     max_workers,
-                    timeout_seconds=timeout_seconds
+                    timeout_seconds=timeout_seconds,
+                    job_id=job_id,
                 )
             else:
                 # Use sequential mapping for small datasets
@@ -1050,6 +1145,17 @@ def execute_data_import(
                             f"Mapping stage timed out after {timeout_seconds} seconds. "
                             "Check mapping rules or reduce dataset size."
                         ) from exc
+                _update_job_progress(
+                    job_id,
+                    stage="mapping",
+                    progress=100,
+                    metadata={
+                        "total_chunks": 1,
+                        "chunks_completed": 1,
+                        "rows_to_map": total_rows,
+                        "source": source_type,
+                    },
+                )
             type_mismatch_summary = _summarize_type_mismatches(mapping_errors)
             
             map_time = time.time() - map_start

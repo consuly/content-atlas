@@ -1166,7 +1166,8 @@ def _run_marketing_agency_auto_import(
                 "key_entities": ["contact", "company"],
             },
             pre_parsed_records=normalized_records,
-            pre_mapped=False
+            pre_mapped=False,
+            job_id=job_id,
         )
     except Exception as exc:
         if file_id:
@@ -1717,7 +1718,8 @@ def _handle_client_list_special_case(
                 'source_file': metadata_name
             },
             pre_parsed_records=normalized_records,
-            pre_mapped=False
+            pre_mapped=False,
+            job_id=job_id,
         )
 
         if file_id:
