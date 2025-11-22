@@ -32,6 +32,14 @@ interface ImportSummary {
   import_id?: string;
   duplicates_found?: number;
 }
+
+interface ImportHistoryRecord {
+  import_id?: string;
+  source_path?: string;
+  file_name?: string;
+  file_size_bytes?: number;
+  duplicates_found?: number;
+}
 export const ImportPage: React.FC = () => {
   const navigate = useNavigate();
   const [files, setFiles] = useState<Array<UploadedFile & ImportSummary>>([]);
@@ -62,67 +70,53 @@ export const ImportPage: React.FC = () => {
       ...(token && { Authorization: `Bearer ${token}` }),
     };
 
-    const mappedFilesNeedingSummary = fileList.filter(
-      (file) => file.status === 'mapped' && !importSummaryCache[file.id]
-    );
+    const mappedFiles = fileList.filter((file) => file.status === 'mapped');
+    // If we already cached summaries for all mapped files, skip the network trip.
+    const missingSummaries = mappedFiles.filter((file) => !importSummaryCache[file.id]);
     let mergedCache = importSummaryCache;
 
-    if (mappedFilesNeedingSummary.length > 0) {
-      const summaries = await Promise.all(
-        mappedFilesNeedingSummary.map(async (file) => {
-          try {
-            const params: Record<string, unknown> = { file_name: file.file_name, limit: 1 };
-            if (typeof file.file_size === 'number') {
-              params.file_size_bytes = file.file_size;
-            }
-            if (file.b2_file_path) {
-              params.source_path = file.b2_file_path;
-            }
+    if (missingSummaries.length > 0) {
+      try {
+        // Fetch a single page of import history and match locally by source path,
+        // falling back to filename + size. The endpoint is ordered by newest first.
+        const historyLimit = Math.max(missingSummaries.length, 200);
+        const response = await axios.get(`${API_URL}/import-history`, {
+          params: {
+            limit: historyLimit,
+            offset: 0,
+          },
+          headers,
+        });
 
-            let response = await axios.get(`${API_URL}/import-history`, {
-              params,
-              headers,
-            });
+        const history: ImportHistoryRecord[] = response.data?.imports || [];
+        const updates: Record<string, ImportSummary> = {};
 
-            let importRecord = response.data.success && response.data.imports.length > 0
-              ? response.data.imports[0]
-              : null;
+        missingSummaries.forEach((file) => {
+          const match = history.find((record) => {
+            const recordSource = record.source_path;
+            const recordName = record.file_name;
+            const recordSize = record.file_size_bytes;
+            return (
+              (recordSource && recordSource === file.b2_file_path) ||
+              (recordName === file.file_name && recordSize === file.file_size)
+            );
+          }) as { import_id?: string; duplicates_found?: number } | undefined;
 
-            if (!importRecord && file.mapped_table_name) {
-              response = await axios.get(`${API_URL}/import-history`, {
-                params: { table_name: file.mapped_table_name, limit: 1 },
-                headers,
-              });
-              importRecord =
-                response.data.success && response.data.imports.length > 0
-                  ? response.data.imports[0]
-                  : null;
-            }
-
-            if (importRecord) {
-              return {
-                fileId: file.id,
-                summary: {
-                  import_id: importRecord.import_id,
-                  duplicates_found: importRecord.duplicates_found ?? 0,
-                },
-              };
-            }
-          } catch (err) {
-            console.error(`Error fetching import history for ${file.file_name}:`, err);
+          if (match) {
+            updates[file.id] = {
+              import_id: match.import_id,
+              duplicates_found: match.duplicates_found ?? 0,
+            };
+          } else {
+            updates[file.id] = { duplicates_found: undefined };
           }
+        });
 
-          return { fileId: file.id, summary: { duplicates_found: undefined } };
-        })
-      );
-
-      const updates: Record<string, ImportSummary> = {};
-      summaries.forEach(({ fileId, summary }) => {
-        updates[fileId] = summary;
-      });
-
-      mergedCache = { ...importSummaryCache, ...updates };
-      setImportSummaryCache(mergedCache);
+        mergedCache = { ...importSummaryCache, ...updates };
+        setImportSummaryCache(mergedCache);
+      } catch (err) {
+        console.error('Error fetching import history batch:', err);
+      }
     }
 
     return fileList.map((file) => ({
@@ -225,10 +219,10 @@ export const ImportPage: React.FC = () => {
   useEffect(() => {
     fetchFiles(activeTab, currentPage, pageSize);
     
-    // Auto-refresh every 10 seconds
+    // Auto-refresh every 30 seconds to reduce load on the history endpoint
     const interval = setInterval(() => {
       fetchFiles(activeTab, currentPage, pageSize);
-    }, 10000);
+    }, 30000);
 
     return () => clearInterval(interval);
   }, [activeTab, currentPage, pageSize, fetchFiles]);
