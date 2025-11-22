@@ -396,6 +396,7 @@ def _process_archive_entry(
                             file_id=uploaded_file_id,
                             update_file_status_fn=update_file_status,
                             metadata_name=entry_name,
+                            job_id=None,
                         )
 
             if marketing_response is not None:
@@ -1143,7 +1144,8 @@ def _run_marketing_agency_auto_import(
     file_id: Optional[str],
     update_file_status_fn,
     metadata_name: str,
-    import_strategy: str
+    import_strategy: str,
+    job_id: Optional[str] = None,
 ) -> AnalyzeFileResponse:
     from app.domain.imports.orchestrator import execute_data_import
 
@@ -1228,7 +1230,8 @@ def _handle_marketing_agency_us(
     max_iterations: int,
     file_id: Optional[str],
     update_file_status_fn,
-    metadata_name: str
+    metadata_name: str,
+    job_id: Optional[str] = None,
 ) -> AnalyzeFileResponse:
     mapping_config = _build_marketing_agency_mapping_config()
 
@@ -1260,7 +1263,8 @@ def _handle_marketing_agency_us(
         file_id=file_id,
         update_file_status_fn=update_file_status_fn,
         metadata_name=metadata_name,
-        import_strategy="NEW_TABLE"
+        import_strategy="NEW_TABLE",
+        job_id=job_id,
     )
 
 
@@ -1274,7 +1278,8 @@ def _handle_marketing_agency_texas(
     max_iterations: int,
     file_id: Optional[str],
     update_file_status_fn,
-    metadata_name: str
+    metadata_name: str,
+    job_id: Optional[str] = None,
 ) -> AnalyzeFileResponse:
     mapping_config = _build_marketing_agency_mapping_config()
     normalized_records = _normalize_marketing_agency_records(raw_records)
@@ -1374,7 +1379,8 @@ def _handle_marketing_agency_special_case(
     max_iterations: int,
     file_id: Optional[str],
     update_file_status_fn,
-    metadata_name: str
+    metadata_name: str,
+    job_id: Optional[str] = None,
 ) -> Optional[AnalyzeFileResponse]:
     if not settings.enable_marketing_fixture_shortcuts:
         return None
@@ -1399,7 +1405,8 @@ def _handle_marketing_agency_special_case(
             max_iterations=max_iterations,
             file_id=file_id,
             update_file_status_fn=update_file_status_fn,
-            metadata_name=metadata_name
+            metadata_name=metadata_name,
+            job_id=job_id,
         )
 
     if _matches("marketing agency - texas.csv"):
@@ -1413,7 +1420,8 @@ def _handle_marketing_agency_special_case(
             max_iterations=max_iterations,
             file_id=file_id,
             update_file_status_fn=update_file_status_fn,
-            metadata_name=metadata_name
+            metadata_name=metadata_name,
+            job_id=job_id,
         )
 
     return None
@@ -1885,7 +1893,8 @@ async def analyze_file_endpoint(
             max_iterations=max_iterations,
             file_id=file_id,
             update_file_status_fn=update_file_status,
-            metadata_name=file_name
+            metadata_name=file_name,
+            job_id=job_id,
         )
         if marketing_response is not None:
             analysis_id = str(uuid.uuid4())
@@ -2513,7 +2522,8 @@ async def analyze_b2_file_endpoint(
             max_iterations=request.max_iterations,
             file_id=None,
             update_file_status_fn=lambda *_args, **_kwargs: None,
-            metadata_name=request.file_name
+            metadata_name=request.file_name,
+            job_id=None,
         )
         if marketing_response is not None:
             analysis_id = str(uuid.uuid4())

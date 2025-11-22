@@ -141,12 +141,30 @@ def create_import_history_table():
 
     CREATE INDEX IF NOT EXISTS idx_import_duplicates_import ON import_duplicates(import_id);
     """
+
+    create_mapping_chunk_status_sql = """
+    CREATE TABLE IF NOT EXISTS mapping_chunk_status (
+        import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
+        chunk_number INTEGER NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'pending', -- pending, in_progress, completed, failed
+        error_message TEXT,
+        errors_count INTEGER DEFAULT 0,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (import_id, chunk_number)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mapping_chunk_status_import ON mapping_chunk_status(import_id);
+    CREATE INDEX IF NOT EXISTS idx_mapping_chunk_status_status ON mapping_chunk_status(status);
+    """
     
     try:
         with engine.begin() as conn:
             conn.execute(text(create_import_history_sql))
             conn.execute(text(create_mapping_errors_sql))
             conn.execute(text(create_import_duplicates_sql))
+            conn.execute(text(create_mapping_chunk_status_sql))
             conn.execute(text("""
                 ALTER TABLE import_duplicates
                 ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP;
@@ -318,6 +336,143 @@ def update_mapping_status(
     except Exception as e:
         logger.error(f"Error updating mapping status: {str(e)}")
         raise
+
+
+def initialize_mapping_chunks(import_id: str, total_chunks: int) -> None:
+    """
+    Pre-seed chunk tracking rows so we can mark progress as mapping runs.
+
+    Args:
+        import_id: UUID of the import
+        total_chunks: Number of chunks expected for this mapping run
+    """
+    if total_chunks <= 0:
+        return
+
+    engine = get_engine()
+    payload = [
+        {"import_id": import_id, "chunk_number": chunk_num}
+        for chunk_num in range(1, total_chunks + 1)
+    ]
+    insert_sql = text("""
+        INSERT INTO mapping_chunk_status (import_id, chunk_number, status, updated_at)
+        VALUES (:import_id, :chunk_number, 'pending', NOW())
+        ON CONFLICT (import_id, chunk_number) DO UPDATE
+        SET status = 'pending',
+            error_message = NULL,
+            errors_count = 0,
+            started_at = NULL,
+            completed_at = NULL,
+            updated_at = NOW()
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(insert_sql, payload)
+    except Exception as exc:
+        logger.error("Error initializing chunk tracking for import %s: %s", import_id, exc)
+        raise
+
+
+def _set_chunk_status(
+    import_id: str,
+    chunk_number: int,
+    status: str,
+    *,
+    errors_count: int = 0,
+    error_message: Optional[str] = None,
+) -> None:
+    """
+    Upsert chunk status row with timestamps and optional error details.
+    """
+    engine = get_engine()
+    update_sql = text("""
+        INSERT INTO mapping_chunk_status (
+            import_id, chunk_number, status, error_message, errors_count,
+            started_at, completed_at, updated_at
+        )
+        VALUES (
+            :import_id, :chunk_number, :status, :error_message, :errors_count,
+            CASE WHEN :status = 'in_progress' THEN NOW() ELSE NULL END,
+            CASE WHEN :status IN ('completed', 'failed') THEN NOW() ELSE NULL END,
+            NOW()
+        )
+        ON CONFLICT (import_id, chunk_number) DO UPDATE
+        SET status = EXCLUDED.status,
+            error_message = EXCLUDED.error_message,
+            errors_count = EXCLUDED.errors_count,
+            started_at = CASE
+                WHEN EXCLUDED.status = 'in_progress' THEN COALESCE(mapping_chunk_status.started_at, EXCLUDED.started_at)
+                ELSE mapping_chunk_status.started_at
+            END,
+            completed_at = CASE
+                WHEN EXCLUDED.status IN ('completed', 'failed') THEN NOW()
+                WHEN EXCLUDED.status = 'pending' THEN NULL
+                ELSE mapping_chunk_status.completed_at
+            END,
+            updated_at = NOW()
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(update_sql, {
+                "import_id": import_id,
+                "chunk_number": chunk_number,
+                "status": status,
+                "error_message": error_message,
+                "errors_count": errors_count,
+            })
+    except Exception as exc:
+        logger.error(
+            "Error updating chunk %s status to %s for import %s: %s",
+            chunk_number,
+            status,
+            import_id,
+            exc,
+        )
+        raise
+
+
+def mark_chunk_in_progress(import_id: str, chunk_number: int) -> None:
+    """Mark a chunk as actively being mapped."""
+    _set_chunk_status(import_id, chunk_number, "in_progress")
+
+
+def mark_chunk_completed(import_id: str, chunk_number: int, errors_count: int = 0) -> None:
+    """Mark a chunk as completed (optionally with error count)."""
+    _set_chunk_status(import_id, chunk_number, "completed", errors_count=errors_count)
+
+
+def mark_chunk_failed(import_id: str, chunk_number: int, error_message: str) -> None:
+    """Mark a chunk as failed with an accompanying error message."""
+    _set_chunk_status(import_id, chunk_number, "failed", error_message=error_message)
+
+
+def summarize_chunk_status(import_id: str) -> Dict[str, int]:
+    """
+    Summarize chunk statuses for an import. Useful for retries/resume flows.
+    """
+    engine = get_engine()
+    query = text("""
+        SELECT status, COUNT(*) as count
+        FROM mapping_chunk_status
+        WHERE import_id = :import_id
+        GROUP BY status
+    """)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(query, {"import_id": import_id}).fetchall()
+    except Exception as exc:
+        logger.error("Error summarizing chunk status for import %s: %s", import_id, exc)
+        raise
+
+    summary: Dict[str, int] = {
+        "pending": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+    for status, count in rows:
+        summary[status] = count
+    return summary
 
 
 def record_mapping_errors_batch(

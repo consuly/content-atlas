@@ -219,6 +219,40 @@ def test_map_b2_data_real_file():
     result_data = response.json()
     assert result_data["success"] == True
     assert result_data["records_processed"] > 0
+
+    import_id = result_data.get("import_id")
+    assert import_id, "MapDataResponse should include import_id for chunk tracking"
+
+    # Verify chunk tracking recorded progress for this large file import
+    from app.db.session import get_engine  # Imported here to avoid session-level side effects
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT status, COUNT(*) AS count
+            FROM mapping_chunk_status
+            WHERE import_id = :import_id
+            GROUP BY status
+        """), {"import_id": import_id}).fetchall()
+        chunk_status = {row[0]: row[1] for row in rows}
+
+        # At least one chunk should be tracked and all should be completed
+        assert chunk_status, "Expected mapping_chunk_status rows for large file import"
+        assert chunk_status.get("failed", 0) == 0, f"Chunk failures detected: {chunk_status}"
+        assert chunk_status.get("pending", 0) == 0, f"Chunks left pending: {chunk_status}"
+        assert chunk_status.get("completed", 0) >= 1, f"No completed chunks recorded: {chunk_status}"
+
+        # Metadata should mirror the summary for quick resume/retry handling
+        metadata_row = conn.execute(
+            text("SELECT metadata FROM import_history WHERE import_id = :import_id"),
+            {"import_id": import_id}
+        ).scalar()
+        if metadata_row:
+            metadata = metadata_row if isinstance(metadata_row, dict) else json.loads(metadata_row)
+            chunk_summary = metadata.get("mapping_chunk_status") if isinstance(metadata, dict) else {}
+            if chunk_summary:
+                assert chunk_summary.get("failed", 0) == 0
+                assert chunk_summary.get("pending", 0) == 0
+                assert chunk_summary.get("completed", 0) == chunk_status.get("completed", 0)
     
     print(f"Successfully processed {result_data['records_processed']} records from local test file")
 
