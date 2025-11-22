@@ -70,6 +70,7 @@ class DuplicateCheckConfig(BaseModel):
     """Configuration for duplicate checking behavior"""
     enabled: bool = True
     check_file_level: bool = True  # Check if entire file was already imported
+    allow_file_level_retry: bool = False  # If True, let caller re-import same file hash (still enforces row-level duplicate checks)
     allow_duplicates: bool = False  # If True, skip row-level duplicate checking
     force_import: bool = False  # If True, skip all duplicate checks
     dedupe_within_file: bool = False  # Opt-in: quickly drop duplicates inside the uploaded file before mapping

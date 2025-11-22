@@ -20,7 +20,7 @@ from tests.utils.system_tables import ensure_system_tables_ready
 client = TestClient(app)
 
 
-@pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")
+@pytest.mark.not_b2
 def test_headerless_file_merge_with_duplicates():
     """
     Test comprehensive scenario with headerless file, date format differences, and duplicates.
@@ -138,7 +138,11 @@ def test_headerless_file_merge_with_duplicates():
     
     print(f"  Response status: {response_a.status_code}")
     if response_a.status_code != 200:
-        pytest.skip(f"LLM analysis unavailable: {response_a.status_code} {response_a.text}")
+        pytest.fail(
+            "LLM analysis unavailable when processing the first file.\n"
+            "This test requires the full import stack (Postgres + analysis pipeline) to be reachable.\n"
+            f"HTTP {response_a.status_code}: {response_a.text}"
+        )
 
     data_a = response_a.json()
     print(f"  Analysis success: {data_a['success']}")
@@ -146,7 +150,10 @@ def test_headerless_file_merge_with_duplicates():
 
     if not data_a.get('success', False):
         print(f"  ERROR: {data_a.get('error', 'Unknown error')}")
-        pytest.skip(f"First file analysis failed: {data_a.get('error')}")
+        pytest.fail(
+            "First file analysis failed; cannot proceed with headerless merge scenario.\n"
+            f"Error: {data_a.get('error')}"
+        )
     
     print("\n  LLM Response (First File):")
     print("  " + "-"*76)
@@ -299,7 +306,17 @@ def test_headerless_file_merge_with_duplicates():
     # Filter to only user data tables
     user_tables_2 = [
         t for t in tables_data_2['tables'] 
-        if t['table_name'] not in ['file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'import_jobs', 'api_keys', 'users', 'uploaded_files']
+        if t['table_name'] not in [
+            'file_imports',
+            'table_metadata',
+            'import_history',
+            'mapping_errors',
+            'import_jobs',
+            'api_keys',
+            'users',
+            'uploaded_files',
+            'mapping_chunk_status',
+        ]
         and not t['table_name'].startswith('test_')
         and not t['table_name'].startswith('uploads')
     ]
@@ -310,7 +327,10 @@ def test_headerless_file_merge_with_duplicates():
     
     # CRITICAL ASSERTION: Only one user data table should exist
     if len(user_tables_2) != 1:
-        pytest.skip("LLM auto-execution produced unexpected table layout; skipping assertion")
+        pytest.fail(
+            "LLM auto-execution produced unexpected table layout; expected a single table to compare merge results.\n"
+            "Ensure Postgres is reachable and the mapping pipeline is configured."
+        )
 
     final_table_name = user_tables_2[0]['table_name']
     final_table_rows = user_tables_2[0]['row_count']

@@ -326,23 +326,40 @@ export const ImportMappingPage: React.FC = () => {
     };
   }, [displayJobInfo]);
 
-  const jobStatus = displayJobInfo?.status;
-  const isArchiveMappingActive =
-    isArchive &&
-    !!displayJobInfo &&
-    jobStatus !== 'succeeded' &&
-    jobStatus !== 'failed';
+  const normalizeJobStatus = (status?: string | null) =>
+    (status || '').toLowerCase().trim() || null;
+  const effectiveJobStatus = normalizeJobStatus(
+    displayJobInfo?.status ?? file?.active_job_status ?? null
+  );
+  const hasJobMetadata =
+    !!displayJobInfo ||
+    !!file?.active_job_id ||
+    !!file?.active_job_stage ||
+    typeof file?.active_job_progress === 'number';
+  const mappingJobActive =
+    (!!effectiveJobStatus &&
+      effectiveJobStatus !== 'succeeded' &&
+      effectiveJobStatus !== 'failed' &&
+      effectiveJobStatus !== 'completed' &&
+      effectiveJobStatus !== 'cancelled' &&
+      effectiveJobStatus !== 'canceled') ||
+    (!effectiveJobStatus && hasJobMetadata);
+
+  const isArchiveMappingActive = isArchive && mappingJobActive;
   const archiveProgressPercent =
     displayJobInfo?.progress ?? file?.active_job_progress ?? 0;
   const archiveProgressStatus: 'success' | 'exception' | 'active' =
-    jobStatus === 'failed'
+    effectiveJobStatus === 'failed'
       ? 'exception'
-      : jobStatus === 'succeeded'
+      : effectiveJobStatus === 'succeeded'
         ? 'success'
         : 'active';
-  const disableMappingActions = isArchiveMappingActive;
-  const mappingJobActive =
-    !!displayJobInfo && displayJobInfo.status !== 'succeeded' && displayJobInfo.status !== 'failed';
+  const disableMappingActions =
+    mappingJobActive ||
+    file?.status === 'mapping' ||
+    processing ||
+    archiveProcessing ||
+    archiveResumeLoading;
   const isMappingInProgress = processing || file?.status === 'mapping' || mappingJobActive;
   const mappingStageLabel = displayJobInfo?.stage ?? file?.active_job_stage ?? file?.active_job_status ?? null;
   const mappingProgress =
@@ -355,6 +372,20 @@ export const ImportMappingPage: React.FC = () => {
     typeof mappingProgress === 'number' && Number.isFinite(mappingProgress)
       ? Math.min(100, Math.max(0, mappingProgress))
       : null;
+
+  const showActiveJobWarning = useCallback(() => {
+    messageApi.warning(
+      'A mapping job is already queued or running for this file. Please wait for it to finish before starting another.'
+    );
+  }, [messageApi]);
+
+  const ensureJobIsAvailable = () => {
+    if ((mappingJobActive || file?.status === 'mapping') && !processing) {
+      showActiveJobWarning();
+      return false;
+    }
+    return true;
+  };
 
   // Mapped file details state
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -1097,6 +1128,7 @@ export const ImportMappingPage: React.FC = () => {
 
   const handleAutoProcess = async () => {
     if (!id) return;
+    if (!ensureJobIsAvailable()) return;
     if (!validateSharedTableName()) return;
     
     setProcessing(true);
@@ -1166,6 +1198,9 @@ export const ImportMappingPage: React.FC = () => {
     if (!id) {
       return;
     }
+    if (!ensureJobIsAvailable()) {
+      return;
+    }
     if (!validateSharedTableName()) {
       return;
     }
@@ -1215,6 +1250,9 @@ export const ImportMappingPage: React.FC = () => {
 
   const handleArchiveResume = async (options?: { resumeAll?: boolean }) => {
     if (!id) {
+      return;
+    }
+    if (!ensureJobIsAvailable()) {
       return;
     }
     if (!validateSharedTableName()) {
@@ -1280,6 +1318,7 @@ export const ImportMappingPage: React.FC = () => {
 
   const handleInteractiveStart = async (options?: { previousError?: string }) => {
     if (!id) return;
+    if (!ensureJobIsAvailable()) return;
     
     setProcessing(true);
     setError(null);
@@ -1344,6 +1383,7 @@ export const ImportMappingPage: React.FC = () => {
 
   const sendInteractiveMessage = async (messageToSend: string) => {
     if (!threadId || !id) return;
+    if (!ensureJobIsAvailable()) return;
     const trimmed = messageToSend.trim();
     if (!trimmed) return;
 
@@ -1405,6 +1445,7 @@ export const ImportMappingPage: React.FC = () => {
 
   const handleInteractiveExecute = async () => {
     if (!threadId || !id) return;
+    if (!ensureJobIsAvailable()) return;
 
     setProcessing(true);
     setError(null);
@@ -2423,6 +2464,7 @@ export const ImportMappingPage: React.FC = () => {
               icon={<ThunderboltOutlined />}
               onClick={handleAutoProcess}
               loading={processing}
+              disabled={disableMappingActions}
               block
             >
               {processing ? 'Processing...' : 'Process Now'}
@@ -2561,6 +2603,7 @@ export const ImportMappingPage: React.FC = () => {
                 icon={<CheckCircleOutlined />}
                 onClick={handleInteractiveExecute}
                 loading={processing}
+                disabled={disableMappingActions}
                 block
               >
                 {processing ? 'Executing...' : 'Execute Import'}
@@ -2579,7 +2622,7 @@ export const ImportMappingPage: React.FC = () => {
                     }
                   }}
                   placeholder="Ask for changes, confirmations, or next steps..."
-                  disabled={processing || !threadId}
+                  disabled={processing || !threadId || disableMappingActions}
                   style={{
                     flex: 1,
                     padding: '8px 12px',
@@ -2592,7 +2635,9 @@ export const ImportMappingPage: React.FC = () => {
                   type="primary"
                   onClick={handleInteractiveSend}
                   loading={processing}
-                  disabled={!userInput.trim() || processing || !threadId}
+                  disabled={
+                    !userInput.trim() || processing || !threadId || disableMappingActions
+                  }
                   style={{ borderRadius: '0 4px 4px 0' }}
                 >
                   Send
@@ -2605,7 +2650,7 @@ export const ImportMappingPage: React.FC = () => {
                     key={label}
                     size="small"
                     type={label === 'Approve Plan' ? 'primary' : 'default'}
-                    disabled={!threadId || processing}
+                    disabled={!threadId || processing || disableMappingActions}
                     onClick={() => handleQuickAction(prompt)}
                   >
                     {label}
@@ -2670,6 +2715,11 @@ export const ImportMappingPage: React.FC = () => {
                   ? `Stage: ${displayJobInfo.stage.replace(/_/g, ' ')}`
                   : 'Processing in progress'}
               </Text>
+              {mappingJobActive && (
+                <Text type="secondary">
+                  Mapping actions are temporarily disabled while this job runs.
+                </Text>
+              )}
               {displayJobInfo.error_message && (
                 <Text type="secondary">Last error: {displayJobInfo.error_message}</Text>
               )}
