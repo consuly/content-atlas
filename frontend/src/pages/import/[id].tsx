@@ -118,6 +118,7 @@ interface ArchiveFileResult {
   archive_path: string;
   stored_file_name?: string | null;
   uploaded_file_id?: string | null;
+  sheet_name?: string | null;
   status: ArchiveFileStatus;
   table_name?: string | null;
   records_processed?: number | null;
@@ -187,6 +188,9 @@ export const ImportMappingPage: React.FC = () => {
   const [useSharedTable, setUseSharedTable] = useState(false);
   const [sharedTableName, setSharedTableName] = useState('');
   const [sharedTableMode, setSharedTableMode] = useState<'existing' | 'new'>('existing');
+  const [sheetNames, setSheetNames] = useState<string[]>([]);
+  const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
+  const [interactiveSheet, setInteractiveSheet] = useState<string | undefined>(undefined);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -213,6 +217,11 @@ export const ImportMappingPage: React.FC = () => {
 
   const isArchiveFile = file?.file_name?.toLowerCase().endsWith('.zip') ?? false;
   const isArchive = isArchiveFile;
+  const isExcelFile =
+    file?.file_name?.toLowerCase().endsWith('.xlsx') ||
+    file?.file_name?.toLowerCase().endsWith('.xls') ||
+    false;
+  const hasMultipleSheets = isExcelFile && sheetNames.length > 1;
 
   const effectiveArchiveResult = archiveResult ?? archiveHistorySummary?.result ?? null;
 
@@ -795,6 +804,43 @@ export const ImportMappingPage: React.FC = () => {
     fetchFileDetails();
   }, [fetchFileDetails]);
 
+  useEffect(() => {
+    const loadSheets = async () => {
+      if (!file?.id || !isExcelFile) {
+        setSheetNames([]);
+        setSelectedSheets([]);
+        setInteractiveSheet(undefined);
+        return;
+      }
+
+      try {
+        const token = localStorage.getItem('refine-auth');
+        const response = await axios.get<{ success: boolean; sheets: string[] }>(
+          `${API_URL}/workbooks/${file.id}/sheets`,
+          {
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        );
+        if (response.data?.success) {
+          setSheetNames(response.data.sheets);
+          setSelectedSheets(response.data.sheets);
+          setInteractiveSheet((prev) => prev ?? response.data.sheets[0]);
+        }
+      } catch (err) {
+        const error = err as AxiosError<{ detail?: string }>;
+        const msg = error.response?.data?.detail || error.message || 'Unable to load workbook sheets';
+        messageApi.warning(msg);
+        setSheetNames([]);
+        setSelectedSheets([]);
+        setInteractiveSheet(undefined);
+      }
+    };
+
+    void loadSheets();
+  }, [file?.id, isExcelFile, messageApi]);
+
   // Reset result state when file details are fetched and file is mapped
   useEffect(() => {
     if (file?.status === 'mapped' && result) {
@@ -1139,11 +1185,44 @@ export const ImportMappingPage: React.FC = () => {
 
     try {
       const token = localStorage.getItem('refine-auth');
+      if (hasMultipleSheets) {
+        const formData = new FormData();
+        formData.append('file_id', id);
+        formData.append('analysis_mode', 'auto_always');
+        formData.append('conflict_resolution', 'llm_decide');
+        formData.append('max_iterations', '5');
+        if (selectedSheets.length && selectedSheets.length < sheetNames.length) {
+          formData.append('sheet_names', JSON.stringify(selectedSheets));
+        }
+        appendSharedTableFormData(formData);
+
+        const response = await axios.post(`${API_URL}/auto-process-workbook`, formData, {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        const payload: ArchiveAutoProcessResult = response.data;
+        if (payload.job_id) {
+          const job = await fetchJobDetails(payload.job_id);
+          if (job) {
+            setArchiveJobDetails(job);
+          }
+          messageApi.success('Workbook processing started in the background.');
+        } else {
+          messageApi.warning('Workbook processing started, but job tracking is unavailable.');
+        }
+        await fetchFileDetails();
+        setProcessing(false);
+        return;
+      }
+
       const formData = new FormData();
       formData.append('file_id', id);
       formData.append('analysis_mode', 'auto_always');
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
+      appendSharedTableFormData(formData);
 
       const response = await axios.post(`${API_URL}/analyze-file`, formData, {
         headers: {
@@ -1333,6 +1412,12 @@ export const ImportMappingPage: React.FC = () => {
         file_id: id,
         max_iterations: 5,
       };
+      if (interactiveSheet) {
+        payload.sheet_name = interactiveSheet;
+      } else if (hasMultipleSheets && sheetNames.length > 0) {
+        payload.sheet_name = sheetNames[0];
+        setInteractiveSheet(sheetNames[0]);
+      }
 
       if (options?.previousError) {
         payload.previous_error_message = options.previousError;
@@ -2426,6 +2511,23 @@ export const ImportMappingPage: React.FC = () => {
             <Text strong>Size: </Text>
             <Text>{formatBytes(file.file_size)}</Text>
           </div>
+          {isExcelFile && (
+            <div style={{ maxWidth: 480 }}>
+              <Text strong>Workbook tabs</Text>
+              <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                Auto processing will create one import per selected tab using the workbook name plus the sheet name.
+              </Paragraph>
+              <Select
+                mode="multiple"
+                style={{ width: '100%' }}
+                placeholder={sheetNames.length ? 'Select sheets to process' : 'No sheets found'}
+                value={selectedSheets}
+                onChange={(values) => setSelectedSheets(values)}
+                options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
+                disabled={!sheetNames.length}
+              />
+            </div>
+          )}
           <div>
             <Space align="start">
               <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
@@ -2517,6 +2619,21 @@ export const ImportMappingPage: React.FC = () => {
             <Text strong>Size: </Text>
             <Text>{formatBytes(file.file_size)}</Text>
           </div>
+          {isExcelFile && sheetNames.length > 0 && (
+            <div style={{ maxWidth: 360 }}>
+              <Text strong>Choose a tab to review</Text>
+              <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                Interactive mode works one sheet at a time. Pick a tab or leave the default to start with the first sheet.
+              </Paragraph>
+              <Select
+                style={{ width: '100%' }}
+                placeholder="Select a sheet"
+                value={interactiveSheet}
+                onChange={(value) => setInteractiveSheet(value)}
+                options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
+              />
+            </div>
+          )}
 
           {processing ? (
             <div style={{ textAlign: 'center', padding: '24px 0' }}>
