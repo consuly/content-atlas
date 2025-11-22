@@ -26,6 +26,8 @@ def _utcnow() -> datetime:
 
 # Security scheme
 security = HTTPBearer()
+# Optional scheme lets endpoints check role-gated behavior without forcing auth
+optional_security = HTTPBearer(auto_error=False)
 
 
 class User(Base):
@@ -100,6 +102,31 @@ def get_current_user(
     if user is None:
         raise credentials_exception
     
+    return user
+
+
+def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """
+    Return the authenticated user when a bearer token is provided, otherwise None.
+    Useful for endpoints that allow anonymous access but need role checks for
+    privileged behaviors.
+    """
+    if not credentials:
+        return None
+
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            return None
+    except JWTError:
+        return None
+
+    user = db.query(User).filter(User.email == email).first()
     return user
 
 

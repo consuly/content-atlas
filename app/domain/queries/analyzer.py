@@ -1378,6 +1378,17 @@ def make_import_decision(
                     f"Invalid entry at index {idx}."
                 )
             }
+        action = migration.get("action")
+        if action == "add_column":
+            new_col = migration.get("new_column") or {}
+            if not isinstance(new_col, dict) or not new_col.get("name") or not new_col.get("type"):
+                return {
+                    "error": (
+                        "add_column migration must include new_column with 'name' and 'type'. "
+                        f"Invalid entry at index {idx}: expected "
+                        "{'action': 'add_column', 'new_column': {'name': 'col', 'type': 'TEXT'}}"
+                    )
+                }
 
     forced_table = context.file_metadata.get("forced_target_table")
     forced_table_mode = context.file_metadata.get("forced_target_table_mode")
