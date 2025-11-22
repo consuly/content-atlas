@@ -213,6 +213,11 @@ export const ImportMappingPage: React.FC = () => {
 
   const effectiveArchiveResult = archiveResult ?? archiveHistorySummary?.result ?? null;
 
+  const failedArchiveResults = useMemo(
+    () => effectiveArchiveResult?.results.filter((item) => item.status === 'failed') ?? [],
+    [effectiveArchiveResult]
+  );
+
   const archiveAggregates = useMemo(() => {
     if (!effectiveArchiveResult) {
       return null;
@@ -2234,11 +2239,6 @@ export const ImportMappingPage: React.FC = () => {
         key: `${item.archive_path}-${index}`,
       }))
     : [];
-
-  const failedArchiveResults = useMemo(
-    () => effectiveArchiveResult?.results.filter((item) => item.status === 'failed') ?? [],
-    [effectiveArchiveResult]
-  );
 
   const archiveResultsPanel = effectiveArchiveResult ? (
     <Card title="Archive Results" style={{ marginTop: 24 }}>
