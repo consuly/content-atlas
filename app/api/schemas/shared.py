@@ -494,6 +494,7 @@ class ArchiveAutoProcessFileResult(BaseModel):
     stored_file_name: Optional[str] = None
     uploaded_file_id: Optional[str] = None
     status: Literal["processed", "failed", "skipped"]
+    sheet_name: Optional[str] = None
     table_name: Optional[str] = None
     records_processed: Optional[int] = None
     duplicates_skipped: Optional[int] = None
@@ -511,6 +512,12 @@ class ArchiveAutoProcessResponse(BaseModel):
     skipped_files: int
     results: List[ArchiveAutoProcessFileResult]
     job_id: Optional[str] = None
+
+
+class WorkbookSheetsResponse(BaseModel):
+    """List of sheet names available in an uploaded Excel workbook."""
+    success: bool
+    sheets: List[str]
 
 
 class FileExistsResponse(BaseModel):
@@ -620,6 +627,7 @@ class ImportJobListResponse(BaseModel):
 class AnalyzeFileInteractiveRequest(BaseModel):
     """Request for interactive file analysis with conversation"""
     file_id: str
+    sheet_name: Optional[str] = None
     user_message: Optional[str] = None
     thread_id: Optional[str] = None
     max_iterations: int = Field(default=5, ge=1, le=10)

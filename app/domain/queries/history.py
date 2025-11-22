@@ -8,6 +8,7 @@ previous conversations from Postgres instead of relying on localStorage.
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 from app.db.session import get_engine
 
@@ -66,6 +67,14 @@ def create_query_history_tables() -> None:
         conn.execute(text(create_messages_sql))
 
 
+def _is_missing_query_table_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        ("query_threads" in message or "query_messages" in message)
+        and ("does not exist" in message or "UndefinedTable" in message)
+    )
+
+
 def save_query_message(
     thread_id: str,
     role: str,
@@ -82,50 +91,64 @@ def save_query_message(
     ensure_query_history_tables_exist()
 
     engine = get_engine()
-    with engine.begin() as conn:
-        # Ensure thread exists
-        conn.execute(
-            text(
-                """
-                INSERT INTO query_threads (thread_id)
-                VALUES (:thread_id)
-                ON CONFLICT (thread_id) DO NOTHING;
-                """
-            ),
-            {"thread_id": thread_id},
-        )
 
-        conn.execute(
-            text(
-                """
-                INSERT INTO query_messages (
-                    thread_id, role, content, executed_sql, data_csv,
-                    execution_time_seconds, rows_returned, error
-                )
-                VALUES (
-                    :thread_id, :role, :content, :executed_sql, :data_csv,
-                    :execution_time_seconds, :rows_returned, :error
-                );
-                """
-            ),
-            {
-                "thread_id": thread_id,
-                "role": role,
-                "content": content,
-                "executed_sql": executed_sql,
-                "data_csv": data_csv,
-                "execution_time_seconds": execution_time_seconds,
-                "rows_returned": rows_returned,
-                "error": error,
-            },
-        )
+    def _persist_message() -> None:
+        with engine.begin() as conn:
+            # Ensure thread exists for the message
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO query_threads (thread_id)
+                    VALUES (:thread_id)
+                    ON CONFLICT (thread_id) DO NOTHING;
+                    """
+                ),
+                {"thread_id": thread_id},
+            )
 
-        conn.execute(
-            text(
-                """UPDATE query_threads SET updated_at = NOW() WHERE thread_id = :thread_id"""
-            ),
-            {"thread_id": thread_id},
-        )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO query_messages (
+                        thread_id, role, content, executed_sql, data_csv,
+                        execution_time_seconds, rows_returned, error
+                    )
+                    VALUES (
+                        :thread_id, :role, :content, :executed_sql, :data_csv,
+                        :execution_time_seconds, :rows_returned, :error
+                    );
+                    """
+                ),
+                {
+                    "thread_id": thread_id,
+                    "role": role,
+                    "content": content,
+                    "executed_sql": executed_sql,
+                    "data_csv": data_csv,
+                    "execution_time_seconds": execution_time_seconds,
+                    "rows_returned": rows_returned,
+                    "error": error,
+                },
+            )
+
+            conn.execute(
+                text(
+                    """UPDATE query_threads SET updated_at = NOW() WHERE thread_id = :thread_id"""
+                ),
+                {"thread_id": thread_id},
+            )
+
+    try:
+        _persist_message()
+    except ProgrammingError as exc:
+        if not _is_missing_query_table_error(exc):
+            raise
+
+        # Tables may not exist if another process cleared the DB; recreate and retry once.
+        global _query_history_tables_initialized
+        _query_history_tables_initialized = False
+        ensure_query_history_tables_exist()
+        _persist_message()
 
 
 def _rows_to_messages(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

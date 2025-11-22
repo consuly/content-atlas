@@ -225,16 +225,16 @@ def stream_csv_records(
         yield records
 
 
-def process_excel(file_content: bytes) -> List[Dict[str, Any]]:
+def process_excel(file_content: bytes, sheet_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """Process Excel file and return list of dictionaries using optimized settings."""
     # Use openpyxl with read_only mode for better performance on large files
     try:
         # read_only=True significantly speeds up reading large Excel files
-        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl')
+        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl', sheet_name=sheet_name)
     except Exception:
         # Fallback to default pandas engine
         try:
-            df = pd.read_excel(io.BytesIO(file_content))
+            df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_name)
         except Exception as e:
             raise ValueError(f"Could not read Excel file: {str(e)}")
 
@@ -249,7 +249,7 @@ def process_excel(file_content: bytes) -> List[Dict[str, Any]]:
     return records
 
 
-def process_large_excel(file_content: bytes, chunk_size: int = 20000) -> List[Dict[str, Any]]:
+def process_large_excel(file_content: bytes, chunk_size: int = 20000, sheet_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Process large Excel files using optimized pandas settings.
     
@@ -269,7 +269,8 @@ def process_large_excel(file_content: bytes, chunk_size: int = 20000) -> List[Di
         # but openpyxl is optimized for memory efficiency
         df = pd.read_excel(
             io.BytesIO(file_content), 
-            engine='openpyxl'
+            engine='openpyxl',
+            sheet_name=sheet_name
         )
         
         records = df.to_dict('records')
@@ -320,3 +321,40 @@ def extract_excel_sheets_to_csv(file_content: bytes, rows: int = 100) -> Dict[st
         result[sheet_name] = csv_buffer.getvalue()
 
     return result
+
+
+def list_excel_sheets(file_content: bytes) -> List[str]:
+    """Return the ordered list of sheet names from an Excel workbook."""
+    try:
+        excel_file = pd.ExcelFile(io.BytesIO(file_content), engine="openpyxl")
+        return excel_file.sheet_names
+    except Exception:
+        try:
+            excel_file = pd.ExcelFile(io.BytesIO(file_content))
+            return excel_file.sheet_names
+        except Exception as exc:
+            raise ValueError(f"Could not list Excel sheets: {exc}")
+
+
+def extract_excel_sheet_csv_bytes(file_content: bytes, sheet_name: str) -> bytes:
+    """
+    Convert a single Excel sheet to CSV bytes for downstream processing/storage.
+
+    Args:
+        file_content: Raw workbook bytes.
+        sheet_name: Sheet to extract.
+
+    Returns:
+        UTF-8 encoded CSV bytes for the requested sheet.
+    """
+    try:
+        df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_name, engine="openpyxl")
+    except Exception:
+        try:
+            df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_name)
+        except Exception as exc:
+            raise ValueError(f"Could not read sheet '{sheet_name}': {exc}")
+
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+    return csv_buffer.getvalue().encode("utf-8")

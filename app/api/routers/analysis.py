@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.orm import Session
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Tuple
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -25,7 +25,8 @@ from app.api.schemas.shared import (
     AnalysisMode, ConflictResolutionMode, MapDataResponse,
     AnalyzeFileInteractiveRequest, AnalyzeFileInteractiveResponse, 
     ExecuteInteractiveImportRequest, MappingConfig, DuplicateCheckConfig, AutoExecutionResult,
-    ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult, ensure_safe_table_name
+    ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult, WorkbookSheetsResponse,
+    ensure_safe_table_name
 )
 from app.api.dependencies import detect_file_type, analysis_storage, interactive_sessions
 from app.integrations.b2 import (
@@ -35,8 +36,10 @@ from app.integrations.b2 import (
 from app.domain.imports.processors.csv_processor import (
     process_csv,
     process_excel,
+    extract_excel_sheet_csv_bytes,
     extract_raw_csv_rows,
     detect_csv_header,
+    list_excel_sheets,
     load_csv_sample,
 )
 from app.domain.imports.processors.json_processor import process_json
@@ -288,6 +291,210 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
     }
 
 
+def _process_entry_bytes(
+    *,
+    entry_bytes: bytes,
+    archive_path: str,
+    entry_name: str,
+    stored_file_name: str,
+    archive_folder: str,
+    fingerprint_cache: Dict[str, Dict[str, Any]],
+    fingerprint_lock: threading.Lock,
+    analysis_mode: AnalysisMode,
+    conflict_resolution: ConflictResolutionMode,
+    auto_execute_confidence_threshold: float,
+    max_iterations: int,
+    forced_table_name: Optional[str],
+    forced_table_mode: Optional[str],
+    db_session,
+    sheet_name: Optional[str] = None,
+) -> ArchiveAutoProcessFileResult:
+    """Shared worker logic for archive entries and workbook sheets."""
+    # 2. B2 Upload (parallel)
+    try:
+        upload_result = upload_file_to_b2(
+            file_content=entry_bytes,
+            file_name=stored_file_name,
+            folder=archive_folder,
+        )
+        uploaded_file = insert_uploaded_file(
+            file_name=entry_name,
+            b2_file_id=upload_result["file_id"],
+            b2_file_path=upload_result["file_path"],
+            file_size=len(entry_bytes),
+            content_type=_guess_content_type(entry_name),
+            user_id=None,
+        )
+        uploaded_file_id = uploaded_file["id"]
+    except Exception as exc:
+        logger.exception("Failed staging entry %s: %s", archive_path, exc)
+        return ArchiveAutoProcessFileResult(
+            archive_path=archive_path,
+            stored_file_name=stored_file_name,
+            sheet_name=sheet_name,
+            status="failed",
+            message=f"Unable to stage file: {exc}",
+        )
+
+    # 3. Fingerprinting (parallel calculation, serialized cache access)
+    fingerprint: Optional[str] = None
+    cached_plan: Optional[Dict[str, Any]] = None
+    cached_plan_event: Optional[threading.Event] = None
+    is_first_worker_for_plan = False
+    try:
+        fingerprint = _build_structure_fingerprint(entry_bytes, entry_name)
+        if fingerprint:
+            with fingerprint_lock:
+                cached_plan = fingerprint_cache.get(fingerprint)
+                if cached_plan and cached_plan.get("llm_decision"):
+                    cached_plan_event = cached_plan.get("event")
+                elif cached_plan and cached_plan.get("event"):
+                    cached_plan_event = cached_plan["event"]
+                else:
+                    cached_plan_event = threading.Event()
+                    fingerprint_cache[fingerprint] = {"event": cached_plan_event}
+                    is_first_worker_for_plan = True
+    except Exception as exc:
+        logger.debug("Fingerprinting failed for %s: %s", entry_name, exc)
+
+    # 4. Analysis & Execution (parallel analysis, serialized insertion via TableLockManager)
+    summary = {}
+    try:
+        marketing_response: Optional[AnalyzeFileResponse] = None
+        if settings.enable_marketing_fixture_shortcuts:
+            normalized_entry = _normalize_marketing_fixture_name(entry_name)
+            if "marketing agency" in normalized_entry:
+                try:
+                    file_type = detect_file_type(entry_name)
+                    if file_type == "csv":
+                        candidate_records = process_csv(entry_bytes, has_header=None)
+                    elif file_type == "excel":
+                        candidate_records = process_excel(entry_bytes)
+                    else:
+                        candidate_records = None
+                except Exception as exc:
+                    logger.warning("Unable to parse marketing agency fixture %s: %s", entry_name, exc)
+                    candidate_records = None
+
+                if candidate_records:
+                    marketing_response = _handle_marketing_agency_special_case(
+                        file_name=entry_name,
+                        file_content=entry_bytes,
+                        raw_records=candidate_records,
+                        analysis_mode=analysis_mode,
+                        conflict_mode=conflict_resolution,
+                        max_iterations=max_iterations,
+                        file_id=uploaded_file_id,
+                        update_file_status_fn=update_file_status,
+                        metadata_name=entry_name,
+                        job_id=None,
+                    )
+
+        if marketing_response is not None:
+            summary = _summarize_archive_execution(marketing_response)
+        elif cached_plan and cached_plan.get("llm_decision"):
+            applied_decision = _apply_forced_table_decision(
+                cached_plan["llm_decision"],
+                forced_table_name,
+                forced_table_mode,
+            )
+            summary = _execute_cached_archive_decision(
+                entry_bytes=entry_bytes,
+                entry_name=entry_name,
+                llm_decision=applied_decision,
+            )
+        elif cached_plan_event and fingerprint and not is_first_worker_for_plan:
+            # Another worker is generating a plan; wait briefly to reuse it.
+            cached_plan_event.wait(timeout=10)
+            with fingerprint_lock:
+                cached_after_wait = fingerprint_cache.get(fingerprint)
+            if cached_after_wait and cached_after_wait.get("llm_decision"):
+                applied_decision = _apply_forced_table_decision(
+                    cached_after_wait["llm_decision"],
+                    forced_table_name,
+                    forced_table_mode,
+                )
+                summary = _execute_cached_archive_decision(
+                    entry_bytes=entry_bytes,
+                    entry_name=entry_name,
+                    llm_decision=applied_decision,
+                )
+            else:
+                # No plan materialized—fall back to fresh analysis.
+                cached_plan = cached_after_wait
+        else:
+            _preloaded_file_contents[uploaded_file_id] = entry_bytes
+
+            try:
+                analyze_response = asyncio.run(
+                    analyze_file_endpoint(
+                        file=None,
+                        file_id=uploaded_file_id,
+                        sample_size=None,
+                        analysis_mode=analysis_mode,
+                        conflict_resolution=conflict_resolution,
+                        auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                        max_iterations=max_iterations,
+                        db=db_session,
+                        target_table_name=forced_table_name,
+                        target_table_mode=forced_table_mode,
+                    )
+                )
+                summary = _summarize_archive_execution(analyze_response)
+
+                if fingerprint and analyze_response.llm_decision:
+                    with fingerprint_lock:
+                        existing_cache = fingerprint_cache.get(fingerprint) or {}
+                        event = existing_cache.get("event") or cached_plan_event
+                        fingerprint_cache[fingerprint] = {
+                            "llm_decision": analyze_response.llm_decision,
+                            "event": event,
+                        }
+                        if event:
+                            event.set()
+            finally:
+                _preloaded_file_contents.pop(uploaded_file_id, None)
+
+    except HTTPException as exc:
+        summary = {
+            "status": "failed",
+            "message": getattr(exc, "detail", str(exc)),
+            "auto_retry_used": False,
+        }
+        if cached_plan_event:
+            cached_plan_event.set()
+    except Exception as exc:
+        logger.exception("Auto-process failed for %s: %s", archive_path, exc)
+        summary = {
+            "status": "failed",
+            "message": str(exc),
+            "auto_retry_used": False,
+        }
+        if cached_plan_event:
+            cached_plan_event.set()
+
+    if cached_plan_event and fingerprint:
+        with fingerprint_lock:
+            existing_cache = fingerprint_cache.get(fingerprint) or {}
+            event = existing_cache.get("event") or cached_plan_event
+            fingerprint_cache[fingerprint] = {**existing_cache, "event": event}
+            event.set()
+
+    return ArchiveAutoProcessFileResult(
+        archive_path=archive_path,
+        stored_file_name=stored_file_name,
+        uploaded_file_id=uploaded_file_id,
+        sheet_name=sheet_name,
+        status=summary.get("status", "failed"),
+        table_name=summary.get("table_name"),
+        records_processed=summary.get("records_processed"),
+        duplicates_skipped=summary.get("duplicates_skipped"),
+        import_id=summary.get("import_id"),
+        auto_retry_used=summary.get("auto_retry_used", False),
+        message=summary.get("message"),
+    )
+
+
 def _process_archive_entry(
     *,
     archive_path: str,
@@ -323,201 +530,64 @@ def _process_archive_entry(
                     message="Unable to read archive member",
                 )
 
-        # 2. B2 Upload (parallel)
-        try:
-            upload_result = upload_file_to_b2(
-                file_content=entry_bytes,
-                file_name=stored_file_name,
-                folder=archive_folder,
-            )
-            # Insert uploaded file record using the thread-local session
-            # Note: insert_uploaded_file typically uses its own session context manager,
-            # checking app/domain/uploads/uploaded_files.py might be needed.
-            # Assuming insert_uploaded_file handles its own DB connection or we need to pass one.
-            # Looking at the imports, insert_uploaded_file is imported.
-            # Let's check if it accepts a db session. It usually does or creates one.
-            # If it creates one, that's fine.
-            uploaded_file = insert_uploaded_file(
-                file_name=entry_name,
-                b2_file_id=upload_result["file_id"],
-                b2_file_path=upload_result["file_path"],
-                file_size=len(entry_bytes),
-                content_type=_guess_content_type(entry_name),
-                user_id=None,
-            )
-            uploaded_file_id = uploaded_file["id"]
-        except Exception as exc:
-            logger.exception("Failed staging archive entry %s: %s", archive_path, exc)
-            return ArchiveAutoProcessFileResult(
-                archive_path=archive_path,
-                stored_file_name=stored_file_name,
-                status="failed",
-                message=f"Unable to stage file: {exc}",
-            )
-
-        # 3. Fingerprinting (parallel calculation, serialized cache access)
-        fingerprint: Optional[str] = None
-        cached_plan: Optional[Dict[str, Any]] = None
-        cached_plan_event: Optional[threading.Event] = None
-        is_first_worker_for_plan = False
-        try:
-            fingerprint = _build_structure_fingerprint(entry_bytes, entry_name)
-            if fingerprint:
-                with fingerprint_lock:
-                    cached_plan = fingerprint_cache.get(fingerprint)
-                    if cached_plan and cached_plan.get("llm_decision"):
-                        cached_plan_event = cached_plan.get("event")
-                    elif cached_plan and cached_plan.get("event"):
-                        cached_plan_event = cached_plan["event"]
-                    else:
-                        cached_plan_event = threading.Event()
-                        fingerprint_cache[fingerprint] = {"event": cached_plan_event}
-                        is_first_worker_for_plan = True
-        except Exception as exc:
-            logger.debug("Fingerprinting failed for %s: %s", entry_name, exc)
-
-        # 4. Analysis & Execution (parallel analysis, serialized insertion via TableLockManager)
-        summary = {}
-        try:
-            marketing_response: Optional[AnalyzeFileResponse] = None
-            if settings.enable_marketing_fixture_shortcuts:
-                normalized_entry = _normalize_marketing_fixture_name(entry_name)
-                if "marketing agency" in normalized_entry:
-                    try:
-                        file_type = detect_file_type(entry_name)
-                        if file_type == "csv":
-                            candidate_records = process_csv(entry_bytes, has_header=None)
-                        elif file_type == "excel":
-                            candidate_records = process_excel(entry_bytes)
-                        else:
-                            candidate_records = None
-                    except Exception as exc:
-                        logger.warning("Unable to parse marketing agency fixture %s: %s", entry_name, exc)
-                        candidate_records = None
-
-                    if candidate_records:
-                        marketing_response = _handle_marketing_agency_special_case(
-                            file_name=entry_name,
-                            file_content=entry_bytes,
-                            raw_records=candidate_records,
-                            analysis_mode=analysis_mode,
-                            conflict_mode=conflict_resolution,
-                            max_iterations=max_iterations,
-                            file_id=uploaded_file_id,
-                            update_file_status_fn=update_file_status,
-                            metadata_name=entry_name,
-                            job_id=None,
-                        )
-
-            if marketing_response is not None:
-                summary = _summarize_archive_execution(marketing_response)
-            elif cached_plan and cached_plan.get("llm_decision"):
-                applied_decision = _apply_forced_table_decision(
-                    cached_plan["llm_decision"],
-                    forced_table_name,
-                    forced_table_mode,
-                )
-                summary = _execute_cached_archive_decision(
-                    entry_bytes=entry_bytes,
-                    entry_name=entry_name,
-                    llm_decision=applied_decision,
-                )
-            elif cached_plan_event and fingerprint and not is_first_worker_for_plan:
-                # Another worker is generating a plan; wait briefly to reuse it.
-                cached_plan_event.wait(timeout=10)
-                with fingerprint_lock:
-                    cached_after_wait = fingerprint_cache.get(fingerprint)
-                if cached_after_wait and cached_after_wait.get("llm_decision"):
-                    applied_decision = _apply_forced_table_decision(
-                        cached_after_wait["llm_decision"],
-                        forced_table_name,
-                        forced_table_mode,
-                    )
-                    summary = _execute_cached_archive_decision(
-                        entry_bytes=entry_bytes,
-                        entry_name=entry_name,
-                        llm_decision=applied_decision,
-                    )
-                else:
-                    # No plan materialized—fall back to fresh analysis.
-                    cached_plan = cached_after_wait
-            else:
-                # Preload content for analysis to avoid re-downloading from B2
-                # We need to use a thread-safe way if _preloaded_file_contents is global
-                # Actually, _preloaded_file_contents is a global dict.
-                # It's better to pass content directly if possible, but analyze_file_endpoint relies on it or B2.
-                # Since we are running in a thread, global dict access is risky if keys collide (UUIDs shouldn't).
-                # But we should clean it up.
-                _preloaded_file_contents[uploaded_file_id] = entry_bytes
-                
-                try:
-                    analyze_response = asyncio.run(
-                        analyze_file_endpoint(
-                            file=None,
-                            file_id=uploaded_file_id,
-                            sample_size=None,
-                            analysis_mode=analysis_mode,
-                            conflict_resolution=conflict_resolution,
-                            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
-                            max_iterations=max_iterations,
-                            db=db_session,
-                            target_table_name=forced_table_name,
-                            target_table_mode=forced_table_mode,
-                        )
-                    )
-                    summary = _summarize_archive_execution(analyze_response)
-                    
-                    if fingerprint and analyze_response.llm_decision:
-                        with fingerprint_lock:
-                            existing_cache = fingerprint_cache.get(fingerprint) or {}
-                            event = existing_cache.get("event") or cached_plan_event
-                            fingerprint_cache[fingerprint] = {
-                                "llm_decision": analyze_response.llm_decision,
-                                "event": event,
-                            }
-                            if event:
-                                event.set()
-                finally:
-                    _preloaded_file_contents.pop(uploaded_file_id, None)
-
-        except HTTPException as exc:
-            summary = {
-                "status": "failed",
-                "message": getattr(exc, "detail", str(exc)),
-                "auto_retry_used": False,
-            }
-            if cached_plan_event:
-                cached_plan_event.set()
-        except Exception as exc:
-            logger.exception("Archive auto-process failed for %s: %s", archive_path, exc)
-            summary = {
-                "status": "failed",
-                "message": str(exc),
-                "auto_retry_used": False,
-            }
-            if cached_plan_event:
-                cached_plan_event.set()
-
-        if cached_plan_event and fingerprint:
-            with fingerprint_lock:
-                existing_cache = fingerprint_cache.get(fingerprint) or {}
-                event = existing_cache.get("event") or cached_plan_event
-                fingerprint_cache[fingerprint] = {**existing_cache, "event": event}
-                event.set()
-
-        return ArchiveAutoProcessFileResult(
+        return _process_entry_bytes(
+            entry_bytes=entry_bytes,
             archive_path=archive_path,
+            entry_name=entry_name,
             stored_file_name=stored_file_name,
-            uploaded_file_id=uploaded_file_id,
-            status=summary.get("status", "failed"),
-            table_name=summary.get("table_name"),
-            records_processed=summary.get("records_processed"),
-            duplicates_skipped=summary.get("duplicates_skipped"),
-            import_id=summary.get("import_id"),
-            auto_retry_used=summary.get("auto_retry_used", False),
-            message=summary.get("message"),
+            archive_folder=archive_folder,
+            fingerprint_cache=fingerprint_cache,
+            fingerprint_lock=fingerprint_lock,
+            analysis_mode=analysis_mode,
+            conflict_resolution=conflict_resolution,
+            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+            max_iterations=max_iterations,
+            forced_table_name=forced_table_name,
+            forced_table_mode=forced_table_mode,
+            db_session=db_session,
         )
-        
+
+    finally:
+        db_session.close()
+
+
+def _process_workbook_sheet_entry(
+    *,
+    sheet_name: str,
+    entry_name: str,
+    stored_file_name: str,
+    archive_folder: str,
+    entry_bytes: bytes,
+    fingerprint_cache: Dict[str, Dict[str, Any]],
+    fingerprint_lock: threading.Lock,
+    analysis_mode: AnalysisMode,
+    conflict_resolution: ConflictResolutionMode,
+    auto_execute_confidence_threshold: float,
+    max_iterations: int,
+    forced_table_name: Optional[str],
+    forced_table_mode: Optional[str],
+) -> ArchiveAutoProcessFileResult:
+    """Process a single Excel sheet as an independent import."""
+    SessionLocal = get_session_local()
+    db_session = SessionLocal()
+    try:
+        return _process_entry_bytes(
+            entry_bytes=entry_bytes,
+            archive_path=sheet_name,
+            entry_name=entry_name,
+            stored_file_name=stored_file_name,
+            archive_folder=archive_folder,
+            fingerprint_cache=fingerprint_cache,
+            fingerprint_lock=fingerprint_lock,
+            analysis_mode=analysis_mode,
+            conflict_resolution=conflict_resolution,
+            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+            max_iterations=max_iterations,
+            forced_table_name=forced_table_name,
+            forced_table_mode=forced_table_mode,
+            db_session=db_session,
+            sheet_name=sheet_name,
+        )
     finally:
         db_session.close()
 
@@ -838,6 +908,233 @@ def _run_archive_auto_process_job(
             "skipped_files": skipped_total,
             "total_supported": total_supported,
             "total_files": total_files,
+            "success": success,
+            "error_message": error_message,
+        }
+    )
+
+
+def _run_workbook_auto_process_job(
+    *,
+    file_id: str,
+    workbook_name: str,
+    sheet_entries: List[Tuple[str, bytes]],
+    skipped_results: List[ArchiveAutoProcessFileResult],
+    analysis_mode: AnalysisMode,
+    conflict_resolution: ConflictResolutionMode,
+    auto_execute_confidence_threshold: float,
+    max_iterations: int,
+    job_id: str,
+    forced_table_name: Optional[str] = None,
+    forced_table_mode: Optional[str] = None,
+) -> None:
+    """Execute auto-processing for each sheet in a workbook."""
+    processed_files = 0
+    failed_files = 0
+    skipped_files = len(skipped_results)
+    fingerprint_cache: Dict[str, Dict[str, Any]] = {}
+    fingerprint_lock = threading.Lock()
+
+    results: List[ArchiveAutoProcessFileResult] = list(skipped_results)
+    remaining_sheet_names = [name for name, _ in sheet_entries]
+    processing_sheet_names = list(remaining_sheet_names)
+    completed_entries: List[Dict[str, str]] = [
+        {"archive_path": res.archive_path, "status": res.status}
+        for res in skipped_results
+    ]
+
+    workbook_stem = os.path.splitext(os.path.basename(workbook_name))[0] or "workbook"
+    archive_folder = f"uploads/workbook_{file_id}"
+    total_work_items = len(processing_sheet_names)
+
+    _log_archive_debug(
+        {
+            "event": "workbook_job_started",
+            "job_id": job_id,
+            "file_id": file_id,
+            "workbook_name": workbook_name,
+            "sheets": list(processing_sheet_names),
+            "forced_table_name": forced_table_name,
+            "forced_table_mode": forced_table_mode,
+        }
+    )
+
+    try:
+        max_workers = min(4, os.cpu_count() or 2)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for index, (sheet_name, sheet_bytes) in enumerate(sheet_entries, start=1):
+                entry_label = f"{sheet_name}.csv"
+                stored_file_name = _build_archive_entry_name(
+                    workbook_stem, entry_label, index
+                )
+                future = executor.submit(
+                    _process_workbook_sheet_entry,
+                    sheet_name=sheet_name,
+                    entry_name=entry_label,
+                    stored_file_name=stored_file_name,
+                    archive_folder=archive_folder,
+                    entry_bytes=sheet_bytes,
+                    fingerprint_cache=fingerprint_cache,
+                    fingerprint_lock=fingerprint_lock,
+                    analysis_mode=analysis_mode,
+                    conflict_resolution=conflict_resolution,
+                    auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                    max_iterations=max_iterations,
+                    forced_table_name=forced_table_name,
+                    forced_table_mode=forced_table_mode,
+                )
+                futures[future] = sheet_name
+
+            for future in as_completed(futures):
+                sheet_name = futures[future]
+                try:
+                    file_result = future.result()
+                    results.append(file_result)
+
+                    uploaded_file_id = getattr(file_result, "uploaded_file_id", None)
+                    if file_result.status == "processed" and uploaded_file_id:
+                        try:
+                            update_file_status(
+                                uploaded_file_id,
+                                "mapped",
+                                mapped_table_name=getattr(file_result, "table_name", None),
+                                mapped_rows=getattr(file_result, "records_processed", None),
+                            )
+                        except Exception as status_exc:  # pragma: no cover
+                            logger.warning(
+                                "Workbook sheet %s mapped but status update failed for %s: %s",
+                                sheet_name,
+                                uploaded_file_id,
+                                status_exc,
+                            )
+                    elif file_result.status == "failed" and uploaded_file_id:
+                        try:
+                            update_file_status(
+                                uploaded_file_id,
+                                "failed",
+                                error_message=getattr(file_result, "message", None),
+                            )
+                        except Exception as status_exc:  # pragma: no cover
+                            logger.warning(
+                                "Workbook sheet %s failed but status update failed for %s: %s",
+                                sheet_name,
+                                uploaded_file_id,
+                                status_exc,
+                            )
+
+                    if file_result.status == "processed":
+                        processed_files += 1
+                    elif file_result.status == "failed":
+                        failed_files += 1
+
+                    _log_archive_debug(
+                        {
+                            "event": "workbook_entry_finished",
+                            "job_id": job_id,
+                            "file_id": file_id,
+                            "workbook_name": workbook_name,
+                            "sheet_name": getattr(file_result, "sheet_name", sheet_name),
+                            "archive_path": getattr(file_result, "archive_path", sheet_name),
+                            "stored_file_name": getattr(file_result, "stored_file_name", None),
+                            "uploaded_file_id": getattr(file_result, "uploaded_file_id", None),
+                            "status": getattr(file_result, "status", None),
+                            "table_name": getattr(file_result, "table_name", None),
+                            "records_processed": getattr(file_result, "records_processed", None),
+                            "duplicates_skipped": getattr(file_result, "duplicates_skipped", None),
+                            "import_id": getattr(file_result, "import_id", None),
+                            "auto_retry_used": getattr(file_result, "auto_retry_used", None),
+                            "message": getattr(file_result, "message", None),
+                        }
+                    )
+
+                    completed_entries.append(
+                        {
+                            "archive_path": sheet_name,
+                            "status": file_result.status,
+                        }
+                    )
+                    if sheet_name in remaining_sheet_names:
+                        remaining_sheet_names.remove(sheet_name)
+
+                    total_handled = processed_files + failed_files
+                    progress_denominator = total_work_items or 1
+                    progress = int((total_handled / progress_denominator) * 100)
+                    update_import_job(
+                        job_id,
+                        stage="execution",
+                        progress=progress,
+                        metadata={
+                            "current_file": sheet_name,
+                            "processed": processed_files,
+                            "failed": failed_files,
+                            "skipped": skipped_files,
+                            "total": total_work_items,
+                            "completed_files": list(completed_entries),
+                            "remaining_files": list(remaining_sheet_names),
+                            "files_in_archive": total_work_items + skipped_files,
+                            "source": "auto-process-workbook",
+                            "forced_table_name": forced_table_name,
+                            "forced_table_mode": forced_table_mode,
+                        },
+                    )
+
+                except Exception as exc:
+                    logger.exception("Error processing workbook sheet %s: %s", sheet_name, exc)
+                    failed_files += 1
+                    if sheet_name in remaining_sheet_names:
+                        remaining_sheet_names.remove(sheet_name)
+                    _log_archive_debug(
+                        {
+                            "event": "workbook_entry_error",
+                            "job_id": job_id,
+                            "file_id": file_id,
+                            "workbook_name": workbook_name,
+                            "sheet_name": sheet_name,
+                            "error": str(exc),
+                        }
+                    )
+
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Workbook auto-process background task failed: %s", exc)
+        fail_active_job(file_id, job_id, f"Workbook processing failed: {exc}")
+        _log_archive_debug(
+            {
+                "event": "workbook_job_failed",
+                "job_id": job_id,
+                "file_id": file_id,
+                "workbook_name": workbook_name,
+                "error": str(exc),
+            }
+        )
+        return
+
+    success = failed_files == 0
+    error_message = None if success else "One or more sheets failed auto-processing"
+    result_metadata = {
+        "files_total": total_work_items,
+        "processed_files": processed_files,
+        "failed_files": failed_files,
+        "skipped_files": skipped_files,
+        "results": [result.model_dump() for result in results],
+    }
+
+    complete_import_job(
+        job_id,
+        success=success,
+        error_message=error_message,
+        result_metadata=result_metadata,
+    )
+    _log_archive_debug(
+        {
+            "event": "workbook_job_completed",
+            "job_id": job_id,
+            "file_id": file_id,
+            "workbook_name": workbook_name,
+            "processed_files": processed_files,
+            "failed_files": failed_files,
+            "skipped_files": skipped_files,
+            "total_supported": total_work_items,
             "success": success,
             "error_message": error_message,
         }
@@ -1559,6 +1856,7 @@ class InteractiveSessionState:
     last_error: Optional[str] = None
     status: str = "pending"
     job_id: Optional[str] = None
+    sheet_name: Optional[str] = None
 
     def metadata_copy(self) -> Dict[str, Any]:
         """Return a safe copy of file metadata for the agent to mutate."""
@@ -1583,9 +1881,15 @@ def _build_interactive_initial_prompt(session: InteractiveSessionState) -> str:
     file_name = session.file_metadata.get("name", "unknown")
     total_rows = session.file_metadata.get("total_rows", "unknown")
     sample_size = len(session.sample)
+    sheet_name = session.file_metadata.get("sheet_name")
     prompt = (
         f"You are collaborating on an interactive import for file '{file_name}'.\n"
-        f"Total rows: {total_rows}. Sample size: {sample_size}.\n\n"
+        f"Total rows: {total_rows}. Sample size: {sample_size}.\n"
+    )
+    if sheet_name:
+        prompt += f"Sheet: {sheet_name}.\n"
+    prompt += "\n"
+    prompt += (
         "Analyze the data, recommend an import strategy, and explain your reasoning. "
         "Provide a numbered list of follow-up actions the user can take next "
         "(e.g., confirm mapping, rename columns, choose a different target table, "
@@ -2260,6 +2564,26 @@ async def analyze_file_endpoint(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
+@router.get("/workbooks/{file_id}/sheets", response_model=WorkbookSheetsResponse)
+async def list_workbook_sheets_endpoint(file_id: str):
+    """Return sheet names for an uploaded Excel workbook."""
+    file_record = get_uploaded_file_by_id(file_id)
+    if not file_record:
+        raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+    file_name = file_record["file_name"]
+    if not file_name.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="File is not an Excel workbook")
+
+    file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+    try:
+        sheets = list_excel_sheets(file_content)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return WorkbookSheetsResponse(success=True, sheets=sheets)
+
+
 @router.post("/auto-process-archive", response_model=ArchiveAutoProcessResponse)
 async def auto_process_archive_endpoint(
     file_id: str = Form(...),
@@ -2534,6 +2858,185 @@ async def resume_auto_process_archive_endpoint(
     )
 
 
+def _parse_sheet_names_param(raw_sheet_names: Optional[str]) -> Optional[List[str]]:
+    """Parse sheet name form input supporting JSON arrays or comma-delimited strings."""
+    if not raw_sheet_names:
+        return None
+    try:
+        parsed = json.loads(raw_sheet_names)
+        if isinstance(parsed, list):
+            names = [str(name).strip() for name in parsed if str(name).strip()]
+            return names or None
+    except json.JSONDecodeError:
+        pass
+
+    names = [part.strip() for part in raw_sheet_names.split(",") if part.strip()]
+    return names or None
+
+
+@router.post("/auto-process-workbook", response_model=ArchiveAutoProcessResponse)
+async def auto_process_workbook_endpoint(
+    file_id: str = Form(...),
+    sheet_names: Optional[str] = Form(None),
+    analysis_mode: AnalysisMode = Form(AnalysisMode.AUTO_ALWAYS),
+    conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.LLM_DECIDE),
+    auto_execute_confidence_threshold: float = Form(0.9),
+    max_iterations: int = Form(5),
+    target_table_name: Optional[str] = Form(None),
+    target_table_mode: Optional[str] = Form(None),
+):
+    """
+    Auto-process each sheet in an Excel workbook as independent imports.
+
+    Behaves similarly to archive auto-processing: each sheet is uploaded as a
+    separate file (named with the workbook + sheet) and processed in parallel.
+    """
+    if analysis_mode != AnalysisMode.AUTO_ALWAYS:
+        raise HTTPException(
+            status_code=400,
+            detail="Workbook processing currently supports auto process mode only.",
+        )
+    forced_table_name = _normalize_forced_table_name(target_table_name)
+    forced_table_mode: Optional[str] = None
+    if target_table_mode:
+        normalized_mode = target_table_mode.strip().lower()
+        if normalized_mode not in {"existing", "new"}:
+            raise HTTPException(
+                status_code=400,
+                detail="target_table_mode must be either 'existing' or 'new'",
+            )
+        forced_table_mode = normalized_mode
+    if forced_table_name and forced_table_mode is None:
+        forced_table_mode = "existing"
+
+    file_record = get_uploaded_file_by_id(file_id)
+    if not file_record:
+        raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+    workbook_name = file_record["file_name"]
+    if not workbook_name.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="File is not an Excel workbook")
+
+    workbook_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    try:
+        available_sheets = list_excel_sheets(workbook_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    requested_sheets = _parse_sheet_names_param(sheet_names)
+    sheet_selection = (
+        [name for name in requested_sheets or [] if name]
+        if requested_sheets
+        else available_sheets
+    )
+
+    available_lookup = {name.lower(): name for name in available_sheets}
+    skipped_results: List[ArchiveAutoProcessFileResult] = []
+    normalized_selection: List[str] = []
+    for name in sheet_selection:
+        key = name.lower()
+        if key not in available_lookup:
+            skipped_results.append(
+                ArchiveAutoProcessFileResult(
+                    archive_path=name,
+                    sheet_name=name,
+                    status="failed",
+                    message="Sheet not found in workbook",
+                )
+            )
+            continue
+        resolved_name = available_lookup[key]
+        if resolved_name not in normalized_selection:
+            normalized_selection.append(resolved_name)
+
+    if not normalized_selection and not skipped_results:
+        raise HTTPException(status_code=400, detail="No sheets selected for processing")
+
+    sheet_entries: List[tuple[str, bytes]] = []
+    for sheet_name in normalized_selection:
+        try:
+            sheet_bytes = extract_excel_sheet_csv_bytes(workbook_bytes, sheet_name)
+            sheet_entries.append((sheet_name, sheet_bytes))
+        except Exception as exc:
+            logger.warning("Failed to extract sheet %s from %s: %s", sheet_name, workbook_name, exc)
+            skipped_results.append(
+                ArchiveAutoProcessFileResult(
+                    archive_path=sheet_name,
+                    sheet_name=sheet_name,
+                    status="failed",
+                    message=str(exc),
+                )
+            )
+
+    if not sheet_entries and not skipped_results:
+        raise HTTPException(
+            status_code=400,
+            detail="Workbook does not contain any readable sheets.",
+        )
+
+    if not sheet_entries:
+        skipped_failed = sum(1 for res in skipped_results if res.status == "failed")
+        skipped_only = sum(1 for res in skipped_results if res.status == "skipped")
+        return ArchiveAutoProcessResponse(
+            success=skipped_failed == 0,
+            total_files=len(skipped_results),
+            processed_files=0,
+            failed_files=skipped_failed,
+            skipped_files=skipped_only,
+            results=skipped_results,
+            job_id=None,
+        )
+
+    remaining_sheets = [name for name, _ in sheet_entries]
+    completed_seed = [{"archive_path": res.archive_path, "status": res.status} for res in skipped_results]
+
+    job = create_import_job(
+        file_id=file_id,
+        trigger_source="workbook_auto_process",
+        analysis_mode=analysis_mode.value,
+        conflict_mode=conflict_resolution.value,
+        metadata={
+            "source": "auto-process-workbook",
+            "files_in_archive": len(remaining_sheets) + len(skipped_results),
+            "remaining_files": list(remaining_sheets),
+            "completed_files": completed_seed,
+            "forced_table_name": forced_table_name,
+            "forced_table_mode": forced_table_mode,
+            "sheet_names": normalized_selection,
+        },
+    )
+    job_id = job["id"]
+    update_file_status(file_id, "mapping", expected_active_job_id=job_id)
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        lambda: _run_workbook_auto_process_job(
+            file_id=file_id,
+            workbook_name=workbook_name,
+            sheet_entries=sheet_entries,
+            skipped_results=skipped_results,
+            analysis_mode=analysis_mode,
+            conflict_resolution=conflict_resolution,
+            auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+            max_iterations=max_iterations,
+            job_id=job_id,
+            forced_table_name=forced_table_name,
+            forced_table_mode=forced_table_mode,
+        ),
+    )
+
+    return ArchiveAutoProcessResponse(
+        success=True,
+        total_files=len(sheet_entries) + len(skipped_results),
+        processed_files=0,
+        failed_files=0,
+        skipped_files=len(skipped_results),
+        results=skipped_results,
+        job_id=job_id,
+    )
+
+
 @router.post("/analyze-b2-file", response_model=AnalyzeFileResponse)
 async def analyze_b2_file_endpoint(
     request: AnalyzeB2FileRequest,
@@ -2721,6 +3224,8 @@ async def analyze_file_interactive_endpoint(
             session = _get_interactive_session(request.thread_id)
             if session.file_id != request.file_id:
                 raise HTTPException(status_code=400, detail="Thread does not belong to the requested file")
+            if request.sheet_name and session.sheet_name and request.sheet_name != session.sheet_name:
+                raise HTTPException(status_code=400, detail="This thread is tied to a different sheet")
             session.max_iterations = request.max_iterations
             response = _run_interactive_session_step(
                 session,
@@ -2762,11 +3267,28 @@ async def analyze_file_interactive_endpoint(
 
         file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
         file_type = detect_file_type(file_record["file_name"])
+        target_sheet_name: Optional[str] = None
+        if file_type == "excel":
+            try:
+                available_sheets = list_excel_sheets(file_content)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            if request.sheet_name:
+                lookup = {name.lower(): name for name in available_sheets}
+                normalized = request.sheet_name.strip().lower()
+                if normalized not in lookup:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Sheet '{request.sheet_name}' not found in workbook",
+                    )
+                target_sheet_name = lookup[normalized]
+            elif available_sheets:
+                target_sheet_name = available_sheets[0]
 
         if file_type == 'csv':
             records = process_csv(file_content)
         elif file_type == 'excel':
-            records = process_excel(file_content)
+            records = process_excel(file_content, sheet_name=target_sheet_name)
         elif file_type == 'json':
             records = process_json(file_content)
         elif file_type == 'xml':
@@ -2776,11 +3298,18 @@ async def analyze_file_interactive_endpoint(
 
         sample, total_rows = sample_file_data(records, None, max_sample_size=100)
 
+        display_name = file_record["file_name"]
+        if target_sheet_name:
+            display_name = (
+                f"{os.path.splitext(file_record['file_name'])[0]}__{target_sheet_name}.csv"
+            )
         file_metadata = {
-            "name": file_record["file_name"],
+            "name": display_name,
             "total_rows": total_rows,
             "file_type": file_type
         }
+        if target_sheet_name:
+            file_metadata["sheet_name"] = target_sheet_name
 
         # Handle deterministic fixtures for tests
         special_response = _handle_client_list_special_case(
@@ -2803,7 +3332,8 @@ async def analyze_file_interactive_endpoint(
             file_metadata=file_metadata,
             sample=sample,
             max_iterations=request.max_iterations,
-            job_id=job_id
+            job_id=job_id,
+            sheet_name=target_sheet_name,
         )
 
         if request.previous_error_message:
@@ -2903,11 +3433,19 @@ async def execute_interactive_import_endpoint(
 
         file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
         file_type = detect_file_type(file_record["file_name"])
+        file_name_for_import = file_record["file_name"]
+
+        if file_type == "excel" and session.sheet_name:
+            sheet_file_name = f"{os.path.splitext(file_record['file_name'])[0]}__{session.sheet_name}.csv"
+            sheet_file_name = sheet_file_name.replace("/", "_").replace("\\", "_")
+            file_name_for_import = sheet_file_name
+            file_content = extract_excel_sheet_csv_bytes(file_content, session.sheet_name)
+            file_type = "csv"
 
         if file_type == 'csv':
             records = process_csv(file_content)
         elif file_type == 'excel':
-            records = process_excel(file_content)
+            records = process_excel(file_content, sheet_name=session.sheet_name)
         elif file_type == 'json':
             records = process_json(file_content)
         elif file_type == 'xml':
@@ -2924,7 +3462,7 @@ async def execute_interactive_import_endpoint(
         try:
             execution_result = _get_execute_llm_import_decision()(
                 file_content=file_content,
-                file_name=file_record["file_name"],
+                file_name=file_name_for_import,
                 all_records=records,
                 llm_decision=session.llm_decision
             )
