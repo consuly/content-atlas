@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+from difflib import get_close_matches
 from app.api.schemas.shared import MappingConfig
 from app.domain.imports.history import record_duplicate_rows
 
@@ -40,6 +41,38 @@ class FileAlreadyImportedException(Exception):
         self.table_name = table_name
         self.message = message or f"File has already been imported to table '{table_name}'."
         super().__init__(self.message)
+
+
+def _validate_uniqueness_columns(table_name: str, uniqueness_columns: List[str], existing_columns: List[str]):
+    """
+    Ensure the configured uniqueness columns exist on the target table.
+    Raise a clear error before building duplicate-check queries to avoid runtime SQL errors.
+    """
+    if not uniqueness_columns:
+        return
+
+    existing_set = set(existing_columns)
+    missing = [col for col in uniqueness_columns if col not in existing_set]
+    if not missing:
+        return
+
+    suggestions = []
+    for col in missing:
+        close = get_close_matches(col, existing_columns, n=1, cutoff=0.7)
+        if not close and not col.endswith('s') and f"{col}s" in existing_set:
+            close = [f"{col}s"]
+        if not close and col.endswith('s') and col.rstrip('s') in existing_set:
+            close = [col.rstrip('s')]
+        if close:
+            suggestions.append(f"{col}→{close[0]}")
+
+    existing_preview = ', '.join(sorted(existing_columns)[:10])
+    suggestion_text = f" Suggestions: {', '.join(suggestions)}." if suggestions else ""
+    raise ValueError(
+        f"Duplicate check columns {missing} not found on table '{table_name}'. "
+        f"Existing columns (sample): {existing_preview}.{suggestion_text} "
+        "Update the mapping uniqueness_columns or the table schema before retrying."
+    )
 
 
 def sanitize_column_names(db_schema: Dict[str, str]) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -397,6 +430,15 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
             return [], 0
             
         print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' has {row_count} existing rows")
+
+        # Validate uniqueness columns exist on the target table before building queries
+        existing_columns_result = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = :table_name
+        """), {"table_name": table_name})
+        existing_columns = [row[0] for row in existing_columns_result]
+        _validate_uniqueness_columns(table_name, uniqueness_columns, existing_columns)
         
     except Exception as e:
         print(f"DEBUG: _check_for_duplicates_db_side: Error checking table existence: {e}")
@@ -1009,6 +1051,16 @@ def _check_chunks_parallel(
         if row_count == 0:
             logger.info(f"Table '{table_name}' is empty, no duplicates possible")
             return 0, []
+
+        # Validate uniqueness columns exist before building duplicate-check queries
+        existing_columns_result = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = :table_name
+        """), {"table_name": table_name})
+        existing_columns = [row[0] for row in existing_columns_result]
+        _validate_uniqueness_columns(table_name, uniqueness_columns, existing_columns)
 
         # Cache column data types for casting parameters in duplicate checks
         schema_result = conn.execute(text("""

@@ -185,3 +185,50 @@ def test_make_import_decision_defaults_to_detected_transformations_when_omitted(
     assert result["success"] is True
     stored = context.file_metadata["llm_decision"]["column_transformations"]
     assert stored == detected
+
+
+def test_make_import_decision_rejects_malformed_add_column_migration():
+    """Guard against bad schema_migrations payloads before execution."""
+    context = _build_analysis_context({"file_type": "csv"})
+    runtime = SimpleNamespace(context=context)
+
+    result = make_import_decision.func(
+        strategy="EXTEND_TABLE",
+        target_table="contacts_import",
+        reasoning="Extend table with new column.",
+        purpose_short="Contact enrichment",
+        column_mapping={"first_name": "first_name"},
+        runtime=runtime,
+        unique_columns=["first_name"],
+        has_header=True,
+        expected_column_types={"first_name": "TEXT"},
+        schema_migrations=[{"action": "add_column"}],  # missing new_column block
+    )
+
+    assert "error" in result
+    assert "add_column migration must include new_column" in result["error"]
+
+
+def test_make_import_decision_accepts_well_formed_add_column_migration():
+    """Valid add_column migrations should pass validation and be stored."""
+    context = _build_analysis_context({"file_type": "csv"})
+    runtime = SimpleNamespace(context=context)
+    migrations = [
+        {"action": "add_column", "new_column": {"name": "company_website", "type": "TEXT"}}
+    ]
+
+    result = make_import_decision.func(
+        strategy="EXTEND_TABLE",
+        target_table="contacts_import",
+        reasoning="Extend table with website column.",
+        purpose_short="Contact enrichment",
+        column_mapping={"first_name": "first_name"},
+        runtime=runtime,
+        unique_columns=["first_name"],
+        has_header=True,
+        expected_column_types={"first_name": "TEXT"},
+        schema_migrations=migrations,
+    )
+
+    assert result["success"] is True
+    assert context.file_metadata["llm_decision"]["schema_migrations"] == migrations

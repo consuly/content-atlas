@@ -2,6 +2,7 @@
 Data import endpoints for mapping and inserting data from various sources.
 """
 import logging
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.orm import Session
 import json
@@ -9,20 +10,44 @@ import hashlib
 import time
 
 from app.db.session import get_db
-from app.api.schemas.shared import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest
+from app.api.schemas.shared import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, DuplicateCheckConfig
 from app.api.dependencies import records_cache, CACHE_TTL_SECONDS
 from app.integrations.b2 import download_file_from_b2
+from app.core.security import get_optional_user, User
 
 router = APIRouter(tags=["imports"])
 
 logger = logging.getLogger(__name__)
 
 
+def _enforce_duplicate_protection(
+    config: MappingConfig,
+    current_user: Optional[User],
+) -> None:
+    """
+    Require file-level duplicate protection unless an admin explicitly bypasses it.
+    Prevents accidental disabling of the hash check or forcing imports that skip
+    duplicate gates.
+    """
+    dup_cfg: DuplicateCheckConfig = config.duplicate_check or DuplicateCheckConfig()
+    protection_disabled = dup_cfg.force_import or not dup_cfg.check_file_level
+    if protection_disabled:
+        if not current_user or getattr(current_user, "role", None) != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "File-level duplicate protection must stay enabled. "
+                    "Provide an admin token to use force_import or disable check_file_level."
+                ),
+            )
+
+
 @router.post("/map-data", response_model=MapDataResponse)
 async def map_data_endpoint(
     file: UploadFile = File(...),
     mapping_json: str = Form(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     Map and import data from an uploaded file.
@@ -52,6 +77,7 @@ async def map_data_endpoint(
             raise HTTPException(status_code=400, detail="Mapping configuration required")
         mapping_data = json.loads(mapping_json)
         config = MappingConfig(**mapping_data)
+        _enforce_duplicate_protection(config, current_user)
 
         # Read file content
         file_content = await file.read()
@@ -145,7 +171,8 @@ async def map_data_endpoint(
 @router.post("/map-b2-data", response_model=MapDataResponse)
 async def map_b2_data_endpoint(
     request: MapB2DataRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     Map and import data from a file stored in Backblaze B2.
@@ -169,6 +196,9 @@ async def map_b2_data_endpoint(
         # Download file from B2
         file_content = download_file_from_b2(request.file_name)
         
+        # Enforce duplicate guardrails before executing import
+        _enforce_duplicate_protection(request.mapping, current_user)
+
         # Execute unified import
         result = execute_data_import(
             file_content=file_content,

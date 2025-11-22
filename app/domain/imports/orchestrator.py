@@ -23,11 +23,13 @@ from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
 from .mapper import map_data
 from app.db.models import (
-    create_table_if_not_exists, 
-    insert_records, 
+    create_file_imports_table_if_not_exists,
+    create_table_if_not_exists,
+    insert_records,
     calculate_file_hash,
     DuplicateDataException,
-    FileAlreadyImportedException
+    FileAlreadyImportedException,
+    check_file_already_imported,
 )
 from app.db.session import get_engine
 from app.api.schemas.shared import MappingConfig
@@ -886,6 +888,30 @@ def execute_data_import(
         # Calculate file hash and size
         file_hash = calculate_file_hash(file_content)
         file_size = len(file_content)
+
+        # Fail fast on exact file duplicates so mapping status doesn't drift from execution state
+        dup_cfg = mapping_config.duplicate_check
+        should_check_file = (
+            mapping_config.check_duplicates
+            and dup_cfg.enabled
+            and dup_cfg.check_file_level
+            and not dup_cfg.force_import
+        )
+        if should_check_file:
+            engine = get_engine()
+            create_file_imports_table_if_not_exists(engine)
+            if check_file_already_imported(engine, file_hash, mapping_config.table_name):
+                logger.warning(
+                    "Preflight duplicate detected for file '%s' (hash=%s) targeting table '%s'",
+                    file_name,
+                    file_hash[:8],
+                    mapping_config.table_name,
+                )
+                raise FileAlreadyImportedException(
+                    file_hash,
+                    mapping_config.table_name,
+                    dup_cfg.error_message,
+                )
         
         # Start import tracking
         import_id = start_import_tracking(
@@ -1213,6 +1239,13 @@ def execute_data_import(
         
     except FileAlreadyImportedException as e:
         if import_id:
+            try:
+                update_mapping_status(import_id, "failed", errors_count=0)
+            except Exception as status_exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "Failed to mark mapping status as failed for duplicate file: %s",
+                    str(status_exc),
+                )
             complete_import_tracking(
                 import_id=import_id,
                 status="failed",

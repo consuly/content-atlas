@@ -613,6 +613,57 @@ def test_small_file_duplicate_detection():
         assert "already been imported" in data["detail"]
 
 
+def test_duplicate_file_preflight_does_not_create_extra_history():
+    """Second upload of identical file should short-circuit before creating a new import history row."""
+    import io
+
+    table_name = f"test_preflight_{int(time.time())}"
+    csv_content = "name,email\nJohn,john@example.com\n"
+
+    files = {"file": ("preflight.csv", io.BytesIO(csv_content.encode()), "text/csv")}
+    mapping_json = f"""{{
+        "table_name": "{table_name}",
+        "db_schema": {{"name": "VARCHAR(255)", "email": "VARCHAR(255)"}},
+        "mappings": {{"name": "name", "email": "email"}},
+        "duplicate_check": {{"enabled": true, "check_file_level": true}}
+    }}"""
+
+    # Clean up table, history, and file_imports records
+    try:
+        from app.db.session import get_engine
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM file_imports WHERE table_name = :table_name"), {"table_name": table_name})
+            conn.execute(text("DELETE FROM import_history WHERE table_name = :table_name"), {"table_name": table_name})
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+    except Exception:
+        pass
+
+    response1 = client.post("/map-data", files=files, data={"mapping_json": mapping_json})
+    assert response1.status_code in [200, 500]
+
+    if response1.status_code != 200:
+        pytest.skip("Skipping preflight duplicate assertions because initial import failed (likely DB unavailable)")
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        history_count_before = conn.execute(
+            text("SELECT COUNT(*) FROM import_history WHERE table_name = :table_name"),
+            {"table_name": table_name},
+        ).scalar() or 0
+
+    response2 = client.post("/map-data", files=files, data={"mapping_json": mapping_json})
+    assert response2.status_code == 409, response2.text
+
+    with engine.connect() as conn:
+        history_count_after = conn.execute(
+            text("SELECT COUNT(*) FROM import_history WHERE table_name = :table_name"),
+            {"table_name": table_name},
+        ).scalar() or 0
+
+    assert history_count_after == history_count_before
+
+
 def test_datetime_standardization():
     """Test datetime standardization functionality."""
     from app.domain.imports.mapper import standardize_datetime, apply_rules, map_data
