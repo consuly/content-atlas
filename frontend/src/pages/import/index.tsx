@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router';
-import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Modal, Checkbox } from 'antd';
+import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Modal, Checkbox, Tag } from 'antd';
 import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { FileUpload } from '../../components/file-upload';
@@ -57,6 +57,31 @@ export const ImportPage: React.FC = () => {
   });
   const [importSummaryCache, setImportSummaryCache] = useState<Record<string, ImportSummary>>({});
   const { message: messageApi } = AntdApp.useApp();
+
+  const normalizeJobStatus = (status?: string | null) =>
+    (status || '').toLowerCase().trim();
+
+  const isJobActive = (file: UploadedFile) => {
+    const normalized = normalizeJobStatus(file.active_job_status);
+    const hasJobMetadata = file.active_job_id || file.active_job_stage || file.active_job_progress;
+    const isTerminal =
+      normalized === 'succeeded' ||
+      normalized === 'failed' ||
+      normalized === 'completed' ||
+      normalized === 'cancelled' ||
+      normalized === 'canceled';
+
+    return (
+      file.status === 'mapping' ||
+      (!!normalized && !isTerminal) ||
+      (!normalized && !!hasJobMetadata)
+    );
+  };
+
+  const isJobQueued = (file: UploadedFile) => {
+    const normalized = normalizeJobStatus(file.active_job_status);
+    return normalized === 'queued' || normalized === 'pending';
+  };
 
   const attachImportSummaries = useCallback(async (
     fileList: UploadedFile[],
@@ -204,7 +229,11 @@ export const ImportPage: React.FC = () => {
         setTotalCount(nextTotal);
         setTabCounts((prev) => ({ ...prev, [status || 'all']: nextTotal }));
         setSelectedRowKeys((prev) =>
-          prev.filter((key) => filesWithImports.some((file: UploadedFile) => file.id === key))
+          prev.filter((key) =>
+            filesWithImports.some(
+              (file: UploadedFile) => file.id === key && !isJobActive(file)
+            )
+          )
         );
       } catch (error) {
         messageApi.error('Failed to fetch files');
@@ -255,6 +284,10 @@ export const ImportPage: React.FC = () => {
   };
 
   const handleMapNow = (file: UploadedFile) => {
+    if (isJobActive(file)) {
+      messageApi.warning('This file already has a job queued or running. Please wait for it to finish.');
+      return;
+    }
     navigate(`/import/${file.id}`);
   };
 
@@ -290,14 +323,26 @@ export const ImportPage: React.FC = () => {
   };
 
   const selectedFiles = files.filter((file) => selectedRowKeys.includes(file.id));
-  const mappableFiles = selectedFiles.filter((file) =>
-    ['uploaded', 'failed', 'mapping'].includes(file.status)
+  const mappableFiles = selectedFiles.filter(
+    (file) => ['uploaded', 'failed'].includes(file.status) && !isJobActive(file)
   );
-  const remappableFiles = selectedFiles.filter((file) => file.status === 'mapped');
+  const remappableFiles = selectedFiles.filter(
+    (file) => file.status === 'mapped' && !isJobActive(file)
+  );
 
   const handleBulkOpen = (targets: UploadedFile[], actionLabel: string) => {
     if (!targets.length) {
       messageApi.info(`Select files that can be ${actionLabel}.`);
+      return;
+    }
+
+    const busySelections = selectedFiles.filter(isJobActive);
+    if (busySelections.length > 0) {
+      messageApi.warning(
+        `Wait for queued/running jobs to finish before mapping: ${busySelections
+          .map((file) => file.file_name)
+          .join(', ')}`
+      );
       return;
     }
 
@@ -424,6 +469,16 @@ export const ImportPage: React.FC = () => {
   };
 
   const handleBulkProcess = async () => {
+    const blocked = selectedFiles.filter(isJobActive);
+    if (blocked.length > 0) {
+      messageApi.warning(
+        `These files already have jobs queued or running: ${blocked
+          .map((file) => file.file_name)
+          .join(', ')}`
+      );
+      return;
+    }
+
     if (!mappableFiles.length) {
       messageApi.info('Select uploads that can be auto-processed.');
       return;
@@ -483,10 +538,20 @@ export const ImportPage: React.FC = () => {
     };
 
     const config = statusConfig[status] || { status: 'default' as const, text: status };
-    const extra = file.active_job_status
-      ? ` (${file.active_job_stage ?? file.active_job_status})`
-      : '';
-    return <Badge status={config.status} text={`${config.text}${extra}`} />;
+    const jobLabel = file.active_job_status
+      ? (file.active_job_stage ?? file.active_job_status)?.replace(/_/g, ' ')
+      : null;
+
+    return (
+      <Space size={4}>
+        <Badge status={config.status} text={config.text} />
+        {isJobActive(file) && (
+          <Tag color={isJobQueued(file) ? 'gold' : 'blue'}>
+            {jobLabel ? jobLabel : 'Processing'}
+          </Tag>
+        )}
+      </Space>
+    );
   };
 
   const columns: ColumnsType<UploadedFile & ImportSummary> = [
@@ -595,6 +660,7 @@ export const ImportPage: React.FC = () => {
               size="small"
               icon={<ThunderboltOutlined />}
               onClick={() => handleMapNow(record)}
+              disabled={isJobActive(record)}
             >
               Map Now
             </Button>
@@ -713,6 +779,12 @@ export const ImportPage: React.FC = () => {
           rowSelection={{
             selectedRowKeys,
             onChange: (nextKeys) => setSelectedRowKeys(nextKeys),
+            getCheckboxProps: (record) => ({
+              disabled: isJobActive(record as UploadedFile),
+              title: isJobActive(record as UploadedFile)
+                ? 'Processing is already in progress for this file'
+                : undefined,
+            }),
             preserveSelectedRowKeys: true,
           }}
           pagination={{

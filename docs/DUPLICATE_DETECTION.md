@@ -29,6 +29,7 @@ The Content Atlas application now uses a **Pandas-based duplicate detection syst
 - **`force_import`**: Bypass all duplicate checks and force data insertion
 - **`allow_duplicates`**: Skip row-level duplicate checking (still checks file-level if enabled)
 - **`check_file_level`**: Enable/disable file-level duplicate detection
+- **`allow_file_level_retry`**: Opt-in to re-import the same file hash (LLM/user instructed retries) while keeping row-level duplicate protection
 - **Custom error messages**: Configurable error messages for duplicate detection
 
 ## Configuration
@@ -51,6 +52,7 @@ Duplicate checking is configured via the `duplicate_check` parameter in the mapp
   "duplicate_check": {
     "enabled": true,
     "check_file_level": true,
+    "allow_file_level_retry": false,
     "uniqueness_columns": ["email"],  // Optional: specify which columns must be unique
     "allow_duplicates": false,
     "force_import": false,
@@ -68,6 +70,12 @@ Duplicate checking is configured via the `duplicate_check` parameter in the mapp
 ### `check_file_level` (boolean, default: true)
 - Enable file-level duplicate detection using SHA-256 hashing
 - Prevents uploading the same file twice to the same table
+
+### `allow_file_level_retry` (boolean, default: false)
+- Allows explicit retries of the same file hash without admin privileges
+- Intended for LLM- or user-directed “retry and skip duplicates” flows
+- Row-level duplicate protection remains enforced; only new rows are inserted
+- Use when a previous import stopped mid-way and you need to resume without double-inserting
 
 ### `uniqueness_columns` (array of strings, optional)
 - Specify which columns to check for uniqueness
@@ -181,6 +189,7 @@ This checks if the entire row (all columns) already exists in the table.
   "duplicate_check": {
     "enabled": true,
     "check_file_level": false,
+    "allow_file_level_retry": true,
     "uniqueness_columns": ["email"]
   }
 }

@@ -18,13 +18,18 @@ def client():
 def ensure_db_ready():
     """
     Ensure the database is writable for the real persistence layer.
-    Skip tests if connections fail so we don't mask runtime issues with stubs.
+    Fail fast if connections fail so we don't mask runtime issues with stubs.
     """
     thread_id = str(uuid.uuid4())
     try:
         save_query_message(thread_id, "user", "ping")
     except Exception as exc:  # pragma: no cover - guard against missing DB locally
-        pytest.skip(f"Database unavailable for query conversation integration tests: {exc}")
+        pytest.fail(
+            "Database unavailable for query conversation integration tests.\n"
+            "Tried connecting to the DATABASE_URL from settings "
+            "and could not open a connection. Ensure Postgres is running and accessible.\n"
+            f"Underlying error: {exc}"
+        )
 
     yield
 
@@ -107,9 +112,15 @@ def test_query_conversation_frontend_base_url_roundtrip():
     errors = []
     for url in urls:
         try:
-            resp = requests.get(url, timeout=5)
+            resp = requests.get(url, timeout=15)
         except requests.exceptions.ConnectionError as exc:
-            pytest.skip(f"Query conversation API not reachable at {base_url} (connection error: {exc})")
+            pytest.fail(
+                "Query conversation API not reachable at the frontend base URL.\n"
+                f"Base URL: {base_url}\n"
+                "Start the API server (uvicorn app.main:app --reload) or set "
+                "QUERY_CONVERSATION_BASE_URL to the running host:port.\n"
+                f"Connection error after 15s timeout: {exc}"
+            )
         except Exception as exc:
             errors.append(f"{url}: request failed ({exc})")
             continue

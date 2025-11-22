@@ -358,11 +358,21 @@ def _process_archive_entry(
         # 3. Fingerprinting (parallel calculation, serialized cache access)
         fingerprint: Optional[str] = None
         cached_plan: Optional[Dict[str, Any]] = None
+        cached_plan_event: Optional[threading.Event] = None
+        is_first_worker_for_plan = False
         try:
             fingerprint = _build_structure_fingerprint(entry_bytes, entry_name)
             if fingerprint:
                 with fingerprint_lock:
                     cached_plan = fingerprint_cache.get(fingerprint)
+                    if cached_plan and cached_plan.get("llm_decision"):
+                        cached_plan_event = cached_plan.get("event")
+                    elif cached_plan and cached_plan.get("event"):
+                        cached_plan_event = cached_plan["event"]
+                    else:
+                        cached_plan_event = threading.Event()
+                        fingerprint_cache[fingerprint] = {"event": cached_plan_event}
+                        is_first_worker_for_plan = True
         except Exception as exc:
             logger.debug("Fingerprinting failed for %s: %s", entry_name, exc)
 
@@ -402,11 +412,35 @@ def _process_archive_entry(
             if marketing_response is not None:
                 summary = _summarize_archive_execution(marketing_response)
             elif cached_plan and cached_plan.get("llm_decision"):
+                applied_decision = _apply_forced_table_decision(
+                    cached_plan["llm_decision"],
+                    forced_table_name,
+                    forced_table_mode,
+                )
                 summary = _execute_cached_archive_decision(
                     entry_bytes=entry_bytes,
                     entry_name=entry_name,
-                    llm_decision=cached_plan["llm_decision"],
+                    llm_decision=applied_decision,
                 )
+            elif cached_plan_event and fingerprint and not is_first_worker_for_plan:
+                # Another worker is generating a plan; wait briefly to reuse it.
+                cached_plan_event.wait(timeout=10)
+                with fingerprint_lock:
+                    cached_after_wait = fingerprint_cache.get(fingerprint)
+                if cached_after_wait and cached_after_wait.get("llm_decision"):
+                    applied_decision = _apply_forced_table_decision(
+                        cached_after_wait["llm_decision"],
+                        forced_table_name,
+                        forced_table_mode,
+                    )
+                    summary = _execute_cached_archive_decision(
+                        entry_bytes=entry_bytes,
+                        entry_name=entry_name,
+                        llm_decision=applied_decision,
+                    )
+                else:
+                    # No plan materialized—fall back to fresh analysis.
+                    cached_plan = cached_after_wait
             else:
                 # Preload content for analysis to avoid re-downloading from B2
                 # We need to use a thread-safe way if _preloaded_file_contents is global
@@ -435,9 +469,14 @@ def _process_archive_entry(
                     
                     if fingerprint and analyze_response.llm_decision:
                         with fingerprint_lock:
+                            existing_cache = fingerprint_cache.get(fingerprint) or {}
+                            event = existing_cache.get("event") or cached_plan_event
                             fingerprint_cache[fingerprint] = {
                                 "llm_decision": analyze_response.llm_decision,
+                                "event": event,
                             }
+                            if event:
+                                event.set()
                 finally:
                     _preloaded_file_contents.pop(uploaded_file_id, None)
 
@@ -447,6 +486,8 @@ def _process_archive_entry(
                 "message": getattr(exc, "detail", str(exc)),
                 "auto_retry_used": False,
             }
+            if cached_plan_event:
+                cached_plan_event.set()
         except Exception as exc:
             logger.exception("Archive auto-process failed for %s: %s", archive_path, exc)
             summary = {
@@ -454,6 +495,15 @@ def _process_archive_entry(
                 "message": str(exc),
                 "auto_retry_used": False,
             }
+            if cached_plan_event:
+                cached_plan_event.set()
+
+        if cached_plan_event and fingerprint:
+            with fingerprint_lock:
+                existing_cache = fingerprint_cache.get(fingerprint) or {}
+                event = existing_cache.get("event") or cached_plan_event
+                fingerprint_cache[fingerprint] = {**existing_cache, "event": event}
+                event.set()
 
         return ArchiveAutoProcessFileResult(
             archive_path=archive_path,

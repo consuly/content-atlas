@@ -327,6 +327,21 @@ def test_duplicate_detection_row_level():
     """Test row-level duplicate detection handles overlapping records correctly."""
     import io
 
+    # Guardrail: disallow disabling file-level check unless retry flag is set
+    csv_guard = "name,email\nJohn Doe,john@example.com\n"
+    guard_files = {"file": ("guard.csv", io.BytesIO(csv_guard.encode()), "text/csv")}
+    guard_data = {
+        "mapping_json": """{
+            "table_name": "test_row_duplicates_guard",
+            "db_schema": {"name": "VARCHAR(255)", "email": "VARCHAR(255)"},
+            "mappings": {"name": "name", "email": "email"},
+            "duplicate_check": {"enabled": true, "check_file_level": false}
+        }"""
+    }
+    guard_response = client.post("/map-data", files=guard_files, data=guard_data)
+    assert guard_response.status_code == 403
+    assert "allow_file_level_retry" in guard_response.json()["detail"]
+
     # Clean up first - be more thorough
     try:
         from app.db.session import get_engine
@@ -350,7 +365,7 @@ Jane Smith,jane@example.com,25
             "table_name": "test_row_duplicates",
             "db_schema": {"name": "VARCHAR(255)", "email": "VARCHAR(255)", "age": "INTEGER"},
             "mappings": {"name": "name", "email": "email", "age": "age"},
-            "duplicate_check": {"enabled": true, "check_file_level": false}
+            "duplicate_check": {"enabled": true, "check_file_level": false, "allow_file_level_retry": true}
         }"""
     }
 
@@ -532,7 +547,7 @@ Jane Smith,jane@example.com,25
             "table_name": "test_custom_unique",
             "db_schema": {"name": "VARCHAR(255)", "email": "VARCHAR(255)", "age": "INTEGER"},
             "mappings": {"name": "name", "email": "email", "age": "age"},
-            "duplicate_check": {"enabled": true, "check_file_level": false, "uniqueness_columns": ["email"]}
+            "duplicate_check": {"enabled": true, "check_file_level": false, "allow_file_level_retry": true, "uniqueness_columns": ["email"]}
         }"""
     }
 
@@ -808,7 +823,7 @@ def test_duplicate_auto_merge_flow():
         "table_name": "{table_name}",
         "db_schema": {{"name": "VARCHAR(255)", "email": "VARCHAR(255)", "age": "INTEGER"}},
         "mappings": {{"name": "name", "email": "email", "age": "age"}},
-        "duplicate_check": {{"enabled": true, "check_file_level": false, "allow_duplicates": false, "uniqueness_columns": ["email"]}}
+        "duplicate_check": {{"enabled": true, "check_file_level": false, "allow_file_level_retry": true, "allow_duplicates": false, "uniqueness_columns": ["email"]}}
     }}"""
 
     # First upload (baseline row)

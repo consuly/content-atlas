@@ -30,16 +30,30 @@ def _enforce_duplicate_protection(
     duplicate gates.
     """
     dup_cfg: DuplicateCheckConfig = config.duplicate_check or DuplicateCheckConfig()
-    protection_disabled = dup_cfg.force_import or not dup_cfg.check_file_level
-    if protection_disabled:
-        if not current_user or getattr(current_user, "role", None) != "admin":
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "File-level duplicate protection must stay enabled. "
-                    "Provide an admin token to use force_import or disable check_file_level."
-                ),
-            )
+    is_admin = current_user and getattr(current_user, "role", None) == "admin"
+
+    # Force-import skips *all* duplicate protection. Allow it for non-admins but keep
+    # the guardrail on by default via explicit flag.
+    if dup_cfg.force_import and not dup_cfg.enabled and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Force import can only be used when duplicate checking is enabled "
+                "or by an admin."
+            ),
+        )
+
+    # Allow the LLM/user to explicitly request a file-level retry (same hash) while
+    # keeping row-level duplicate protection on.
+    if not dup_cfg.check_file_level and not dup_cfg.allow_file_level_retry and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "File-level duplicate protection must stay enabled. "
+                "Set duplicate_check.allow_file_level_retry=true to re-import the same file hash "
+                "while keeping row-level duplicate checks, or provide an admin token."
+            ),
+        )
 
 
 @router.post("/map-data", response_model=MapDataResponse)
@@ -163,6 +177,10 @@ async def map_data_endpoint(
     except DuplicateDataException as e:
         logger.warning("Duplicate data detected: %s", e)
         raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        # Re-raise intentional HTTP errors (e.g., duplicate guardrails) without
+        # converting them to 500s.
+        raise
     except Exception as e:
         logger.exception("Map data processing failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
