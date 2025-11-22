@@ -6,11 +6,17 @@ ensuring consistent behavior across all API endpoints and reducing code duplicat
 """
 
 from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass
+import csv
+import io
+import math
+import re
 from collections.abc import Mapping, Sequence
 from sqlalchemy import text, inspect
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait, FIRST_COMPLETED
+import pandas as pd
 
 from .processors.csv_processor import (
     process_csv,
@@ -61,6 +67,133 @@ MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
 MAP_PARALLEL_MAX_WORKERS = max(1, settings.map_parallel_max_workers)
 DUPLICATE_PREVIEW_LIMIT = 20
 STREAMING_CSV_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10MB threshold to stream huge CSVs
+
+
+@dataclass
+class RowCountResult:
+    total_rows: Optional[int]
+    data_rows: Optional[int]
+    header_rows: int = 0
+    detected_header: Optional[bool] = None
+    header_row_index: Optional[int] = None
+    reason: Optional[str] = None
+
+
+def _columns_cover_mapping(records: List[Dict[str, Any]], mapping_config: Optional[MappingConfig]) -> bool:
+    """Check if parsed columns cover the expected source fields in the mapping."""
+    if not records or not mapping_config or not mapping_config.mappings:
+        return True
+    available_columns = set(records[0].keys())
+    required_sources = {
+        source for source in mapping_config.mappings.values() if source
+    }
+    return required_sources.issubset(available_columns)
+
+
+def _count_csv_rows(file_content: bytes) -> Optional[int]:
+    """Return total CSV row count without assuming header semantics."""
+    try:
+        text_io = io.StringIO(file_content.decode("utf-8", errors="ignore"))
+        return sum(1 for _ in csv.reader(text_io))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Unable to count CSV rows: %s", exc)
+        return None
+
+
+def _is_non_empty_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    text = str(value).strip()
+    return text != ""
+
+
+def _looks_numeric(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    if not text:
+        return False
+    return bool(re.fullmatch(r"[-+]?\d+(\.\d+)?", text))
+
+
+def _guess_excel_header_row(df: pd.DataFrame) -> int:
+    """Heuristically pick the header row from the first few non-empty rows."""
+    preview = df.head(5)
+    best_idx = 0
+    best_score = float("-inf")
+
+    for idx in range(len(preview)):
+        row = preview.iloc[idx].tolist()
+        tokens = [str(val).strip() for val in row if _is_non_empty_value(val)]
+        if not tokens:
+            continue
+        text_like = sum(1 for token in tokens if not _looks_numeric(token))
+        numeric_like = sum(1 for token in tokens if _looks_numeric(token))
+        score = text_like - numeric_like
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+        # Early exit when the row is overwhelmingly text-like (typical header)
+        if score >= len(tokens) * 0.6:
+            return idx
+
+    return best_idx
+
+
+def _count_excel_rows(file_content: bytes) -> RowCountResult:
+    """Count Excel rows and estimate the data start row."""
+    try:
+        df_raw = pd.read_excel(io.BytesIO(file_content), header=None, engine="openpyxl")
+    except Exception:
+        try:
+            df_raw = pd.read_excel(io.BytesIO(file_content), header=None)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Unable to inspect Excel rows: %s", exc)
+            return RowCountResult(total_rows=None, data_rows=None)
+
+    df_trimmed = df_raw.dropna(how="all")
+    total_rows = len(df_trimmed)
+    if total_rows == 0:
+        return RowCountResult(total_rows=0, data_rows=0, header_rows=0, detected_header=None, header_row_index=None)
+
+    header_row_index = _guess_excel_header_row(df_trimmed)
+    data_rows = max(total_rows - header_row_index - 1, 0)
+
+    return RowCountResult(
+        total_rows=total_rows,
+        data_rows=data_rows,
+        header_rows=header_row_index + 1,
+        detected_header=True,
+        header_row_index=header_row_index,
+        reason="excel_row_scan",
+    )
+
+
+def _count_file_rows(file_content: bytes, file_type: str, header_present: Optional[bool] = None) -> RowCountResult:
+    """Lightweight row counting that accounts for optional headers."""
+    if file_type == "csv":
+        total_rows = _count_csv_rows(file_content)
+        if header_present is None:
+            try:
+                header_present = detect_csv_header(file_content)
+            except Exception:
+                header_present = True
+        header_rows = 1 if header_present else 0
+        data_rows = max((total_rows or 0) - header_rows, 0) if total_rows is not None else None
+        return RowCountResult(
+            total_rows=total_rows,
+            data_rows=data_rows,
+            header_rows=header_rows,
+            detected_header=header_present,
+            reason="csv_row_scan",
+        )
+
+    if file_type == "excel":
+        return _count_excel_rows(file_content)
+
+    return RowCountResult(total_rows=None, data_rows=None)
 
 
 def _update_job_progress(
@@ -363,13 +496,14 @@ def detect_file_type(filename: str) -> str:
         raise ValueError(f"Unsupported file type: {filename}")
 
 
-def process_file_content(file_content: bytes, file_type: str) -> List[Dict[str, Any]]:
+def process_file_content(file_content: bytes, file_type: str, has_header: Optional[bool] = None) -> List[Dict[str, Any]]:
     """
     Process file content based on file type.
     
     Args:
         file_content: Raw file content
         file_type: Type of file ('csv', 'excel', 'json', 'xml')
+        has_header: Optional header hint for CSV files
         
     Returns:
         List of records extracted from file
@@ -378,7 +512,7 @@ def process_file_content(file_content: bytes, file_type: str) -> List[Dict[str, 
     if file_type == 'excel' and len(file_content) > 10 * 1024 * 1024:  # 10MB
         return process_large_excel(file_content)
     elif file_type == 'csv':
-        return process_csv(file_content)
+        return process_csv(file_content, has_header=has_header)
     elif file_type == 'excel':
         return process_excel(file_content)
     elif file_type == 'json':
@@ -614,6 +748,7 @@ def _execute_streaming_csv_import(
         "duplicate_rows": duplicate_rows or None,
         "duplicate_rows_count": duplicate_total if duplicate_total else None,
         "import_id": import_id,
+        "row_count_warning": None,
     }
 
 
@@ -1010,6 +1145,9 @@ def execute_data_import(
         type_mismatch_summary: List[Dict[str, Any]] = []
         # Detect file type
         file_type = detect_file_type(file_name)
+        row_count_info: Optional[RowCountResult] = None
+        row_count_warning: Optional[str] = None
+        csv_has_header: Optional[bool] = None
         
         # Calculate file hash and size
         file_hash = calculate_file_hash(file_content)
@@ -1057,6 +1195,15 @@ def execute_data_import(
         # Stream large CSVs to avoid materializing everything in memory
         streaming_csv = file_type == "csv" and len(file_content) >= STREAMING_CSV_THRESHOLD_BYTES
 
+        if file_type == "csv":
+            try:
+                csv_has_header = detect_csv_header(file_content)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.info("CSV header detection failed, defaulting to header present: %s", exc)
+                csv_has_header = True
+        if not streaming_csv:
+            row_count_info = _count_file_rows(file_content, file_type, header_present=csv_has_header)
+
         # Process file (or use cached records)
         parse_start = time.time()
         used_cached_records = pre_parsed_records is not None
@@ -1084,7 +1231,7 @@ def execute_data_import(
             )
         else:
             # Parse file normally
-            records = process_file_content(file_content, file_type)
+            records = process_file_content(file_content, file_type, has_header=csv_has_header)
             parse_time = time.time() - parse_start
             logger.info(f"Parsed {len(records)} records in {parse_time:.2f}s")
 
@@ -1109,6 +1256,90 @@ def execute_data_import(
             )
         
         raw_total_rows = len(records)
+
+        if (
+            not streaming_csv
+            and row_count_info
+            and row_count_info.data_rows is not None
+            and raw_total_rows != row_count_info.data_rows
+        ):
+            row_count_warning = (
+                f"Parsed {raw_total_rows} rows, but the file scan suggests {row_count_info.data_rows} data rows "
+                f"(total rows: {row_count_info.total_rows}, header rows: {row_count_info.header_rows})."
+            )
+
+            if file_type == "csv" and row_count_info.detected_header is not None:
+                alt_has_header = not row_count_info.detected_header
+                alt_records = process_csv(file_content, has_header=alt_has_header)
+                alt_total_rows = len(alt_records)
+                alt_expected_rows = None
+                if row_count_info.total_rows is not None:
+                    alt_expected_rows = max(row_count_info.total_rows - (1 if alt_has_header else 0), 0)
+
+                if (
+                    alt_expected_rows is not None
+                    and alt_total_rows == alt_expected_rows
+                    and _columns_cover_mapping(alt_records, mapping_config)
+                ):
+                    records = alt_records
+                    raw_total_rows = alt_total_rows
+                    row_count_warning = (
+                        f"{row_count_warning} Reprocessed CSV assuming "
+                        f"{'a header' if alt_has_header else 'no header'} to align row counts."
+                    )
+                elif alt_expected_rows is not None and alt_total_rows == alt_expected_rows:
+                    row_count_warning = (
+                        f"{row_count_warning} Switching header handling would align counts, "
+                        "but the current mapping does not match the alternative columns. "
+                        "Confirm the header position or re-run mapping detection."
+                    )
+
+            if file_type == "excel" and row_count_info.header_row_index is not None:
+                header_row_idx = row_count_info.header_row_index
+                adjusted_df = None
+                try:
+                    adjusted_df = pd.read_excel(
+                        io.BytesIO(file_content),
+                        engine="openpyxl",
+                        header=header_row_idx,
+                    )
+                except Exception:
+                    try:
+                        adjusted_df = pd.read_excel(io.BytesIO(file_content), header=header_row_idx)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning("Excel row-count reprocess failed: %s", exc)
+
+                if adjusted_df is not None:
+                    adjusted_records = adjusted_df.to_dict("records")
+                    for record in adjusted_records:
+                        for key, value in record.items():
+                            if pd.isna(value):
+                                record[key] = None
+                    adjusted_row_count = len(adjusted_records)
+                    expected_rows = row_count_info.data_rows
+                    if (
+                        expected_rows is not None
+                        and adjusted_row_count == expected_rows
+                        and _columns_cover_mapping(adjusted_records, mapping_config)
+                    ):
+                        records = adjusted_records
+                        raw_total_rows = adjusted_row_count
+                        row_count_warning = (
+                            f"{row_count_warning} Reprocessed Excel starting at row {header_row_idx + 1} to align counts."
+                        )
+                    elif expected_rows is not None and adjusted_row_count == expected_rows:
+                        row_count_warning = (
+                            f"{row_count_warning} Counts align when starting at row {header_row_idx + 1}, "
+                            "but the detected columns differ from the provided mapping. "
+                            "Confirm the header row or ask the assistant to re-evaluate the sheet layout."
+                        )
+                    elif expected_rows is not None and adjusted_row_count != expected_rows:
+                        row_count_warning = (
+                            f"{row_count_warning} Tried reprocessing from row {header_row_idx + 1} but still saw {adjusted_row_count} rows."
+                        )
+
+            if row_count_warning:
+                logger.warning("Row count check warning: %s", row_count_warning)
 
         # Optional quick in-file dedupe before mapping
         records, intra_file_duplicates_skipped = _dedupe_records_in_memory(
@@ -1358,6 +1589,8 @@ def execute_data_import(
             metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
         if chunk_status_summary:
             metadata_payload["mapping_chunk_status"] = chunk_status_summary
+        if row_count_warning:
+            metadata_payload["row_count_warning"] = row_count_warning
 
         duplicate_rows: List[Dict[str, Any]] = []
         duplicate_total = duplicates_skipped
@@ -1383,11 +1616,12 @@ def execute_data_import(
             import_id
         )
         followup_parts = [
+            row_count_warning,
             duplicate_followup,
             _build_type_mismatch_followup(mapping_config.table_name, type_mismatch_summary)
         ]
         followup_message = "\n\n".join([part for part in followup_parts if part]) if any(followup_parts) else ""
-        needs_user_input = duplicates_skipped > 0
+        needs_user_input = duplicates_skipped > 0 or bool(row_count_warning)
 
         complete_import_tracking(
             import_id=import_id,
@@ -1418,7 +1652,8 @@ def execute_data_import(
             "needs_user_input": needs_user_input,
             "duplicate_rows": duplicate_rows if duplicate_rows else None,
             "duplicate_rows_count": duplicate_total if duplicate_total else None,
-            "import_id": import_id
+            "import_id": import_id,
+            "row_count_warning": row_count_warning,
         }
         
     except FileAlreadyImportedException as e:
