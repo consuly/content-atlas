@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router';
-import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Popconfirm } from 'antd';
+import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Modal, Checkbox } from 'antd';
 import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { FileUpload } from '../../components/file-upload';
@@ -227,17 +227,25 @@ export const ImportPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [activeTab, currentPage, pageSize, fetchFiles]);
 
-  const handleDelete = async (fileId: string, fileName: string) => {
+  const handleDelete = async (fileId: string, fileName: string, deleteTableData = false) => {
     try {
       const token = localStorage.getItem('refine-auth');
       const response = await axios.delete(`${API_URL}/uploaded-files/${fileId}`, {
         headers: {
           ...(token && { Authorization: `Bearer ${token}` }),
         },
+        params: {
+          delete_table_data: deleteTableData,
+        },
       });
 
       if (response.data.success) {
-        messageApi.success(`${fileName} deleted successfully`);
+        const removedRows = response.data.rows_removed || 0;
+        const tableName = response.data.table_name;
+        const extra = deleteTableData && removedRows
+          ? ` Removed ${removedRows} row${removedRows === 1 ? '' : 's'}${tableName ? ` from ${tableName}` : ''}.`
+          : '';
+        messageApi.success(`${fileName} deleted successfully.${extra}`);
         fetchFiles(activeTab, currentPage, pageSize);
       }
     } catch (error) {
@@ -308,7 +316,7 @@ export const ImportPage: React.FC = () => {
     }
   };
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = async (deleteTableData = false) => {
     if (!selectedFiles.length) {
       messageApi.info('Select at least one file to delete.');
       return;
@@ -317,6 +325,7 @@ export const ImportPage: React.FC = () => {
     const token = localStorage.getItem('refine-auth');
     let deleted = 0;
     let failed = 0;
+    let totalRowsRemoved = 0;
 
     for (const file of selectedFiles) {
       try {
@@ -324,9 +333,13 @@ export const ImportPage: React.FC = () => {
           headers: {
             ...(token && { Authorization: `Bearer ${token}` }),
           },
+          params: {
+            delete_table_data: deleteTableData,
+          },
         });
         if (response.data.success) {
           deleted += 1;
+          totalRowsRemoved += response.data.rows_removed || 0;
         } else {
           failed += 1;
         }
@@ -337,7 +350,10 @@ export const ImportPage: React.FC = () => {
     }
 
     if (deleted) {
-      messageApi.success(`Deleted ${deleted} file(s).`);
+      const extra = deleteTableData && totalRowsRemoved
+        ? ` Removed ${totalRowsRemoved} imported row${totalRowsRemoved === 1 ? '' : 's'}.`
+        : '';
+      messageApi.success(`Deleted ${deleted} file(s).${extra}`);
     }
     if (failed) {
       messageApi.error(`Failed to delete ${failed} file(s).`);
@@ -346,6 +362,65 @@ export const ImportPage: React.FC = () => {
     setSelectedRowKeys([]);
     await fetchFiles(activeTab, currentPage, pageSize);
     setLoading(false);
+  };
+
+  const confirmSingleDelete = (file: UploadedFile) => {
+    let deleteTableData = false;
+    Modal.confirm({
+      title: 'Delete file',
+      content: (
+        <div>
+          <p>Are you sure you want to delete {file.file_name}?</p>
+          {file.mapped_table_name ? (
+            <Checkbox onChange={(event) => { deleteTableData = event.target.checked; }}>
+              Also remove imported rows from <strong>{file.mapped_table_name}</strong>
+            </Checkbox>
+          ) : (
+            <p style={{ marginBottom: 0, color: '#888' }}>
+              This upload is not mapped to a table, so only the file will be removed.
+            </p>
+          )}
+        </div>
+      ),
+      okText: 'Delete',
+      cancelText: 'Cancel',
+      okButtonProps: { danger: true },
+      onOk: () => handleDelete(file.id, file.file_name, deleteTableData),
+    });
+  };
+
+  const confirmBulkDelete = () => {
+    if (!selectedFiles.length) {
+      messageApi.info('Select at least one file to delete.');
+      return;
+    }
+
+    const mappedTableNames = Array.from(
+      new Set(
+        selectedFiles
+          .map((file) => file.mapped_table_name)
+          .filter((name): name is string => Boolean(name))
+      )
+    );
+
+    let deleteTableData = false;
+    Modal.confirm({
+      title: `Delete ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}`,
+      content: (
+        <div>
+          <p>Files will be removed from storage and the uploads list.</p>
+          {mappedTableNames.length > 0 && (
+            <Checkbox onChange={(event) => { deleteTableData = event.target.checked; }}>
+              Also remove imported rows from mapped tables ({mappedTableNames.join(', ')})
+            </Checkbox>
+          )}
+        </div>
+      ),
+      okText: 'Delete',
+      cancelText: 'Cancel',
+      okButtonProps: { danger: true },
+      onOk: () => handleBulkDelete(deleteTableData),
+    });
   };
 
   const handleBulkProcess = async () => {
@@ -531,19 +606,12 @@ export const ImportPage: React.FC = () => {
           >
             View
           </Button>
-          <Popconfirm
-            title="Delete file"
-            description={`Are you sure you want to delete ${record.file_name}?`}
-            onConfirm={() => handleDelete(record.id, record.file_name)}
-            okText="Yes"
-            cancelText="No"
-          >
-            <Button
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-            />
-          </Popconfirm>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => confirmSingleDelete(record)}
+          />
         </Space>
       ),
     },
@@ -615,18 +683,9 @@ export const ImportPage: React.FC = () => {
           >
             Remap selected
           </Button>
-          <Popconfirm
-            title="Delete selected files"
-            description="Are you sure you want to delete the selected files?"
-            onConfirm={handleBulkDelete}
-            okText="Yes"
-            cancelText="No"
-            disabled={!selectedFiles.length}
-          >
-            <Button danger disabled={!selectedFiles.length}>
-              Delete selected
-            </Button>
-          </Popconfirm>
+          <Button danger disabled={!selectedFiles.length} onClick={confirmBulkDelete}>
+            Delete selected
+          </Button>
           {selectedFiles.length > 0 && (
             <Button onClick={() => setSelectedRowKeys([])}>Clear selection</Button>
           )}

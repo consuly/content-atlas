@@ -1,7 +1,7 @@
 """
 File upload endpoints for managing files in B2 storage.
 """
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 import traceback
@@ -17,6 +17,7 @@ from app.integrations.b2 import upload_file_to_b2, delete_file_from_b2, generate
 from app.domain.uploads.uploaded_files import (
     insert_uploaded_file, get_uploaded_file_by_name, get_uploaded_file_by_id,
     get_uploaded_files, get_uploaded_files_count, delete_uploaded_file,
+    delete_imported_rows_for_file,
     update_file_status, get_uploaded_file_by_hash
 )
 from app.core.config import settings
@@ -265,6 +266,10 @@ async def get_uploaded_file_endpoint(
 @router.delete("/uploaded-files/{file_id}", response_model=DeleteFileResponse)
 async def delete_uploaded_file_endpoint(
     file_id: str,
+    delete_table_data: bool = Query(
+        False,
+        description="Also delete imported rows and history linked to this file's mapped table"
+    ),
     db: Session = Depends(get_db)
 ):
     """
@@ -272,32 +277,53 @@ async def delete_uploaded_file_endpoint(
     
     Parameters:
     - file_id: UUID of the uploaded file to delete
+    - delete_table_data: If true, remove rows from the mapped table that were created by this upload
     
     Returns:
     - Success message
     """
     try:
-        # Get file info
         file = get_uploaded_file_by_id(file_id)
         
         if not file:
             raise HTTPException(status_code=404, detail=f"File {file_id} not found")
         
-        # Delete from B2
         b2_deleted = delete_file_from_b2(file["b2_file_path"])
-        
         if not b2_deleted:
             raise HTTPException(status_code=500, detail="Failed to delete file from B2")
+
+        cleanup_summary = None
+        cleanup_warning: Optional[str] = None
+        if delete_table_data:
+            try:
+                cleanup_summary = delete_imported_rows_for_file(file)
+            except Exception as cleanup_error:
+                cleanup_warning = f"Failed to remove table data: {cleanup_error}"
         
-        # Delete from database
         db_deleted = delete_uploaded_file(file_id)
-        
         if not db_deleted:
             raise HTTPException(status_code=500, detail="Failed to delete file from database")
+
+        message = f"File '{file['file_name']}' deleted successfully"
+        warnings = []
+
+        if cleanup_summary:
+            if cleanup_summary.get("rows_removed"):
+                table_label = cleanup_summary.get("table_name") or "mapped table"
+                message += f" and removed {cleanup_summary['rows_removed']} row(s) from {table_label}"
+            elif cleanup_summary.get("reason"):
+                warnings.append(f"No table data removed: {cleanup_summary['reason']}")
+        if cleanup_warning:
+            warnings.append(cleanup_warning)
         
         return DeleteFileResponse(
             success=True,
-            message=f"File '{file['file_name']}' deleted successfully"
+            message=message,
+            data_deleted=cleanup_summary["data_removed"] if cleanup_summary else None,
+            rows_removed=cleanup_summary["rows_removed"] if cleanup_summary else None,
+            table_name=cleanup_summary["table_name"] if cleanup_summary else None,
+            import_ids=cleanup_summary["import_ids"] if cleanup_summary else None,
+            warnings=warnings or None
         )
         
     except HTTPException:
