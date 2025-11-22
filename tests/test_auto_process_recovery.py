@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-from typing import Dict
+from typing import Dict, List
 
 import pytest
 from fastapi.testclient import TestClient
@@ -186,3 +186,77 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
         "Duplicate rows via API:",
         json.dumps(duplicates_payload["duplicates"], indent=2),
     )
+
+    # --- Deletion with optional table cleanup ---
+    with engine.connect() as conn:
+        imports: List[Dict] = conn.execute(
+            text(
+                """
+                SELECT import_id, file_name
+                FROM import_history
+                WHERE table_name = :table_name
+                ORDER BY import_timestamp ASC
+                """
+            ),
+            {"table_name": target_table},
+        ).mappings().all()
+
+        imports_by_name = {row["file_name"]: row["import_id"] for row in imports}
+        assert "Marketing Agency - US.csv" in imports_by_name
+        assert "Marketing Agency - Texas.csv" in imports_by_name
+
+        us_import_id = imports_by_name["Marketing Agency - US.csv"]
+        tx_import_id = imports_by_name["Marketing Agency - Texas.csv"]
+
+        us_rows_before = conn.execute(
+            text(f'SELECT COUNT(*) FROM "{target_table}" WHERE _import_id = :import_id'),
+            {"import_id": us_import_id},
+        ).scalar()
+        tx_rows_before = conn.execute(
+            text(f'SELECT COUNT(*) FROM "{target_table}" WHERE _import_id = :import_id'),
+            {"import_id": tx_import_id},
+        ).scalar()
+        assert us_rows_before > 0
+        assert tx_rows_before > 0
+
+    delete_response = client.delete(
+        f"/uploaded-files/{tx_file_id}",
+        params={"delete_table_data": "true"},
+    )
+    assert delete_response.status_code == 200, delete_response.text
+    delete_payload = delete_response.json()
+    assert delete_payload["success"] is True
+    assert delete_payload["data_deleted"] is True
+    assert delete_payload["rows_removed"] == tx_rows_before
+    assert delete_payload["table_name"] == target_table
+    import_ids = [str(value) for value in delete_payload.get("import_ids") or []]
+    assert str(tx_import_id) in import_ids
+
+    with engine.connect() as conn:
+        # Texas rows should be gone; US rows should remain.
+        us_rows_after = conn.execute(
+            text(f'SELECT COUNT(*) FROM "{target_table}" WHERE _import_id = :import_id'),
+            {"import_id": us_import_id},
+        ).scalar()
+        tx_rows_after = conn.execute(
+            text(f'SELECT COUNT(*) FROM "{target_table}" WHERE _import_id = :import_id'),
+            {"import_id": tx_import_id},
+        ).scalar()
+
+        assert us_rows_after == us_rows_before
+        assert tx_rows_after == 0
+
+        # Import history should retain US but drop Texas.
+        remaining_imports = conn.execute(
+            text(
+                """
+                SELECT import_id, file_name
+                FROM import_history
+                WHERE table_name = :table_name
+                """
+            ),
+            {"table_name": target_table},
+        ).mappings().all()
+        remaining_ids = {row["import_id"] for row in remaining_imports}
+        assert us_import_id in remaining_ids
+        assert tx_import_id not in remaining_ids

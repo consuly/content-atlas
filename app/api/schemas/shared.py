@@ -541,6 +541,11 @@ class DeleteFileResponse(BaseModel):
     """Response from file deletion"""
     success: bool
     message: str
+    data_deleted: Optional[bool] = None
+    rows_removed: Optional[int] = None
+    table_name: Optional[str] = None
+    import_ids: Optional[List[str]] = None
+    warnings: Optional[List[str]] = None
 
 
 class CheckDuplicateRequest(BaseModel):

@@ -3,8 +3,9 @@ Database operations for tracking uploaded files.
 """
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
-from typing import List, Dict, Optional, Callable, TypeVar
+from typing import Any, List, Dict, Optional, Callable, TypeVar
 from app.db.session import get_engine
+from app.domain.imports.history import get_import_history
 import threading
 import uuid
 
@@ -218,7 +219,7 @@ def get_uploaded_files(
     query_sql = f"""
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
-        content_type, upload_date, status, mapped_table_name,
+        file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at
@@ -240,18 +241,19 @@ def get_uploaded_files(
                     "b2_file_id": row[2],
                     "b2_file_path": row[3],
                     "file_size": row[4],
-                    "content_type": row[5],
-                    "upload_date": row[6].isoformat() if row[6] else None,
-                    "status": row[7],
-                    "mapped_table_name": row[8],
-                    "mapped_date": row[9].isoformat() if row[9] else None,
-                    "mapped_rows": row[10],
-                    "error_message": row[11],
-                    "active_job_id": str(row[12]) if row[12] else None,
-                    "active_job_status": row[13],
-                    "active_job_stage": row[14],
-                    "active_job_progress": row[15],
-                    "active_job_started_at": row[16].isoformat() if row[16] else None,
+                    "file_hash": row[5],
+                    "content_type": row[6],
+                    "upload_date": row[7].isoformat() if row[7] else None,
+                    "status": row[8],
+                    "mapped_table_name": row[9],
+                    "mapped_date": row[10].isoformat() if row[10] else None,
+                    "mapped_rows": row[11],
+                    "error_message": row[12],
+                    "active_job_id": str(row[13]) if row[13] else None,
+                    "active_job_status": row[14],
+                    "active_job_stage": row[15],
+                    "active_job_progress": row[16],
+                    "active_job_started_at": row[17].isoformat() if row[17] else None,
                 })
 
             return files
@@ -267,7 +269,7 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
     query_sql = """
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
-        content_type, upload_date, status, mapped_table_name,
+        file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at
@@ -289,18 +291,19 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
                 "b2_file_id": row[2],
                 "b2_file_path": row[3],
                 "file_size": row[4],
-                "content_type": row[5],
-                "upload_date": row[6].isoformat() if row[6] else None,
-                "status": row[7],
-                "mapped_table_name": row[8],
-                "mapped_date": row[9].isoformat() if row[9] else None,
-                "mapped_rows": row[10],
-                "error_message": row[11],
-                "active_job_id": str(row[12]) if row[12] else None,
-                "active_job_status": row[13],
-                "active_job_stage": row[14],
-                "active_job_progress": row[15],
-                "active_job_started_at": row[16].isoformat() if row[16] else None,
+                "file_hash": row[5],
+                "content_type": row[6],
+                "upload_date": row[7].isoformat() if row[7] else None,
+                "status": row[8],
+                "mapped_table_name": row[9],
+                "mapped_date": row[10].isoformat() if row[10] else None,
+                "mapped_rows": row[11],
+                "error_message": row[12],
+                "active_job_id": str(row[13]) if row[13] else None,
+                "active_job_status": row[14],
+                "active_job_stage": row[15],
+                "active_job_progress": row[16],
+                "active_job_started_at": row[17].isoformat() if row[17] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -314,7 +317,7 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
     query_sql = """
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
-        content_type, upload_date, status, mapped_table_name,
+        file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at
@@ -338,18 +341,19 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
                 "b2_file_id": row[2],
                 "b2_file_path": row[3],
                 "file_size": row[4],
-                "content_type": row[5],
-                "upload_date": row[6].isoformat() if row[6] else None,
-                "status": row[7],
-                "mapped_table_name": row[8],
-                "mapped_date": row[9].isoformat() if row[9] else None,
-                "mapped_rows": row[10],
-                "error_message": row[11],
-                "active_job_id": str(row[12]) if row[12] else None,
-                "active_job_status": row[13],
-                "active_job_stage": row[14],
-                "active_job_progress": row[15],
-                "active_job_started_at": row[16].isoformat() if row[16] else None,
+                "file_hash": row[5],
+                "content_type": row[6],
+                "upload_date": row[7].isoformat() if row[7] else None,
+                "status": row[8],
+                "mapped_table_name": row[9],
+                "mapped_date": row[10].isoformat() if row[10] else None,
+                "mapped_rows": row[11],
+                "error_message": row[12],
+                "active_job_id": str(row[13]) if row[13] else None,
+                "active_job_status": row[14],
+                "active_job_stage": row[15],
+                "active_job_progress": row[16],
+                "active_job_started_at": row[17].isoformat() if row[17] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -363,7 +367,7 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
     query_sql = """
     SELECT 
         id, file_name, b2_file_id, b2_file_path, file_size,
-        content_type, upload_date, status, mapped_table_name,
+        file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at
@@ -387,18 +391,19 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
                 "b2_file_id": row[2],
                 "b2_file_path": row[3],
                 "file_size": row[4],
-                "content_type": row[5],
-                "upload_date": row[6].isoformat() if row[6] else None,
-                "status": row[7],
-                "mapped_table_name": row[8],
-                "mapped_date": row[9].isoformat() if row[9] else None,
-                "mapped_rows": row[10],
-                "error_message": row[11],
-                "active_job_id": str(row[12]) if row[12] else None,
-                "active_job_status": row[13],
-                "active_job_stage": row[14],
-                "active_job_progress": row[15],
-                "active_job_started_at": row[16].isoformat() if row[16] else None,
+                "file_hash": row[5],
+                "content_type": row[6],
+                "upload_date": row[7].isoformat() if row[7] else None,
+                "status": row[8],
+                "mapped_table_name": row[9],
+                "mapped_date": row[10].isoformat() if row[10] else None,
+                "mapped_rows": row[11],
+                "error_message": row[12],
+                "active_job_id": str(row[13]) if row[13] else None,
+                "active_job_status": row[14],
+                "active_job_stage": row[15],
+                "active_job_progress": row[16],
+                "active_job_started_at": row[17].isoformat() if row[17] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -581,6 +586,90 @@ def delete_uploaded_file(file_id: str) -> bool:
             return result.rowcount > 0
 
     return _run_with_table_retry(_delete)
+
+
+def delete_imported_rows_for_file(file: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Delete imported table rows and history linked to an uploaded file.
+
+    This removes rows from the mapped table where _import_id matches any
+    import_history records for the file (preferring file_hash when present),
+    then cleans up import_history and file_imports entries.
+    """
+    ensure_uploaded_files_table()
+    engine = get_engine()
+
+    table_name = file.get("mapped_table_name")
+    safe_table_name = table_name.replace('"', '""') if table_name else None
+    summary: Dict[str, Any] = {
+        "table_name": table_name,
+        "rows_removed": 0,
+        "import_ids": [],
+        "data_removed": False,
+        "reason": None,
+    }
+
+    if not table_name:
+        summary["reason"] = "no_mapped_table"
+        return summary
+
+    # Find matching imports using the strongest identifier available.
+    import_records = []
+    file_hash = file.get("file_hash")
+    if file_hash:
+        import_records = get_import_history(table_name=table_name, file_hash=file_hash, limit=50)
+    if not import_records:
+        import_records = get_import_history(table_name=table_name, file_name=file.get("file_name"), limit=50)
+
+    import_ids = [record.get("import_id") for record in import_records if record.get("import_id")]
+    summary["import_ids"] = import_ids
+
+    try:
+        with engine.begin() as conn:
+            table_exists = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                )
+            """), {"table_name": table_name}).scalar()
+
+            if not table_exists:
+                summary["reason"] = "missing_table"
+                return summary
+
+            has_import_id_column = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                    AND table_name = :table_name
+                    AND column_name = '_import_id'
+                )
+            """), {"table_name": table_name}).scalar()
+
+            if not has_import_id_column:
+                summary["reason"] = "missing_import_id_column"
+                return summary
+
+            for import_id in import_ids or []:
+                delete_result = conn.execute(
+                    text(f'DELETE FROM "{safe_table_name}" WHERE _import_id = :import_id'),
+                    {"import_id": import_id}
+                )
+                summary["rows_removed"] += delete_result.rowcount or 0
+
+            if file_hash:
+                conn.execute(text("DELETE FROM file_imports WHERE file_hash = :file_hash"), {"file_hash": file_hash})
+
+            for import_id in import_ids:
+                conn.execute(text("DELETE FROM import_history WHERE import_id = :import_id"), {"import_id": import_id})
+
+        summary["data_removed"] = summary["rows_removed"] > 0 or bool(import_ids)
+        return summary
+    except ProgrammingError as error:
+        if _is_missing_table_error(error):
+            summary["reason"] = "missing_table"
+            return summary
+        raise
 
 
 def get_uploaded_files_count(status: Optional[str] = None) -> int:
