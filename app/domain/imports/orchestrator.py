@@ -38,6 +38,11 @@ from .history import (
     start_import_tracking, 
     complete_import_tracking,
     update_mapping_status,
+    initialize_mapping_chunks,
+    mark_chunk_in_progress,
+    mark_chunk_completed,
+    mark_chunk_failed,
+    summarize_chunk_status,
     record_mapping_errors_batch,
     list_duplicate_rows,
     record_duplicate_rows
@@ -409,6 +414,7 @@ def _execute_streaming_csv_import(
     type_mismatch_agg: Dict[str, Dict[str, Any]] = {}
     duplicate_rows: List[Dict[str, Any]] = []
     uniqueness_columns: List[str] = []
+    chunk_status_summary: Dict[str, int] = {}
 
     update_mapping_status(import_id, "in_progress")
     engine = get_engine()
@@ -441,31 +447,42 @@ def _execute_streaming_csv_import(
         if not chunk_records:
             continue
 
-        map_start = time.time()
-        mapped_records, mapping_errors = map_data(chunk_records, mapping_config)
-        map_time_total += time.time() - map_start
-        mapping_errors_count += len(mapping_errors)
-        type_summary = _summarize_type_mismatches(mapping_errors)
-        _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
+        if import_id:
+            mark_chunk_in_progress(import_id, chunk_num)
 
-        mapped_records = handle_schema_transformation(
-            mapped_records,
-            mapping_config.table_name,
-            import_strategy,
-        )
+        try:
+            map_start = time.time()
+            mapped_records, mapping_errors = map_data(chunk_records, mapping_config)
+            map_time_total += time.time() - map_start
+            mapping_errors_count += len(mapping_errors)
+            type_summary = _summarize_type_mismatches(mapping_errors)
+            _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
 
-        insert_start = time.time()
-        chunk_file_content = file_content if first_chunk else None
-        inserted, chunk_duplicates = insert_records(
-            engine,
-            mapping_config.table_name,
-            mapped_records,
-            config=mapping_config,
-            file_content=chunk_file_content,
-            file_name=file_name,
-        )
-        insert_time_total += time.time() - insert_start
-        first_chunk = False
+            mapped_records = handle_schema_transformation(
+                mapped_records,
+                mapping_config.table_name,
+                import_strategy,
+            )
+
+            insert_start = time.time()
+            chunk_file_content = file_content if first_chunk else None
+            inserted, chunk_duplicates = insert_records(
+                engine,
+                mapping_config.table_name,
+                mapped_records,
+                config=mapping_config,
+                file_content=chunk_file_content,
+                file_name=file_name,
+            )
+            insert_time_total += time.time() - insert_start
+            first_chunk = False
+        except Exception as exc:
+            if import_id:
+                mark_chunk_failed(import_id, chunk_num, str(exc))
+            raise
+        else:
+            if import_id:
+                mark_chunk_completed(import_id, chunk_num, errors_count=len(mapping_errors))
 
         records_inserted_total += inserted
         duplicates_skipped_total += chunk_duplicates
@@ -494,6 +511,10 @@ def _execute_streaming_csv_import(
         )
 
     type_mismatch_summary = sorted(type_mismatch_agg.values(), key=lambda item: item["column"])
+    try:
+        chunk_status_summary = summarize_chunk_status(import_id)
+    except Exception as exc:
+        logger.debug("Unable to summarize chunk status for import %s: %s", import_id, exc)
 
     # Update mapping status
     mapping_status = "completed_with_errors" if mapping_errors_count else "completed"
@@ -549,6 +570,8 @@ def _execute_streaming_csv_import(
         metadata_payload["type_mismatch_summary"] = type_mismatch_summary
     if intra_file_duplicates_skipped:
         metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
+    if chunk_status_summary:
+        metadata_payload["mapping_chunk_status"] = chunk_status_summary
 
     _update_job_progress(
         job_id,
@@ -597,7 +620,8 @@ def _execute_streaming_csv_import(
 def _map_chunk(
     chunk_records: List[Dict[str, Any]],
     config: MappingConfig,
-    chunk_num: int
+    chunk_num: int,
+    import_id: Optional[str] = None
 ) -> Tuple[int, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map a single chunk of records. Designed to be called in parallel.
@@ -612,15 +636,22 @@ def _map_chunk(
     """
     chunk_start = time.time()
     logger.info(f"Mapping chunk {chunk_num} ({len(chunk_records)} records)")
+
+    if import_id:
+        mark_chunk_in_progress(import_id, chunk_num)
     
     try:
         mapped_records, errors = map_data(chunk_records, config)
         chunk_time = time.time() - chunk_start
         records_per_sec = len(mapped_records) / chunk_time if chunk_time > 0 else 0
         logger.info(f"⏱️  Chunk {chunk_num}: Mapped {len(mapped_records)} records in {chunk_time:.2f}s ({records_per_sec:.0f} rec/sec, {len(errors)} errors)")
+        if import_id:
+            mark_chunk_completed(import_id, chunk_num, errors_count=len(errors))
         return (chunk_num, mapped_records, errors)
     except Exception as e:
         logger.error(f"Error mapping chunk {chunk_num}: {e}")
+        if import_id:
+            mark_chunk_failed(import_id, chunk_num, str(e))
         raise
 
 
@@ -630,6 +661,7 @@ def _map_chunks_parallel(
     max_workers: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
     job_id: Optional[str] = None,
+    import_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map multiple chunks in parallel and aggregate results.
@@ -639,6 +671,7 @@ def _map_chunks_parallel(
         config: Mapping configuration
         max_workers: Maximum number of parallel workers
         timeout_seconds: Optional timeout for the mapping stage in seconds
+        import_id: Optional import tracking id for chunk-level persistence
     
     Returns:
         Tuple of (all_mapped_records, all_errors)
@@ -658,11 +691,24 @@ def _map_chunks_parallel(
     errors_running = 0
 
     deadline = time.time() + timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
+    timeout_message = (
+        f"Mapping stage timed out after {timeout_seconds} seconds. "
+        "Check mapping rules or reduce dataset size."
+    ) if timeout_seconds else None
+
+    def _mark_failed_chunks(chunk_numbers: List[int], reason: str) -> None:
+        if not import_id or not chunk_numbers:
+            return
+        for chunk_number in chunk_numbers:
+            try:
+                mark_chunk_failed(import_id, chunk_number, reason)
+            except Exception:
+                logger.warning("Failed to record failed status for chunk %s", chunk_number)
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all chunk mapping tasks
         future_to_chunk = {
-            executor.submit(_map_chunk, chunk_records, config, chunk_num + 1): chunk_num
+            executor.submit(_map_chunk, chunk_records, config, chunk_num + 1, import_id): chunk_num
             for chunk_num, chunk_records in enumerate(raw_chunks)
         }
         pending_futures = set(future_to_chunk.keys())
@@ -676,6 +722,10 @@ def _map_chunks_parallel(
                         for future in pending_futures
                         if not future.done()
                     ]
+                    _mark_failed_chunks(
+                        pending_chunks,
+                        timeout_message or f"Mapping stage timed out after {timeout_seconds} seconds.",
+                    )
                     logger.error(
                         "Parallel mapping timed out after %d seconds; pending chunks: %s",
                         timeout_seconds,
@@ -684,8 +734,7 @@ def _map_chunks_parallel(
                     for future in pending_futures:
                         future.cancel()
                     raise TimeoutError(
-                        f"Mapping stage timed out after {timeout_seconds} seconds. "
-                        "Check mapping rules or reduce dataset size."
+                        timeout_message
                     )
             else:
                 wait_timeout = None
@@ -702,6 +751,10 @@ def _map_chunks_parallel(
                     for future in pending_futures
                     if not future.done()
                 ]
+                _mark_failed_chunks(
+                    pending_chunks,
+                    timeout_message or f"Mapping stage timed out after {timeout_seconds} seconds.",
+                )
                 logger.error(
                     "Parallel mapping timed out after %d seconds; pending chunks: %s",
                     timeout_seconds,
@@ -710,8 +763,7 @@ def _map_chunks_parallel(
                 for future in pending_futures:
                     future.cancel()
                 raise TimeoutError(
-                    f"Mapping stage timed out after {timeout_seconds} seconds. "
-                    "Check mapping rules or reduce dataset size."
+                    timeout_message
                 ) from exc
 
             if not done:
@@ -720,6 +772,10 @@ def _map_chunks_parallel(
                     for future in pending_futures
                     if not future.done()
                 ]
+                _mark_failed_chunks(
+                    pending_chunks,
+                    timeout_message or f"Mapping stage timed out after {timeout_seconds} seconds.",
+                )
                 logger.error(
                     "Parallel mapping timed out after %d seconds; pending chunks: %s",
                     timeout_seconds,
@@ -728,8 +784,7 @@ def _map_chunks_parallel(
                 for future in pending_futures:
                     future.cancel()
                 raise TimeoutError(
-                    f"Mapping stage timed out after {timeout_seconds} seconds. "
-                    "Check mapping rules or reduce dataset size."
+                    timeout_message
                 )
 
             for future in done:
@@ -949,6 +1004,7 @@ def execute_data_import(
     import_id = None
     records = []
     intra_file_duplicates_skipped = 0
+    chunk_status_summary: Dict[str, int] = {}
     
     try:
         type_mismatch_summary: List[Dict[str, Any]] = []
@@ -1067,6 +1123,8 @@ def execute_data_import(
         
         # Map data - skip if already pre-mapped
         if pre_mapped:
+            initialize_mapping_chunks(import_id, 1)
+            mark_chunk_completed(import_id, 1, errors_count=0)
             # Records are already mapped, skip mapping phase
             mapped_records = records
             mapping_errors = []
@@ -1096,6 +1154,7 @@ def execute_data_import(
                     chunks.append(chunk_records)
                 
                 total_chunks = len(chunks)
+                initialize_mapping_chunks(import_id, total_chunks)
                 logger.info(f"Split {total_rows} records into {total_chunks} chunks for parallel mapping")
                 _update_job_progress(
                     job_id,
@@ -1107,7 +1166,7 @@ def execute_data_import(
                         "parallel_workers": MAP_PARALLEL_MAX_WORKERS,
                         "source": source_type,
                     },
-                )
+                    )
                 
                 # Determine number of workers (configurable via MAP_PARALLEL_MAX_WORKERS)
                 max_workers = MAP_PARALLEL_MAX_WORKERS
@@ -1121,10 +1180,13 @@ def execute_data_import(
                     max_workers,
                     timeout_seconds=timeout_seconds,
                     job_id=job_id,
+                    import_id=import_id,
                 )
             else:
                 # Use sequential mapping for small datasets
                 logger.info(f"Using sequential mapping for {total_rows} records")
+                initialize_mapping_chunks(import_id, 1)
+                mark_chunk_in_progress(import_id, 1)
                 timeout_seconds = MAP_STAGE_TIMEOUT_SECONDS if MAP_STAGE_TIMEOUT_SECONDS > 0 else None
                 if timeout_seconds:
                     logger.info("Enforcing mapping timeout of %d seconds for sequential mapping", timeout_seconds)
@@ -1141,10 +1203,19 @@ def execute_data_import(
                             timeout_seconds
                         )
                         future.cancel()
+                        mark_chunk_failed(
+                            import_id,
+                            1,
+                            f"Mapping stage timed out after {timeout_seconds} seconds."
+                        )
                         raise TimeoutError(
                             f"Mapping stage timed out after {timeout_seconds} seconds. "
                             "Check mapping rules or reduce dataset size."
                         ) from exc
+                    except Exception as exc:
+                        mark_chunk_failed(import_id, 1, str(exc))
+                        raise
+                mark_chunk_completed(import_id, 1, errors_count=len(mapping_errors))
                 _update_job_progress(
                     job_id,
                     stage="mapping",
@@ -1161,6 +1232,11 @@ def execute_data_import(
             map_time = time.time() - map_start
             records_per_sec = len(mapped_records) / map_time if map_time > 0 else 0
             logger.info(f"⏱️  TIMING: Mapping completed in {map_time:.2f}s ({len(mapped_records)} records, {records_per_sec:.0f} rec/sec)")
+
+        try:
+            chunk_status_summary = summarize_chunk_status(import_id)
+        except Exception as exc:
+            logger.warning("Unable to summarize chunk status for import %s: %s", import_id, exc)
         
         # Cache mapped records for potential re-use (e.g., if user retries with same config)
         # This is done in main.py's records_cache, but we log it here for visibility
@@ -1280,6 +1356,8 @@ def execute_data_import(
             metadata_payload["type_mismatch_summary"] = type_mismatch_summary
         if intra_file_duplicates_skipped:
             metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
+        if chunk_status_summary:
+            metadata_payload["mapping_chunk_status"] = chunk_status_summary
 
         duplicate_rows: List[Dict[str, Any]] = []
         duplicate_total = duplicates_skipped
