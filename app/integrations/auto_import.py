@@ -181,6 +181,40 @@ def _load_existing_table_schema(engine, table_name: str) -> Dict[str, str]:
     return schema
 
 
+def _normalize_uniqueness_columns(
+    uniqueness_columns: Optional[List[str]],
+    column_mapping: Dict[str, str],
+    target_columns: List[str],
+) -> List[str]:
+    """
+    Align uniqueness columns to actual target table columns.
+
+    - Accepts source column names and maps them via column_mapping (source->target).
+    - Falls back to the provided name when no mapping exists.
+    - Applies a lightweight pluralization heuristic (email -> emails).
+    """
+    if not uniqueness_columns:
+        return []
+
+    target_set = set(target_columns or [])
+    normalized: List[str] = []
+
+    for col in uniqueness_columns:
+        candidate = column_mapping.get(col, col)
+
+        if candidate not in target_set:
+            # Try singular/plural adjustment as a last resort
+            if not candidate.endswith("s") and f"{candidate}s" in target_set:
+                candidate = f"{candidate}s"
+            elif candidate.endswith("s") and candidate[:-1] in target_set:
+                candidate = candidate[:-1]
+
+        if candidate not in normalized:
+            normalized.append(candidate)
+
+    return normalized
+
+
 def _extract_columns_from_migrations(migrations: List[Dict[str, Any]]) -> Set[str]:
     """Return the set of column names already modified by caller-provided migrations."""
     targeted: Set[str] = set()
@@ -602,6 +636,21 @@ def execute_llm_import_decision(
 
         if table_exists:
             final_table_schema = _load_existing_table_schema(engine, target_table)
+
+        # Ensure uniqueness columns align with the target schema (mapping + pluralization)
+        target_columns = list((final_table_schema or db_schema or {}).keys())
+        normalized_uniques = _normalize_uniqueness_columns(
+            effective_unique_columns,
+            column_mapping,
+            target_columns,
+        )
+        if normalized_uniques != effective_unique_columns:
+            logger.info(
+                "AUTO-IMPORT: Normalized uniqueness columns from %s to %s based on mapping and table schema",
+                effective_unique_columns,
+                normalized_uniques,
+            )
+        effective_unique_columns = normalized_uniques
 
         if table_exists and strategy in ["MERGE_EXACT", "ADAPT_DATA"]:
             logger.info(f"AUTO-IMPORT: Table '{target_table}' exists, will merge into it")
