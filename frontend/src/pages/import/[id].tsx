@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress } from 'antd';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress, Select } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
@@ -184,6 +184,9 @@ export const ImportMappingPage: React.FC = () => {
   const [archiveResult, setArchiveResult] = useState<ArchiveAutoProcessResult | null>(null);
   const [archiveHistorySummary, setArchiveHistorySummary] = useState<ArchiveHistorySummary | null>(null);
   const [archiveJobDetails, setArchiveJobDetails] = useState<ImportJobInfo | null>(null);
+  const [useSharedTable, setUseSharedTable] = useState(false);
+  const [sharedTableName, setSharedTableName] = useState('');
+  const [sharedTableMode, setSharedTableMode] = useState<'existing' | 'new'>('existing');
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -1077,8 +1080,24 @@ export const ImportMappingPage: React.FC = () => {
     [fetchFileDetails, id, messageApi]
   );
 
+  const appendSharedTableFormData = (formData: FormData) => {
+    if (useSharedTable && sharedTableName.trim()) {
+      formData.append('target_table_name', sharedTableName.trim());
+      formData.append('target_table_mode', sharedTableMode);
+    }
+  };
+
+  const validateSharedTableName = () => {
+    if (useSharedTable && !sharedTableName.trim()) {
+      messageApi.error('Enter a table name to reuse for all mapped files.');
+      return false;
+    }
+    return true;
+  };
+
   const handleAutoProcess = async () => {
     if (!id) return;
+    if (!validateSharedTableName()) return;
     
     setProcessing(true);
     setError(null);
@@ -1147,6 +1166,9 @@ export const ImportMappingPage: React.FC = () => {
     if (!id) {
       return;
     }
+    if (!validateSharedTableName()) {
+      return;
+    }
     setArchiveProcessing(true);
     setProcessing(false);
     setResult(null);
@@ -1159,6 +1181,8 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('analysis_mode', 'auto_always');
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
+      appendSharedTableFormData(formData);
+      appendSharedTableFormData(formData);
 
       const response = await axios.post(`${API_URL}/auto-process-archive`, formData, {
         headers: {
@@ -1193,6 +1217,9 @@ export const ImportMappingPage: React.FC = () => {
     if (!id) {
       return;
     }
+    if (!validateSharedTableName()) {
+      return;
+    }
 
     const sourceJobId = archiveJobDetails?.id ?? archiveHistorySummary?.job?.id ?? jobInfo?.id;
     if (!sourceJobId) {
@@ -1214,6 +1241,7 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('analysis_mode', 'auto_always');
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
+      appendSharedTableFormData(formData);
 
       const response = await axios.post(`${API_URL}/auto-process-archive/resume`, formData, {
         headers: {
@@ -2356,6 +2384,36 @@ export const ImportMappingPage: React.FC = () => {
           <div>
             <Text strong>Size: </Text>
             <Text>{formatBytes(file.file_size)}</Text>
+          </div>
+          <div>
+            <Space align="start">
+              <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
+              <div>
+                <Text strong>Use a single table for this import</Text>
+                <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                  Map {isArchive ? 'every file in this archive' : 'this file'} into one table. Enter an existing table name to merge into it or a new name to create it during mapping.
+                </Paragraph>
+                {useSharedTable && (
+                  <Space wrap>
+                    <Input
+                      value={sharedTableName}
+                      placeholder="Target table name"
+                      onChange={(e) => setSharedTableName(e.target.value)}
+                      style={{ minWidth: 240 }}
+                    />
+                    <Select
+                      value={sharedTableMode}
+                      style={{ minWidth: 180 }}
+                      onChange={(value) => setSharedTableMode(value as 'existing' | 'new')}
+                      options={[
+                        { value: 'existing', label: 'Existing table' },
+                        { value: 'new', label: 'Create new table' },
+                      ]}
+                    />
+                  </Space>
+                )}
+              </div>
+            </Space>
           </div>
 
           {!isArchive && (

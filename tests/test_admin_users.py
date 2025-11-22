@@ -17,6 +17,9 @@ def user_factory():
     Helper fixture that creates users directly via the ORM and cleans them up.
     Returns a callable so tests can create both admin and standard users.
     """
+    from app.core.security import init_auth_tables
+
+    init_auth_tables()
     engine = get_engine()
     session = Session(engine)
     created_ids: list[int] = []

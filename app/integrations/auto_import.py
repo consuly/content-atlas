@@ -9,7 +9,7 @@ from sqlalchemy import text, inspect
 from app.domain.imports.mapper import detect_mapping_from_file
 from app.db.models import create_table_if_not_exists, insert_records, calculate_file_hash
 from app.db.session import get_engine
-from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
+from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig, ensure_safe_table_name
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from app.domain.imports.schema_mapper import analyze_schema_compatibility, transform_record
 from app.domain.imports.schema_migrations import (
@@ -413,6 +413,15 @@ def execute_llm_import_decision(
         column_mapping = llm_decision.get("column_mapping", {})
         unique_columns = llm_decision.get("unique_columns", [])
         has_header = llm_decision.get("has_header")
+        forced_table = ensure_safe_table_name(llm_decision.get("forced_target_table") or target_table)
+        forced_table_mode = llm_decision.get("forced_table_mode")
+        target_table = forced_table or target_table
+        if forced_table_mode == "existing" and strategy == "NEW_TABLE":
+            logger.info("Adjusting strategy to ADAPT_DATA for existing-table request")
+            strategy = "ADAPT_DATA"
+        elif forced_table_mode == "new" and strategy != "NEW_TABLE":
+            logger.info("Adjusting strategy to NEW_TABLE for new-table request")
+            strategy = "NEW_TABLE"
         
         logger.info(f"="*80)
         logger.info(f"AUTO-IMPORT: Executing LLM decision")

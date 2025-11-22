@@ -10,7 +10,7 @@ import os
 import uuid
 import zipfile
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
@@ -25,7 +25,7 @@ from app.api.schemas.shared import (
     AnalysisMode, ConflictResolutionMode, MapDataResponse,
     AnalyzeFileInteractiveRequest, AnalyzeFileInteractiveResponse, 
     ExecuteInteractiveImportRequest, MappingConfig, DuplicateCheckConfig, AutoExecutionResult,
-    ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult
+    ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult, ensure_safe_table_name
 )
 from app.api.dependencies import detect_file_type, analysis_storage, interactive_sessions
 from app.integrations.b2 import (
@@ -61,6 +61,39 @@ ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_auto_process.log")
 _archive_log_lock = threading.Lock()
 
 
+def _normalize_forced_table_name(table_name: Optional[str]) -> Optional[str]:
+    """Return a sanitized table name or raise if the provided value is blank."""
+    if table_name is None:
+        return None
+    normalized = ensure_safe_table_name(table_name)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="target_table_name cannot be blank")
+    return normalized
+
+
+def _apply_forced_table_decision(
+    llm_decision: Dict[str, Any],
+    forced_table_name: Optional[str],
+    forced_table_mode: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Override the LLM decision with a user-requested target table."""
+    if not forced_table_name:
+        return llm_decision
+    if not llm_decision:
+        return None
+
+    updated = dict(llm_decision)
+    updated["target_table"] = forced_table_name
+    updated["forced_target_table"] = forced_table_name
+    if forced_table_mode:
+        updated["forced_table_mode"] = forced_table_mode
+        if forced_table_mode == "existing" and updated.get("strategy") == "NEW_TABLE":
+            updated["strategy"] = "ADAPT_DATA"
+        if forced_table_mode == "new" and updated.get("strategy") != "NEW_TABLE":
+            updated["strategy"] = "NEW_TABLE"
+    return updated
+
+
 def _log_archive_debug(payload: Dict[str, Any]) -> None:
     """
     Append a structured JSON line to the archive debug log.
@@ -69,7 +102,7 @@ def _log_archive_debug(payload: Dict[str, Any]) -> None:
     try:
         os.makedirs(os.path.dirname(ARCHIVE_DEBUG_LOG), exist_ok=True)
         record = {
-            "ts": datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat(),
             **payload,
         }
         with _archive_log_lock:
@@ -269,6 +302,8 @@ def _process_archive_entry(
     conflict_resolution: ConflictResolutionMode,
     auto_execute_confidence_threshold: float,
     max_iterations: int,
+    forced_table_name: Optional[str],
+    forced_table_mode: Optional[str],
 ) -> ArchiveAutoProcessFileResult:
     """Process a single archive entry in a thread."""
     # Create a new database session for this thread
@@ -391,6 +426,8 @@ def _process_archive_entry(
                             auto_execute_confidence_threshold=auto_execute_confidence_threshold,
                             max_iterations=max_iterations,
                             db=db_session,
+                            target_table_name=forced_table_name,
+                            target_table_mode=forced_table_mode,
                         )
                     )
                     summary = _summarize_archive_execution(analyze_response)
@@ -499,6 +536,8 @@ def _run_archive_auto_process_job(
     auto_execute_confidence_threshold: float,
     max_iterations: int,
     job_id: str,
+    forced_table_name: Optional[str] = None,
+    forced_table_mode: Optional[str] = None,
     prefilled_results: Optional[List[ArchiveAutoProcessFileResult]] = None,
 ) -> None:
     """Execute archive auto-processing off the main event loop."""
@@ -539,6 +578,8 @@ def _run_archive_auto_process_job(
             "prefilled_processed": initial_processed,
             "prefilled_failed": initial_failed,
             "prefilled_skipped": initial_skipped,
+            "forced_table_name": forced_table_name,
+            "forced_table_mode": forced_table_mode,
         }
     )
 
@@ -577,6 +618,8 @@ def _run_archive_auto_process_job(
                         conflict_resolution=conflict_resolution,
                         auto_execute_confidence_threshold=auto_execute_confidence_threshold,
                         max_iterations=max_iterations,
+                        forced_table_name=forced_table_name,
+                        forced_table_mode=forced_table_mode,
                     )
                     futures[future] = archive_path
 
@@ -673,6 +716,8 @@ def _run_archive_auto_process_job(
                                 "remaining_files": list(remaining_archive_paths),
                                 "files_in_archive": total_work_items + updated_skipped,
                                 "source": "auto-process-archive",
+                                "forced_table_name": forced_table_name,
+                                "forced_table_mode": forced_table_mode,
                             },
                         )
                         
@@ -1488,6 +1533,14 @@ def _build_interactive_initial_prompt(session: InteractiveSessionState) -> str:
         "create a new table, adjust duplicate handling). "
         "Wait for explicit confirmation before finalizing the mapping."
     )
+    forced_table = session.file_metadata.get("forced_target_table")
+    if forced_table:
+        mode = session.file_metadata.get("forced_target_table_mode")
+        mode_text = "existing table" if mode == "existing" else "new table" if mode == "new" else "specified table"
+        prompt += (
+            f"\nThe user requested mapping into the {mode_text} '{forced_table}'. "
+            "Prioritize this target and avoid recommending a different table."
+        )
     if session.last_error:
         prompt += (
             "\n\nThe previous execution attempt failed with this error:\n"
@@ -1721,6 +1774,8 @@ async def analyze_file_endpoint(
     conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.ASK_USER),
     auto_execute_confidence_threshold: float = Form(0.9),
     max_iterations: int = Form(5),
+    target_table_name: Optional[str] = Form(None),
+    target_table_mode: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -1740,6 +1795,19 @@ async def analyze_file_endpoint(
     """
     try:
         job_id: Optional[str] = None
+        forced_table_name = _normalize_forced_table_name(target_table_name)
+        forced_table_mode: Optional[str] = None
+        if target_table_mode:
+            normalized_mode = target_table_mode.strip().lower()
+            if normalized_mode not in {"existing", "new"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="target_table_mode must be either 'existing' or 'new'",
+                )
+            forced_table_mode = normalized_mode
+        if forced_table_name and forced_table_mode is None:
+            # Default to existing to avoid unintended new table creation when a name is forced
+            forced_table_mode = "existing"
         # Validate input: must provide either file or file_id
         if not file and not file_id:
             raise HTTPException(status_code=400, detail="Must provide either 'file' or 'file_id'")
@@ -1853,6 +1921,10 @@ async def analyze_file_endpoint(
             "total_rows": total_rows,
             "file_type": file_type
         }
+        if forced_table_name:
+            file_metadata["forced_target_table"] = forced_table_name
+        if forced_table_mode:
+            file_metadata["forced_target_table_mode"] = forced_table_mode
         
         # Add raw CSV rows to metadata for LLM analysis
         if raw_csv_rows:
@@ -1878,6 +1950,12 @@ async def analyze_file_endpoint(
             raise HTTPException(status_code=502, detail=error_message)
 
         llm_decision = analysis_result.get("llm_decision")
+        if forced_table_name:
+            llm_decision = _apply_forced_table_decision(
+                llm_decision,
+                forced_table_name,
+                forced_table_mode,
+            )
         
         # Parse LLM response to extract structured data
         response = AnalyzeFileResponse(
@@ -2128,6 +2206,8 @@ async def auto_process_archive_endpoint(
     conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.LLM_DECIDE),
     auto_execute_confidence_threshold: float = Form(0.9),
     max_iterations: int = Form(5),
+    target_table_name: Optional[str] = Form(None),
+    target_table_mode: Optional[str] = Form(None),
 ):
     """
     Queue background processing for every supported file contained within a ZIP archive.
@@ -2141,6 +2221,18 @@ async def auto_process_archive_endpoint(
             status_code=400,
             detail="Archive processing currently supports auto process mode only.",
         )
+    forced_table_name = _normalize_forced_table_name(target_table_name)
+    forced_table_mode: Optional[str] = None
+    if target_table_mode:
+        normalized_mode = target_table_mode.strip().lower()
+        if normalized_mode not in {"existing", "new"}:
+            raise HTTPException(
+                status_code=400,
+                detail="target_table_mode must be either 'existing' or 'new'",
+            )
+        forced_table_mode = normalized_mode
+    if forced_table_name and forced_table_mode is None:
+        forced_table_mode = "existing"
 
     file_record = get_uploaded_file_by_id(file_id)
     if not file_record:
@@ -2174,6 +2266,8 @@ async def auto_process_archive_endpoint(
             "files_in_archive": len(supported_entries),
             "remaining_files": list(remaining_archive_paths),
             "completed_files": [],
+            "forced_table_name": forced_table_name,
+            "forced_table_mode": forced_table_mode,
         },
     )
     job_id = job["id"]
@@ -2193,6 +2287,8 @@ async def auto_process_archive_endpoint(
             auto_execute_confidence_threshold=auto_execute_confidence_threshold,
             max_iterations=max_iterations,
             job_id=job_id,
+            forced_table_name=forced_table_name,
+            forced_table_mode=forced_table_mode,
         ),
     )
 
@@ -2216,6 +2312,8 @@ async def resume_auto_process_archive_endpoint(
     conflict_resolution: ConflictResolutionMode = Form(ConflictResolutionMode.LLM_DECIDE),
     auto_execute_confidence_threshold: float = Form(0.9),
     max_iterations: int = Form(5),
+    target_table_name: Optional[str] = Form(None),
+    target_table_mode: Optional[str] = Form(None),
 ):
     """
     Resume archive auto-processing using a previous job for state.
@@ -2229,6 +2327,16 @@ async def resume_auto_process_archive_endpoint(
             status_code=400,
             detail="Archive processing currently supports auto process mode only.",
         )
+    forced_table_name = _normalize_forced_table_name(target_table_name)
+    forced_table_mode: Optional[str] = None
+    if target_table_mode:
+        normalized_mode = target_table_mode.strip().lower()
+        if normalized_mode not in {"existing", "new"}:
+            raise HTTPException(
+                status_code=400,
+                detail="target_table_mode must be either 'existing' or 'new'",
+            )
+        forced_table_mode = normalized_mode
 
     file_record = get_uploaded_file_by_id(file_id)
     if not file_record:
@@ -2254,6 +2362,11 @@ async def resume_auto_process_archive_endpoint(
                 status_code=400, detail="Job is not an archive auto-process run"
             )
 
+        previous_metadata = previous_job.get("metadata") or {}
+        if not forced_table_name:
+            forced_table_name = previous_metadata.get("forced_table_name")
+        if not forced_table_mode:
+            forced_table_mode = previous_metadata.get("forced_table_mode")
         allowed_paths = set((previous_job.get("metadata") or {}).get("remaining_files") or [])
         previous_results = (previous_job.get("result_metadata") or {}).get("results") or []
 
@@ -2271,6 +2384,11 @@ async def resume_auto_process_archive_endpoint(
                 )
         else:
             allowed_paths = None  # Reprocess everything
+
+    if forced_table_name and forced_table_mode is None:
+        forced_table_mode = "existing"
+    if forced_table_name:
+        forced_table_name = _normalize_forced_table_name(forced_table_name)
 
     archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
     try:
@@ -2301,6 +2419,8 @@ async def resume_auto_process_archive_endpoint(
         "files_in_archive": len(remaining_archive_paths) + len(completed_seed),
         "remaining_files": list(remaining_archive_paths),
         "completed_files": completed_seed,
+        "forced_table_name": forced_table_name,
+        "forced_table_mode": forced_table_mode,
     }
     if from_job_id:
         job_metadata["resume_of_job_id"] = from_job_id
@@ -2331,6 +2451,8 @@ async def resume_auto_process_archive_endpoint(
             max_iterations=max_iterations,
             job_id=job_id,
             prefilled_results=prefilled_results,
+            forced_table_name=forced_table_name,
+            forced_table_mode=forced_table_mode,
         ),
     )
 
