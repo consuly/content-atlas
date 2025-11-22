@@ -157,6 +157,47 @@ export const ImportPage: React.FC = () => {
     []
   );
 
+  const fetchTabCounts = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const headers = {
+        ...(token && { Authorization: `Bearer ${token}` }),
+      };
+
+      const statusRequests = [
+        { key: 'all', params: { limit: 1, offset: 0 } },
+        { key: 'uploaded', params: { status: 'uploaded', limit: 1, offset: 0 } },
+        { key: 'mapped', params: { status: 'mapped', limit: 1, offset: 0 } },
+        { key: 'mapping', params: { status: 'mapping', limit: 1, offset: 0 } },
+        { key: 'failed', params: { status: 'failed', limit: 1, offset: 0 } },
+      ];
+
+      const responses = await Promise.all(
+        statusRequests.map(({ params }) =>
+          axios.get(`${API_URL}/uploaded-files`, {
+            params,
+            headers,
+          })
+        )
+      );
+
+      const totals = responses.reduce<Record<string, number>>((acc, response, index) => {
+        const key = statusRequests[index].key;
+        acc[key] = response?.data?.total_count ?? 0;
+        return acc;
+      }, {});
+
+      setTabCounts({
+        all: totals.all ?? 0,
+        uploaded: totals.uploaded ?? 0,
+        mapped: totals.mapped ?? 0,
+        needs_mapping: (totals.uploaded ?? 0) + (totals.mapping ?? 0) + (totals.failed ?? 0),
+      });
+    } catch (err) {
+      console.error('Error fetching tab counts:', err);
+    }
+  }, []);
+
   const fetchFiles = useCallback(
     async (
       status: string = activeTab,
@@ -228,6 +269,7 @@ export const ImportPage: React.FC = () => {
         setFiles(filesWithImports);
         setTotalCount(nextTotal);
         setTabCounts((prev) => ({ ...prev, [status || 'all']: nextTotal }));
+        fetchTabCounts();
         setSelectedRowKeys((prev) =>
           prev.filter((key) =>
             filesWithImports.some(
@@ -242,7 +284,7 @@ export const ImportPage: React.FC = () => {
         setLoading(false);
       }
     },
-    [activeTab, attachImportSummaries, currentPage, messageApi, pageSize, statusGroups]
+    [activeTab, attachImportSummaries, currentPage, fetchTabCounts, messageApi, pageSize, statusGroups]
   );
 
   useEffect(() => {
@@ -686,19 +728,19 @@ export const ImportPage: React.FC = () => {
   const tabItems = [
     {
       key: 'all',
-      label: `All (${tabCounts.all || totalCount})`,
+      label: `All (${tabCounts.all ?? totalCount})`,
     },
     {
       key: 'needs_mapping',
-      label: `Needs Mapping (${tabCounts.needs_mapping || 0})`,
+      label: `Needs Mapping (${tabCounts.needs_mapping ?? 0})`,
     },
     {
       key: 'uploaded',
-      label: `Uploaded (${tabCounts.uploaded || 0})`,
+      label: `Uploaded (${tabCounts.uploaded ?? 0})`,
     },
     {
       key: 'mapped',
-      label: `Mapped (${tabCounts.mapped || 0})`,
+      label: `Mapped (${tabCounts.mapped ?? 0})`,
     },
   ];
 
