@@ -2,6 +2,29 @@
  * TypeScript interfaces for the Query Database feature
  */
 
+export type ChartType = 'bar' | 'line' | 'pie';
+
+export interface ChartDataset {
+  label: string;
+  data: number[];
+  backgroundColor?: string[] | string;
+  borderColor?: string[] | string;
+  fill?: boolean;
+}
+
+export interface ChartSpec {
+  type: ChartType;
+  labels: string[];
+  datasets: ChartDataset[];
+  options?: Record<string, unknown>;
+}
+
+export interface ChartSuggestion {
+  should_display: boolean;
+  reason: string;
+  spec?: ChartSpec | null;
+}
+
 export interface QueryMessage {
   id: string;
   type: 'user' | 'assistant';
@@ -11,6 +34,7 @@ export interface QueryMessage {
   dataCsv?: string;
   executionTime?: number;
   rowsReturned?: number;
+  chartSuggestion?: ChartSuggestion;
   error?: string;
 }
 
@@ -28,6 +52,7 @@ export interface QueryResponse {
   data_csv?: string;
   execution_time_seconds?: number;
   rows_returned?: number;
+  chart_suggestion?: ChartSuggestion;
   error?: string;
 }
 
@@ -39,6 +64,7 @@ export interface QueryConversationMessage {
   data_csv?: string;
   execution_time_seconds?: number;
   rows_returned?: number;
+  chart_suggestion?: ChartSuggestion;
   error?: string;
 }
 

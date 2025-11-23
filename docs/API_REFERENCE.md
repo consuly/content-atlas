@@ -292,9 +292,21 @@ Execute natural language queries against the database using AI-powered SQL gener
   "data_csv": "id,name,email,state\n1,John Doe,john@example.com,California\n...",
   "execution_time_seconds": 0.15,
   "rows_returned": 45,
+  "chart_suggestion": {
+    "should_display": true,
+    "reason": "Detected a categorical breakdown with numeric values.",
+    "spec": {
+      "type": "bar",
+      "labels": ["California", "Nevada", "Oregon"],
+      "datasets": [
+        { "label": "customers", "data": [45, 22, 12] }
+      ]
+    }
+  },
   "error": null
 }
 ```
+`chart_suggestion` is returned when the prompt clearly asks for a visual (or the data is a clean time series). When no chart is appropriate, it still includes `should_display: false` with a rationale so the frontend can explain why a graph was skipped.
 
 **Conversation Memory:**
 

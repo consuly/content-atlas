@@ -48,6 +48,7 @@ export const QueryPage: React.FC = () => {
       dataCsv: msg.data_csv,
       executionTime: msg.execution_time_seconds,
       rowsReturned: msg.rows_returned,
+      chartSuggestion: msg.chart_suggestion,
       error: msg.error,
     } as QueryMessage));
   };
@@ -187,6 +188,7 @@ export const QueryPage: React.FC = () => {
         dataCsv: response.data_csv,
         executionTime: response.execution_time_seconds,
         rowsReturned: response.rows_returned,
+        chartSuggestion: response.chart_suggestion,
         error: response.error,
       };
 

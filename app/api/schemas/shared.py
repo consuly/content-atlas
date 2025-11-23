@@ -264,6 +264,30 @@ class AsyncTaskStatus(BaseModel):
     result: Optional[MapDataResponse] = None
 
 
+class ChartDataset(BaseModel):
+    """Dataset configuration for Chart.js."""
+    label: str
+    data: List[float]
+    backgroundColor: Optional[List[str]] = None
+    borderColor: Optional[List[str]] = None
+    fill: Optional[bool] = None
+
+
+class ChartSpec(BaseModel):
+    """Chart.js-ready spec with minimal options to keep responses concise."""
+    type: str  # bar, line, pie
+    labels: List[str]
+    datasets: List[ChartDataset]
+    options: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChartSuggestion(BaseModel):
+    """Indicates whether a chart should be rendered and why."""
+    should_display: bool
+    reason: str
+    spec: Optional[ChartSpec] = None
+
+
 class QueryDatabaseRequest(BaseModel):
     prompt: str
     max_rows: int = Field(default=100, ge=1, le=10000)
@@ -278,6 +302,7 @@ class QueryDatabaseResponse(BaseModel):
     data_csv: Optional[str] = None
     execution_time_seconds: Optional[float] = None
     rows_returned: Optional[int] = None
+    chart_suggestion: Optional[ChartSuggestion] = None
     error: Optional[str] = None
 
 
@@ -289,6 +314,7 @@ class QueryConversationMessage(BaseModel):
     data_csv: Optional[str] = None
     execution_time_seconds: Optional[float] = None
     rows_returned: Optional[int] = None
+    chart_suggestion: Optional[ChartSuggestion] = None
     error: Optional[str] = None
 
 

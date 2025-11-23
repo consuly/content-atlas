@@ -79,6 +79,7 @@ async def query_database_endpoint(request: QueryDatabaseRequest):
                 data_csv=result.get("data_csv"),
                 execution_time_seconds=result.get("execution_time_seconds"),
                 rows_returned=result.get("rows_returned"),
+                chart_suggestion=result.get("chart_suggestion"),
                 error=result.get("error"),
             )
         except Exception as log_error:  # pragma: no cover - best-effort logging
@@ -94,6 +95,7 @@ async def query_database_endpoint(request: QueryDatabaseRequest):
             data_csv=result.get("data_csv"),
             execution_time_seconds=result.get("execution_time_seconds"),
             rows_returned=result.get("rows_returned"),
+            chart_suggestion=result.get("chart_suggestion"),
             error=result.get("error")
         )
 
