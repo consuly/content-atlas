@@ -71,7 +71,7 @@ CHUNK_SIZE = 20000
 MAP_STAGE_TIMEOUT_SECONDS = settings.map_stage_timeout_seconds
 MAP_PARALLEL_MAX_WORKERS = max(1, settings.map_parallel_max_workers)
 DUPLICATE_PREVIEW_LIMIT = 20
-STREAMING_CSV_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10MB threshold to stream huge CSVs
+STREAMING_CSV_THRESHOLD_BYTES = 1 * 1024 * 1024  # 1MB threshold to stream CSVs for better memory efficiency
 
 
 @dataclass
@@ -794,6 +794,7 @@ def _execute_streaming_csv_import(
                         config=mapping_config,
                         file_content=chunk_file_content,
                         file_name=file_name,
+                        pre_mapped=True,
                     )
                 insert_time_total += time.time() - insert_start
                 first_chunk = False
@@ -1812,7 +1813,8 @@ def execute_data_import(
                     mapped_records,
                     config=mapping_config,
                     file_content=file_content,
-                    file_name=file_name
+                    file_name=file_name,
+                    pre_mapped=True,
                 )
             except ValueError as exc:
                 error_text = str(exc)
