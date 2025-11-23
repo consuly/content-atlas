@@ -5,6 +5,7 @@ This module records each user/assistant exchange so the UI can load
 previous conversations from Postgres instead of relying on localStorage.
 """
 
+import json
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -54,12 +55,17 @@ def create_query_history_tables() -> None:
         data_csv TEXT,
         execution_time_seconds DOUBLE PRECISION,
         rows_returned INTEGER,
+        chart_suggestion JSONB,
         error TEXT,
         created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_query_messages_thread_created
         ON query_messages(thread_id, created_at);
+
+    -- Backfill for existing installations
+    ALTER TABLE query_messages
+        ADD COLUMN IF NOT EXISTS chart_suggestion JSONB;
     """
 
     with engine.begin() as conn:
@@ -84,6 +90,7 @@ def save_query_message(
     data_csv: Optional[str] = None,
     execution_time_seconds: Optional[float] = None,
     rows_returned: Optional[int] = None,
+    chart_suggestion: Optional[Dict[str, Any]] = None,
     error: Optional[str] = None,
 ) -> None:
     """Persist a single message in a query conversation."""
@@ -111,11 +118,11 @@ def save_query_message(
                     """
                     INSERT INTO query_messages (
                         thread_id, role, content, executed_sql, data_csv,
-                        execution_time_seconds, rows_returned, error
+                        execution_time_seconds, rows_returned, chart_suggestion, error
                     )
                     VALUES (
                         :thread_id, :role, :content, :executed_sql, :data_csv,
-                        :execution_time_seconds, :rows_returned, :error
+                        :execution_time_seconds, :rows_returned, :chart_suggestion, :error
                     );
                     """
                 ),
@@ -127,6 +134,7 @@ def save_query_message(
                     "data_csv": data_csv,
                     "execution_time_seconds": execution_time_seconds,
                     "rows_returned": rows_returned,
+                    "chart_suggestion": chart_suggestion,
                     "error": error,
                 },
             )
@@ -162,6 +170,7 @@ def _rows_to_messages(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "data_csv": row.get("data_csv"),
                 "execution_time_seconds": row.get("execution_time_seconds"),
                 "rows_returned": row.get("rows_returned"),
+                "chart_suggestion": _deserialize_chart_suggestion(row.get("chart_suggestion")),
                 "error": row.get("error"),
                 "timestamp": row.get("created_at"),
             }
@@ -180,7 +189,7 @@ def get_query_conversation(thread_id: str, limit: int = 100) -> Dict[str, Any]:
             text(
                 """
                 SELECT role, content, executed_sql, data_csv,
-                       execution_time_seconds, rows_returned, error, created_at
+                       execution_time_seconds, rows_returned, chart_suggestion, error, created_at
                 FROM query_messages
                 WHERE thread_id = :thread_id
                 ORDER BY created_at ASC
@@ -231,6 +240,17 @@ def get_latest_query_conversation(limit: int = 100) -> Optional[Dict[str, Any]]:
         return None
 
     return get_query_conversation(str(row[0]), limit=limit)
+
+
+def _deserialize_chart_suggestion(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
 
 
 def list_query_threads(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:

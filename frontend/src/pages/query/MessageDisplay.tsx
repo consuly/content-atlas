@@ -15,6 +15,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { QueryMessage } from './types';
 import { ResultsTable } from './ResultsTable';
+import { ChartPreview } from './ChartPreview';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
@@ -25,6 +26,7 @@ interface MessageDisplayProps {
 
 export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
   const [sqlExpanded, setSqlExpanded] = useState(false);
+  const hasChart = message.chartSuggestion?.should_display && message.chartSuggestion.spec;
 
   if (message.type === 'user') {
     return (
@@ -146,6 +148,12 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
             {message.content}
           </ReactMarkdown>
         </div>
+
+        {hasChart && (
+          <div style={{ marginBottom: 16 }}>
+            <ChartPreview suggestion={message.chartSuggestion} />
+          </div>
+        )}
 
         {/* SQL Query (collapsible) */}
         {message.executedSql && (

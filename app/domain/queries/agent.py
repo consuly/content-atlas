@@ -20,6 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from app.db.session import get_engine
 from app.db.context import get_database_schema, format_schema_for_prompt, get_related_tables
 from app.core.config import settings
+from app.domain.queries.charting import build_chart_suggestion
 
 
 # System tables that should not be accessible via natural language queries.
@@ -402,13 +403,16 @@ def query_database_with_agent(user_prompt: str, thread_id: Optional[str] = None)
         if not final_response or len(final_response.strip()) == 0:
             final_response = "I processed your request but didn't generate a response. Please try rephrasing your query."
 
+        chart_suggestion = build_chart_suggestion(user_prompt, csv_data)
+
         return {
             "success": True,
             "response": final_response,
             "executed_sql": executed_sql,
             "data_csv": csv_data,
             "execution_time_seconds": execution_time,
-            "rows_returned": rows_returned
+            "rows_returned": rows_returned,
+            "chart_suggestion": chart_suggestion,
         }
 
     except Exception as e:
@@ -421,7 +425,12 @@ def query_database_with_agent(user_prompt: str, thread_id: Optional[str] = None)
             "executed_sql": None,
             "data_csv": None,
             "execution_time_seconds": None,
-            "rows_returned": None
+            "rows_returned": None,
+            "chart_suggestion": {
+                "should_display": False,
+                "reason": f"Unable to suggest a chart due to error: {str(e)}",
+                "spec": None,
+            },
         }
 
 
