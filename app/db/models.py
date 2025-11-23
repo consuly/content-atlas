@@ -1367,8 +1367,8 @@ def _insert_records_chunked(
             else:
                 logger.info("Phase 1: Parallel duplicate check completed - no duplicates found")
     
-    # PHASE 2: Sequential insertion (I/O-intensive, avoids race conditions)
-    logger.info("Phase 2: Starting sequential chunk insertion")
+    # PHASE 2: Parallel insertion (I/O-intensive)
+    logger.info("Phase 2: Starting parallel chunk insertion")
     total_inserted = 0
     
     # Get column names from first record
@@ -1387,8 +1387,9 @@ def _insert_records_chunked(
     INSERT INTO "{table_name}" ({columns_sql})
     VALUES ({placeholders});
     """
-    
-    for chunk_index, (chunk_start, chunk_records) in enumerate(chunks, start=1):
+
+    def insert_chunk(chunk_index: int, chunk_start: int, chunk_records: List[Dict[str, Any]]) -> int:
+        """Insert a single chunk."""
         print(f"DEBUG: Inserting chunk {chunk_index}/{total_chunks} ({len(chunk_records)} records)")
         
         coerced_chunk = []
@@ -1422,8 +1423,29 @@ def _insert_records_chunked(
         with engine.begin() as conn:
             conn.execute(text(insert_sql), coerced_chunk)
         
-        total_inserted += len(chunk_records)
-        print(f"DEBUG: Inserted chunk {chunk_index}/{total_chunks} - Total inserted: {total_inserted}/{total_records}")
+        return len(chunk_records)
+
+    # Use ThreadPoolExecutor for parallel insertion
+    # Reuse max_workers from duplicate check if available, otherwise default
+    import os
+    insert_workers = min(4, os.cpu_count() or 2)
+    logger.info(f"Using {insert_workers} parallel workers for insertion")
+
+    with ThreadPoolExecutor(max_workers=insert_workers) as executor:
+        future_to_chunk = {
+            executor.submit(insert_chunk, chunk_index, chunk_start, chunk_records): chunk_index
+            for chunk_index, (chunk_start, chunk_records) in enumerate(chunks, start=1)
+        }
+        
+        for future in as_completed(future_to_chunk):
+            chunk_index = future_to_chunk[future]
+            try:
+                inserted_count = future.result()
+                total_inserted += inserted_count
+                print(f"DEBUG: Inserted chunk {chunk_index}/{total_chunks}")
+            except Exception as e:
+                logger.error(f"Error inserting chunk {chunk_index}: {e}")
+                raise
     
     # Record file import after all chunks are successfully inserted
     if config and config.duplicate_check and config.duplicate_check.check_file_level and file_content:
