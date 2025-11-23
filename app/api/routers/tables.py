@@ -1,10 +1,13 @@
 """
 Table management endpoints for querying and inspecting database tables.
 """
+import csv
 import json
+from io import StringIO
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -211,6 +214,145 @@ async def query_table(
             limit=limit,
             offset=offset
         )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{table_name}/export")
+async def export_table(
+    table_name: str,
+    limit: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=1_000_000,
+        description="Optional maximum number of rows to include in the export",
+    ),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the full contents of a user table as CSV.
+
+    The export excludes metadata columns (prefixed with "_") and returns a streaming
+    CSV response so large tables do not exhaust memory.
+    """
+    try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+        engine = get_engine()
+        conn = engine.connect()
+        try:
+            table_check = conn.execute(
+                text(
+                    """
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                    """
+                ),
+                {"table_name": table_name},
+            )
+
+            if not table_check.fetchone():
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+            columns_result = conn.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                    AND column_name NOT LIKE '\\_%' ESCAPE '\\'
+                    ORDER BY ordinal_position
+                    """
+                ),
+                {"table_name": table_name},
+            )
+
+            user_columns = [row[0] for row in columns_result]
+            if not user_columns:
+                raise HTTPException(status_code=400, detail="Table has no exportable columns.")
+
+            row_id_exists = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = :table_name
+                      AND column_name = '_row_id'
+                    """
+                ),
+                {"table_name": table_name},
+            ).first()
+
+            order_fragment = 'ORDER BY "_row_id"' if row_id_exists else ""
+            limit_fragment = []
+            query_params: Dict[str, Any] = {}
+            if limit is not None:
+                limit_fragment.append("LIMIT :limit")
+                query_params["limit"] = limit
+            if offset:
+                limit_fragment.append("OFFSET :offset")
+                query_params["offset"] = offset
+
+            columns_sql = ", ".join([f'"{col}"' for col in user_columns])
+            base_sql = f'SELECT {columns_sql} FROM "{table_name}"'
+            sql_parts = [base_sql]
+            if order_fragment:
+                sql_parts.append(order_fragment)
+            if limit_fragment:
+                sql_parts.append(" ".join(limit_fragment))
+
+            query = text("\n".join(sql_parts))
+
+            stream_result = conn.execution_options(stream_results=True).execute(query, query_params)
+
+            def row_stream():
+                buffer = StringIO()
+                writer = csv.writer(buffer)
+
+                try:
+                    writer.writerow(user_columns)
+                    yield buffer.getvalue()
+                    buffer.seek(0)
+                    buffer.truncate(0)
+
+                    while True:
+                        rows = stream_result.fetchmany(500)
+                        if not rows:
+                            break
+                        for row in rows:
+                            writer.writerow([
+                                "" if row[col] is None else row[col]
+                                for col in user_columns
+                            ])
+                        yield buffer.getvalue()
+                        buffer.seek(0)
+                        buffer.truncate(0)
+                finally:
+                    stream_result.close()
+                    conn.close()
+
+            filename = f"{table_name}.csv"
+            headers = {
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+
+            return StreamingResponse(
+                row_stream(),
+                media_type="text/csv",
+                headers=headers,
+            )
+        except HTTPException:
+            conn.close()
+            raise
+        except Exception:
+            conn.close()
+            raise
 
     except HTTPException:
         raise

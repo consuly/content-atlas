@@ -16,6 +16,7 @@ import {
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import type {
@@ -25,7 +26,7 @@ import type {
   TableCurrentDataSource,
   TablePaginationConfig,
 } from 'antd/es/table/interface';
-import { ArrowRightOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
 
 const { Title, Text, Link } = Typography;
 const { Search } = Input;
@@ -60,11 +61,42 @@ export const TablesListPage: React.FC = () => {
   const [minRows, setMinRows] = useState<number | undefined>();
   const [rowState, setRowState] = useState<RowStateFilter>('all');
   const [sorter, setSorter] = useState<LocalSorter>({ field: 'table_name', order: 'ascend' });
+  const [downloadingTable, setDownloadingTable] = useState<string | null>(null);
 
   const authHeaders = useCallback(() => {
     const token = localStorage.getItem('refine-auth');
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
+
+  const downloadTable = useCallback(
+    async (tableName: string) => {
+      const safeName = `${tableName.replace(/[^\w.-]+/g, '_') || 'table'}.csv`;
+      setDownloadingTable(tableName);
+      try {
+        const response = await axios.get(`${API_URL}/tables/${encodeURIComponent(tableName)}/export`, {
+          headers: authHeaders(),
+          responseType: 'blob',
+        });
+
+        const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', safeName);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+        messageRef.current.success(`Downloaded ${tableName} as CSV.`);
+      } catch (err) {
+        console.error(`Failed to download table ${tableName}`, err);
+        messageRef.current.error('Failed to download CSV for this table.');
+      } finally {
+        setDownloadingTable(null);
+      }
+    },
+    [authHeaders],
+  );
 
   const fetchTables = useCallback(async () => {
     setLoading(true);
@@ -169,15 +201,27 @@ export const TablesListPage: React.FC = () => {
     {
       title: '',
       key: 'actions',
-      width: 120,
+      width: 220,
       render: (_: unknown, record: TableInfo) => (
-        <Button
-          type="link"
-          icon={<ArrowRightOutlined />}
-          onClick={() => navigate(`/tables/${encodeURIComponent(record.table_name)}`)}
-        >
-          Open
-        </Button>
+        <Space>
+          <Button
+            type="link"
+            icon={<ArrowRightOutlined />}
+            onClick={() => navigate(`/tables/${encodeURIComponent(record.table_name)}`)}
+          >
+            Open
+          </Button>
+          <Tooltip title="Download CSV">
+            <Button
+              type="link"
+              icon={<DownloadOutlined />}
+              loading={downloadingTable === record.table_name}
+              onClick={() => downloadTable(record.table_name)}
+            >
+              CSV
+            </Button>
+          </Tooltip>
+        </Space>
       ),
     },
   ];

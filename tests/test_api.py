@@ -36,6 +36,10 @@ def test_api_endpoints_exist():
     response = client.get("/tables/test_table")
     assert response.status_code == 404
 
+    # Test /tables/{table_name}/export endpoint - should return 404 for non-existent table
+    response = client.get("/tables/test_table/export")
+    assert response.status_code == 404
+
     # Test /tables/{table_name}/schema endpoint - should return 404 for non-existent table
     response = client.get("/tables/test_table/schema")
     assert response.status_code == 404
