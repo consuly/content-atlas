@@ -65,6 +65,7 @@ def reset_tables():
         for table in (
             "import_history",
             "mapping_errors",
+            "mapping_chunk_status",
             "import_duplicates",
             "import_jobs",
             "uploaded_files",

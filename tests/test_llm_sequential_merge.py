@@ -56,6 +56,7 @@ def test_llm_sequential_file_merge():
                 'table_metadata', 
                 'import_history', 
                 'mapping_errors',
+                'mapping_chunk_status',
                 'import_duplicates'
             }
             

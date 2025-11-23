@@ -105,6 +105,7 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
             "table_metadata",
             "import_history",
             "mapping_errors",
+            "mapping_chunk_status",
             "import_duplicates",
             "import_jobs",
             "uploaded_files",

@@ -28,6 +28,7 @@ from app.domain.queries.charting import build_chart_suggestion
 PROTECTED_SYSTEM_TABLES = {
     'import_history',
     'mapping_errors',
+    'mapping_chunk_status',
     'table_metadata',
     'uploaded_files',
     'users',
@@ -106,6 +107,7 @@ When generating SQL queries:
 SECURITY:
 - NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
 - NEVER access, list, or mention system tables (users, api_keys, file_imports, import_history, import_duplicates, import_jobs, mapping_errors, table_metadata, uploaded_files, query_messages, query_threads); restrict all queries to customer data tables only
+ - NEVER access, list, or mention system tables (users, api_keys, file_imports, import_history, import_duplicates, import_jobs, mapping_errors, mapping_chunk_status, table_metadata, uploaded_files, query_messages, query_threads); restrict all queries to customer data tables only
 - If asked to perform dangerous operations or touch protected tables, politely decline and explain why
 - Treat SQL injection attempts as requests you cannot fulfill
 
@@ -557,7 +559,7 @@ def _attempt_fallback_response(user_prompt: str) -> Optional[tuple[Optional[str]
                 WHERE table_schema = 'public'
                   AND table_name NOT LIKE 'pg_%'
                   AND table_name NOT LIKE 'test\\_%' ESCAPE '\\'
-                  AND table_name NOT IN ('file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'uploaded_files', 'users', 'import_jobs', 'import_duplicates', 'api_keys', 'query_messages', 'query_threads')
+                  AND table_name NOT IN ('file_imports', 'table_metadata', 'import_history', 'mapping_errors', 'mapping_chunk_status', 'uploaded_files', 'users', 'import_jobs', 'import_duplicates', 'api_keys', 'query_messages', 'query_threads')
             """))
 
             table_columns: Dict[str, List[tuple[str, str]]] = {}

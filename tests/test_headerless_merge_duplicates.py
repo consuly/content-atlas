@@ -73,6 +73,7 @@ def test_headerless_file_merge_with_duplicates():
                 'table_metadata',
                 'import_history',
                 'mapping_errors',
+                'mapping_chunk_status',
                 'import_duplicates',
                 'import_jobs',
                 'api_keys',
