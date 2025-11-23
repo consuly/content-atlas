@@ -5,6 +5,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Input, Button, Space } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
+import type { TextAreaRef } from 'antd/es/input/TextArea';
 
 const { TextArea } = Input;
 
@@ -20,13 +21,11 @@ export const QueryInput: React.FC<QueryInputProps> = ({
   placeholder = 'Ask a question about your data...',
 }) => {
   const [value, setValue] = useState('');
-  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const textAreaRef = useRef<TextAreaRef>(null);
 
   useEffect(() => {
     // Focus input on mount
-    if (textAreaRef.current) {
-      textAreaRef.current.focus();
-    }
+    textAreaRef.current?.focus();
   }, []);
 
   const handleSend = () => {
@@ -34,10 +33,8 @@ export const QueryInput: React.FC<QueryInputProps> = ({
     if (trimmedValue && !disabled) {
       onSend(trimmedValue);
       setValue('');
-      // Reset textarea height
-      if (textAreaRef.current) {
-        textAreaRef.current.style.height = 'auto';
-      }
+      // Reset textarea height after submit in case it expanded
+      textAreaRef.current?.resizableTextArea?.textArea?.style.setProperty('height', 'auto');
     }
   };
 
