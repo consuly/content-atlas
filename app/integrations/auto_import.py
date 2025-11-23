@@ -38,7 +38,7 @@ _TYPE_ALIAS_MAP = {
     "percent": "DECIMAL",
     "integer": "INTEGER",
     "int": "INTEGER",
-    "bigint": "INTEGER",
+    "bigint": "BIGINT",
     "smallint": "INTEGER",
     "whole": "INTEGER",
     "timestamp": "TIMESTAMP",
@@ -53,7 +53,7 @@ _TYPE_ALIAS_MAP = {
     "bool": "BOOLEAN"
 }
 
-_SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "TIMESTAMP", "DATE", "BOOLEAN"}
+_SUPPORTED_TYPES = {"TEXT", "DECIMAL", "INTEGER", "BIGINT", "TIMESTAMP", "DATE", "BOOLEAN"}
 
 _SLASHED_DATE_PATTERN = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{2,4})")
 
@@ -360,7 +360,7 @@ def coerce_records_to_expected_types(
 
         series = df[source_col]
         try:
-            if normalized_type in {"DECIMAL", "INTEGER"}:
+            if normalized_type in {"DECIMAL", "INTEGER", "BIGINT"}:
                 converted = pd.to_numeric(series, errors="coerce")
                 coerced_count = int((series.notna() & converted.isna()).sum())
                 column_summary["status"] = "converted"
@@ -542,7 +542,9 @@ def execute_llm_import_decision(
                         schema_type = "TEXT"
                     elif all_numeric:
                         if all(_is_integer_like(v) for v in subset):
-                            schema_type = "INTEGER"
+                            INT32_MAX = 2_147_483_647
+                            max_abs = max(abs(int(float(str(v)))) for v in subset if _is_integer_like(v))
+                            schema_type = "BIGINT" if max_abs > INT32_MAX else "INTEGER"
                         else:
                             schema_type = "DECIMAL"
                     else:

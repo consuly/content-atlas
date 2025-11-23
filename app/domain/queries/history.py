@@ -98,6 +98,12 @@ def save_query_message(
     ensure_query_history_tables_exist()
 
     engine = get_engine()
+    if chart_suggestion is None:
+        serialized_chart_suggestion = None
+    elif isinstance(chart_suggestion, str):
+        serialized_chart_suggestion = chart_suggestion
+    else:
+        serialized_chart_suggestion = json.dumps(chart_suggestion)
 
     def _persist_message() -> None:
         with engine.begin() as conn:
@@ -134,7 +140,7 @@ def save_query_message(
                     "data_csv": data_csv,
                     "execution_time_seconds": execution_time_seconds,
                     "rows_returned": rows_returned,
-                    "chart_suggestion": chart_suggestion,
+                    "chart_suggestion": serialized_chart_suggestion,
                     "error": error,
                 },
             )

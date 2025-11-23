@@ -225,19 +225,37 @@ def stream_csv_records(
         yield records
 
 
+def _ensure_single_sheet_dataframe(df: Any) -> pd.DataFrame:
+    """
+    Normalize read_excel output to a single DataFrame.
+
+    Pandas returns a dict of DataFrames when sheet_name=None; for our mapping
+    flows we want the first sheet by default to avoid attribute errors.
+    """
+    if isinstance(df, dict):
+        if not df:
+            raise ValueError("Excel file contains no sheets")
+        # Preserve workbook order by taking the first sheet returned
+        first_sheet = next(iter(df.values()))
+        return first_sheet
+    return df
+
+
 def process_excel(file_content: bytes, sheet_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """Process Excel file and return list of dictionaries using optimized settings."""
+    sheet_arg = 0 if sheet_name is None else sheet_name
     # Use openpyxl with read_only mode for better performance on large files
     try:
         # read_only=True significantly speeds up reading large Excel files
-        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl', sheet_name=sheet_name)
+        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl', sheet_name=sheet_arg)
     except Exception:
         # Fallback to default pandas engine
         try:
-            df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_name)
+            df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_arg)
         except Exception as e:
             raise ValueError(f"Could not read Excel file: {str(e)}")
 
+    df = _ensure_single_sheet_dataframe(df)
     records = df.to_dict('records')
 
     # Convert pandas NaT values to None for database compatibility
@@ -270,9 +288,10 @@ def process_large_excel(file_content: bytes, chunk_size: int = 20000, sheet_name
         df = pd.read_excel(
             io.BytesIO(file_content), 
             engine='openpyxl',
-            sheet_name=sheet_name
+            sheet_name=sheet_name if sheet_name is not None else 0,
         )
         
+        df = _ensure_single_sheet_dataframe(df)
         records = df.to_dict('records')
 
         # Convert pandas NaT values to None for database compatibility
@@ -286,7 +305,7 @@ def process_large_excel(file_content: bytes, chunk_size: int = 20000, sheet_name
     except Exception as e:
         # Fallback to regular processing if optimized reading fails
         print(f"Optimized Excel processing failed, falling back to regular processing: {str(e)}")
-        return process_excel(file_content)
+        return process_excel(file_content, sheet_name=sheet_name)
 
 
 def extract_excel_sheets_to_csv(file_content: bytes, rows: int = 100) -> Dict[str, str]:

@@ -17,6 +17,7 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait, FIRST_COMPLETED
 import pandas as pd
+from decimal import Decimal, InvalidOperation
 
 from .processors.csv_processor import (
     process_csv,
@@ -120,6 +121,85 @@ def _looks_numeric(value: Any) -> bool:
     if not text:
         return False
     return bool(re.fullmatch(r"[-+]?\d+(\.\d+)?", text))
+
+
+def _coerce_int_like(value: Any) -> Optional[int]:
+    """
+    Best-effort conversion to int for range checks.
+    Returns None when the value isn't a whole number.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or not float(value).is_integer():
+            return None
+        return int(value)
+    if isinstance(value, Decimal):
+        if value != value.to_integral():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return None
+        token = token.replace(",", "")
+        if token.startswith("$"):
+            token = token[1:]
+        if token.startswith("(") and token.endswith(")"):
+            token = f"-{token[1:-1]}"
+        try:
+            as_decimal = Decimal(token)
+        except InvalidOperation:
+            return None
+        if as_decimal != as_decimal.to_integral():
+            return None
+        return int(as_decimal)
+    return None
+
+
+def _widen_integer_columns_for_overflow(
+    records: List[Dict[str, Any]],
+    mapping_config: MappingConfig,
+) -> List[Dict[str, Any]]:
+    """
+    Upgrade integer columns to BIGINT when sample data exceeds 32-bit range.
+    Returns a list of adjustments applied for logging/telemetry.
+    """
+    if not records or not mapping_config or not mapping_config.db_schema:
+        return []
+
+    INT32_MAX = 2_147_483_647
+    adjustments: List[Dict[str, Any]] = []
+    for col_name, raw_type in list(mapping_config.db_schema.items()):
+        if not raw_type:
+            continue
+        type_upper = raw_type.upper()
+        if "BIGINT" in type_upper or "INT" not in type_upper:
+            continue
+
+        max_abs: Optional[int] = None
+        for record in records:
+            candidate = _coerce_int_like(record.get(col_name))
+            if candidate is None:
+                continue
+            abs_val = abs(candidate)
+            if max_abs is None or abs_val > max_abs:
+                max_abs = abs_val
+
+        if max_abs is not None and max_abs > INT32_MAX:
+            mapping_config.db_schema[col_name] = "BIGINT"
+            adjustments.append(
+                {
+                    "column": col_name,
+                    "from": raw_type,
+                    "to": "BIGINT",
+                    "max_observed": max_abs,
+                }
+            )
+
+    return adjustments
 
 
 def _guess_excel_header_row(df: pd.DataFrame) -> int:
@@ -1293,6 +1373,7 @@ def execute_data_import(
     records = []
     intra_file_duplicates_skipped = 0
     chunk_status_summary: Dict[str, int] = {}
+    widened_columns: List[Dict[str, Any]] = []
     
     try:
         type_mismatch_summary: List[Dict[str, Any]] = []
@@ -1702,6 +1783,13 @@ def execute_data_import(
             mapping_config.table_name,
             import_strategy
         )
+
+        widened_columns = _widen_integer_columns_for_overflow(mapped_records, mapping_config)
+        if widened_columns:
+            logger.info(
+                "Upgraded integer columns to BIGINT due to observed range: %s",
+                widened_columns
+            )
         
         # Create table if needed
         engine = get_engine()
@@ -1717,14 +1805,68 @@ def execute_data_import(
                 logger.info(f"Created table: {mapping_config.table_name}")
             
             # Insert records
-            records_inserted, duplicates_skipped = insert_records(
-                engine,
-                mapping_config.table_name,
-                mapped_records,
-                config=mapping_config,
-                file_content=file_content,
-                file_name=file_name
-            )
+            try:
+                records_inserted, duplicates_skipped = insert_records(
+                    engine,
+                    mapping_config.table_name,
+                    mapped_records,
+                    config=mapping_config,
+                    file_content=file_content,
+                    file_name=file_name
+                )
+            except ValueError as exc:
+                error_text = str(exc)
+                if "Numeric overflow" in error_text:
+                    mapping_errors = [
+                        {
+                            "type": "numeric_overflow",
+                            "message": error_text,
+                        }
+                    ]
+                    llm_followup = (
+                        "A numeric overflow occurred during insertion. "
+                        "Update the mapping to widen overflowing columns to BIGINT or DECIMAL and retry."
+                    )
+                    duration = time.time() - start_time
+                    complete_import_tracking(
+                        import_id=import_id,
+                        status="failed",
+                        total_rows_in_file=raw_total_rows,
+                        rows_processed=raw_total_rows,
+                        rows_inserted=0,
+                        rows_skipped=0,
+                        duplicates_found=0,
+                        validation_errors=len(mapping_errors),
+                        duration_seconds=duration,
+                        parsing_time_seconds=parse_time,
+                        duplicate_check_time_seconds=None,
+                        insert_time_seconds=None,
+                        error_message=error_text,
+                        metadata={
+                            "mapping_errors": mapping_errors,
+                            "widened_columns": widened_columns,
+                        },
+                    )
+                    if job_id:
+                        update_import_job(
+                            job_id,
+                            status="waiting_user",
+                            stage="analysis",
+                            error_message=error_text,
+                        )
+                    return {
+                        "success": False,
+                        "message": error_text,
+                        "records_processed": 0,
+                        "duplicates_skipped": 0,
+                        "table_name": mapping_config.table_name,
+                        "import_id": import_id,
+                        "mapping_errors": mapping_errors,
+                        "llm_followup": llm_followup,
+                        "needs_user_input": True,
+                        "type_mismatch_summary": type_mismatch_summary,
+                    }
+                raise
             
             # Manage table metadata (inside lock to ensure consistency)
             if metadata_info:
@@ -1758,6 +1900,8 @@ def execute_data_import(
             metadata_payload["intra_file_duplicates_skipped"] = intra_file_duplicates_skipped
         if chunk_status_summary:
             metadata_payload["mapping_chunk_status"] = chunk_status_summary
+        if widened_columns:
+            metadata_payload["widened_columns"] = widened_columns
         if row_count_warning:
             metadata_payload["row_count_warning"] = row_count_warning
 

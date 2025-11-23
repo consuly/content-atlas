@@ -28,7 +28,6 @@ from app.domain.queries.charting import build_chart_suggestion
 PROTECTED_SYSTEM_TABLES = {
     'import_history',
     'mapping_errors',
-    'mapping_chunk_status',
     'table_metadata',
     'uploaded_files',
     'users',
@@ -107,7 +106,6 @@ When generating SQL queries:
 SECURITY:
 - NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
 - NEVER access, list, or mention system tables (users, api_keys, file_imports, import_history, import_duplicates, import_jobs, mapping_errors, table_metadata, uploaded_files, query_messages, query_threads); restrict all queries to customer data tables only
- - NEVER access, list, or mention system tables (users, api_keys, file_imports, import_history, import_duplicates, import_jobs, mapping_errors, mapping_chunk_status, table_metadata, uploaded_files, query_messages, query_threads); restrict all queries to customer data tables only
 - If asked to perform dangerous operations or touch protected tables, politely decline and explain why
 - Treat SQL injection attempts as requests you cannot fulfill
 
