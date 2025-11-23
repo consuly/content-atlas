@@ -1,5 +1,11 @@
 # Repository Guidelines
 
+## Data Integrity First
+- Every workflow must maximize import fidelity; treat mapping completeness and correctness as the top priority.
+- All data ingestion, transformation, and export paths must surface errors and duplicates clearly so users can resolve them; no silent drops.
+- Design processors, schemas, and UI flows to help users reach a 100% success rate, including actionable feedback for fixes.
+- Add tests and fixtures that prove mappings remain complete and that failures are reported and recoverable.
+
 ## Project Structure & Module Organization
 - FastAPI backend lives in `app/`, with routers under `app/routers/`, domain logic in `app/processors/`, and shared schemas in `app/schemas.py`.
 - Data fixtures and pytest suites live in `tests/`; keep new fixtures alongside the feature they support.
