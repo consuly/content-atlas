@@ -38,7 +38,11 @@ from app.db.models import (
     check_file_already_imported,
 )
 from app.db.session import get_engine
-from app.domain.imports.jobs import update_import_job
+from app.domain.imports.jobs import (
+    update_import_job,
+    get_import_job,
+    fail_active_job,
+)
 from app.api.schemas.shared import MappingConfig
 from .history import (
     start_import_tracking, 
@@ -210,6 +214,54 @@ def _update_job_progress(
         update_import_job(job_id, stage=stage, progress=progress, metadata=metadata)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Unable to update job %s progress: %s", job_id, exc)
+
+
+def _mark_mapping_failed(
+    import_id: Optional[str],
+    job_id: Optional[str],
+    error_message: str,
+    *,
+    status: str = "failed",
+    errors_count: int = 0,
+) -> None:
+    """
+    Best-effort fail handler that updates mapping status and the active job/file.
+
+    This ensures the frontend sees a terminal state instead of a stuck 'mapping' job.
+    """
+    if import_id:
+        try:
+            update_mapping_status(import_id, status, errors_count=errors_count)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Unable to update mapping status for %s: %s", import_id, exc)
+
+    if not job_id:
+        return
+
+    try:
+        job = get_import_job(job_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Unable to load job %s for failure handling: %s", job_id, exc)
+        job = None
+
+    if job and job.get("file_id"):
+        try:
+            fail_active_job(job["file_id"], job_id, error_message)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Unable to mark active job %s failed: %s", job_id, exc)
+
+    # Fallback when file_id is missing or fail_active_job failed
+    try:
+        update_import_job(
+            job_id,
+            status=status,
+            stage="mapping",
+            error_message=error_message,
+            completed=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Unable to update job %s status to failed: %s", job_id, exc)
 
 
 def _records_look_like_mappings(records: Any, sample_size: int = 5) -> bool:
@@ -534,6 +586,7 @@ def _execute_streaming_csv_import(
     metadata_info: Optional[Dict[str, Any]],
     import_id: str,
     job_id: Optional[str] = None,
+    row_count_info: Optional[RowCountResult] = None,
 ) -> Dict[str, Any]:
     """Stream CSV chunks to avoid loading huge files into memory."""
     parse_time_total = 0.0
@@ -549,6 +602,7 @@ def _execute_streaming_csv_import(
     duplicate_rows: List[Dict[str, Any]] = []
     uniqueness_columns: List[str] = []
     chunk_status_summary: Dict[str, int] = {}
+    row_count_warning: Optional[str] = None
 
     update_mapping_status(import_id, "in_progress")
     engine = get_engine()
@@ -564,85 +618,95 @@ def _execute_streaming_csv_import(
     )
 
     first_chunk = True
-    for chunk_num, chunk_records in enumerate(chunk_iter, start=1):
-        chunk_start = time.time()
-        raw_total_rows += len(chunk_records)
+    try:
+        for chunk_num, chunk_records in enumerate(chunk_iter, start=1):
+            chunk_start = time.time()
+            raw_total_rows += len(chunk_records)
 
-        # Optional in-file dedupe across the entire stream
-        chunk_records, intra_chunk_skipped = _dedupe_records_streaming_chunk(
-            chunk_records,
-            mapping_config,
-            seen_fingerprints,
-            import_id=import_id,
-        )
-        intra_file_duplicates_skipped += intra_chunk_skipped
-        parse_time_total += time.time() - chunk_start
-
-        if not chunk_records:
-            continue
-
-        if import_id:
-            mark_chunk_in_progress(import_id, chunk_num)
-
-        try:
-            map_start = time.time()
-            mapped_records, mapping_errors = map_data(chunk_records, mapping_config)
-            map_time_total += time.time() - map_start
-            mapping_errors_count += len(mapping_errors)
-            type_summary = _summarize_type_mismatches(mapping_errors)
-            _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
-
-            mapped_records = handle_schema_transformation(
-                mapped_records,
-                mapping_config.table_name,
-                import_strategy,
-            )
-
-            insert_start = time.time()
-            chunk_file_content = file_content if first_chunk else None
-            inserted, chunk_duplicates = insert_records(
-                engine,
-                mapping_config.table_name,
-                mapped_records,
-                config=mapping_config,
-                file_content=chunk_file_content,
-                file_name=file_name,
-            )
-            insert_time_total += time.time() - insert_start
-            first_chunk = False
-        except Exception as exc:
-            if import_id:
-                mark_chunk_failed(import_id, chunk_num, str(exc))
-            raise
-        else:
-            if import_id:
-                mark_chunk_completed(import_id, chunk_num, errors_count=len(mapping_errors))
-
-        records_inserted_total += inserted
-        duplicates_skipped_total += chunk_duplicates
-        mapped_total_rows += len(mapped_records)
-
-        if not uniqueness_columns and mapped_records:
-            uniqueness_columns = _determine_uniqueness_columns(
+            # Optional in-file dedupe across the entire stream
+            chunk_records, intra_chunk_skipped = _dedupe_records_streaming_chunk(
+                chunk_records,
                 mapping_config,
-                mapped_records[0],
+                seen_fingerprints,
+                import_id=import_id,
             )
+            intra_file_duplicates_skipped += intra_chunk_skipped
+            parse_time_total += time.time() - chunk_start
 
-        # Progress update (best-effort; estimate assumes at least one more chunk)
-        estimated_denominator = max(raw_total_rows + CHUNK_SIZE, 1)
-        progress_pct = min(99, int((raw_total_rows / estimated_denominator) * 100))
-        _update_job_progress(
+            if not chunk_records:
+                continue
+
+            if import_id:
+                mark_chunk_in_progress(import_id, chunk_num)
+
+            try:
+                map_start = time.time()
+                mapped_records, mapping_errors = map_data(chunk_records, mapping_config)
+                map_time_total += time.time() - map_start
+                mapping_errors_count += len(mapping_errors)
+                type_summary = _summarize_type_mismatches(mapping_errors)
+                _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
+
+                mapped_records = handle_schema_transformation(
+                    mapped_records,
+                    mapping_config.table_name,
+                    import_strategy,
+                )
+
+                insert_start = time.time()
+                chunk_file_content = file_content if first_chunk else None
+                inserted, chunk_duplicates = insert_records(
+                    engine,
+                    mapping_config.table_name,
+                    mapped_records,
+                    config=mapping_config,
+                    file_content=chunk_file_content,
+                    file_name=file_name,
+                )
+                insert_time_total += time.time() - insert_start
+                first_chunk = False
+            except Exception as exc:
+                if import_id:
+                    mark_chunk_failed(import_id, chunk_num, str(exc))
+                raise
+            else:
+                if import_id:
+                    mark_chunk_completed(import_id, chunk_num, errors_count=len(mapping_errors))
+
+            records_inserted_total += inserted
+            duplicates_skipped_total += chunk_duplicates
+            mapped_total_rows += len(mapped_records)
+
+            if not uniqueness_columns and mapped_records:
+                uniqueness_columns = _determine_uniqueness_columns(
+                    mapping_config,
+                    mapped_records[0],
+                )
+
+            # Progress update (best-effort; estimate assumes at least one more chunk)
+            estimated_denominator = max(raw_total_rows + CHUNK_SIZE, 1)
+            progress_pct = min(99, int((raw_total_rows / estimated_denominator) * 100))
+            _update_job_progress(
+                job_id,
+                stage="mapping",
+                progress=progress_pct,
+                metadata={
+                    "chunks_completed": chunk_num,
+                    "rows_processed": mapped_total_rows,
+                    "rows_inserted": records_inserted_total,
+                    "duplicates_skipped": duplicates_skipped_total,
+                    "source": source_type,
+                },
+            )
+    except Exception as exc:
+        _mark_mapping_failed(
+            import_id,
             job_id,
-            stage="mapping",
-            progress=progress_pct,
-            metadata={
-                "chunks_completed": chunk_num,
-                "rows_processed": mapped_total_rows,
-                "rows_inserted": records_inserted_total,
-                "duplicates_skipped": duplicates_skipped_total,
-                "source": source_type,
-            },
+            str(exc),
+            status="failed",
+            errors_count=mapping_errors_count,
         )
+        raise
 
     type_mismatch_summary = sorted(type_mismatch_agg.values(), key=lambda item: item["column"])
     try:
@@ -720,6 +784,16 @@ def _execute_streaming_csv_import(
         },
     )
 
+    expected_data_rows = row_count_info.data_rows if row_count_info else None
+    if expected_data_rows is not None and expected_data_rows != raw_total_rows:
+        handled_rows = records_inserted_total + duplicates_skipped_total + intra_file_duplicates_skipped
+        row_count_warning = (
+            f"Parsed {raw_total_rows} rows from streaming CSV, but the file scan suggests {expected_data_rows} data rows. "
+            f"Inserted {records_inserted_total}; skipped {duplicates_skipped_total} duplicates "
+            f"(intra-file {intra_file_duplicates_skipped}); total handled {handled_rows}."
+        )
+        logger.warning("Row count check warning (streaming CSV): %s", row_count_warning)
+
     complete_import_tracking(
         import_id=import_id,
         status="success",
@@ -731,7 +805,11 @@ def _execute_streaming_csv_import(
         duration_seconds=duration,
         parsing_time_seconds=parse_time_total,
         insert_time_seconds=insert_time_total,
-        metadata=metadata_payload or None,
+        metadata=(
+            {**metadata_payload, "row_count_warning": row_count_warning}
+            if metadata_payload or row_count_warning
+            else None
+        ),
     )
 
     return {
@@ -743,12 +821,18 @@ def _execute_streaming_csv_import(
         "mapping_errors": [],
         "type_mismatch_summary": type_mismatch_summary,
         "duration_seconds": duration,
-        "llm_followup": followup_message or None,
-        "needs_user_input": needs_user_input,
+        "llm_followup": (
+            f"{followup_message}\n\n{row_count_warning}"
+            if followup_message and row_count_warning
+            else row_count_warning
+            if row_count_warning
+            else followup_message or None
+        ),
+        "needs_user_input": needs_user_input or bool(row_count_warning),
         "duplicate_rows": duplicate_rows or None,
         "duplicate_rows_count": duplicate_total if duplicate_total else None,
         "import_id": import_id,
-        "row_count_warning": None,
+        "row_count_warning": row_count_warning,
     }
 
 
@@ -1203,6 +1287,11 @@ def execute_data_import(
                 csv_has_header = True
         if not streaming_csv:
             row_count_info = _count_file_rows(file_content, file_type, header_present=csv_has_header)
+        else:
+            # For streaming CSVs, still perform a lightweight row count to reconcile later
+            if file_type == "csv":
+                row_count_info = _count_file_rows(file_content, file_type, header_present=csv_has_header)
+        expected_data_rows = row_count_info.data_rows if row_count_info else None
 
         # Process file (or use cached records)
         parse_start = time.time()
@@ -1228,6 +1317,7 @@ def execute_data_import(
                 metadata_info=metadata_info,
                 import_id=import_id,
                 job_id=job_id,
+                row_count_info=row_count_info,
             )
         else:
             # Parse file normally
@@ -1259,13 +1349,13 @@ def execute_data_import(
 
         if (
             not streaming_csv
-            and row_count_info
-            and row_count_info.data_rows is not None
-            and raw_total_rows != row_count_info.data_rows
+            and expected_data_rows is not None
+            and raw_total_rows != expected_data_rows
         ):
             row_count_warning = (
-                f"Parsed {raw_total_rows} rows, but the file scan suggests {row_count_info.data_rows} data rows "
-                f"(total rows: {row_count_info.total_rows}, header rows: {row_count_info.header_rows})."
+                f"Parsed {raw_total_rows} rows, but the file scan suggests {expected_data_rows} data rows "
+                f"(total rows: {row_count_info.total_rows if row_count_info else 'unknown'}, "
+                f"header rows: {row_count_info.header_rows if row_count_info else 'unknown'})."
             )
 
             if file_type == "csv" and row_count_info.detected_header is not None:
@@ -1348,6 +1438,12 @@ def execute_data_import(
             import_id=import_id
         )
         total_rows = len(records)
+        if expected_data_rows is not None and raw_total_rows != expected_data_rows and row_count_warning:
+            handled_rows = total_rows + intra_file_duplicates_skipped
+            row_count_warning = (
+                f"{row_count_warning} After de-duplication, {total_rows} unique rows remain "
+                f"(in-file duplicates skipped: {intra_file_duplicates_skipped}); total handled {handled_rows}."
+            )
 
         # Start mapping status tracking
         update_mapping_status(import_id, 'in_progress')
@@ -1658,13 +1754,7 @@ def execute_data_import(
         
     except FileAlreadyImportedException as e:
         if import_id:
-            try:
-                update_mapping_status(import_id, "failed", errors_count=0)
-            except Exception as status_exc:  # pragma: no cover - defensive logging
-                logger.error(
-                    "Failed to mark mapping status as failed for duplicate file: %s",
-                    str(status_exc),
-                )
+            _mark_mapping_failed(import_id, job_id, str(e))
             complete_import_tracking(
                 import_id=import_id,
                 status="failed",
@@ -1679,6 +1769,7 @@ def execute_data_import(
         
     except DuplicateDataException as e:
         if import_id:
+            _mark_mapping_failed(import_id, job_id, str(e))
             complete_import_tracking(
                 import_id=import_id,
                 status="failed",
@@ -1694,6 +1785,7 @@ def execute_data_import(
         
     except Exception as e:
         if import_id:
+            _mark_mapping_failed(import_id, job_id, str(e))
             complete_import_tracking(
                 import_id=import_id,
                 status="failed",
