@@ -19,7 +19,8 @@ def _build_mapping_error(
     message: str,
     column: Optional[str] = None,
     expected_type: Optional[str] = None,
-    value: Optional[Any] = None
+    value: Optional[Any] = None,
+    record_number: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a structured error payload for downstream processing."""
     error_payload: Dict[str, Any] = {
@@ -30,6 +31,8 @@ def _build_mapping_error(
         error_payload["column"] = column
     if expected_type is not None:
         error_payload["expected_type"] = expected_type
+    if record_number is not None:
+        error_payload["record_number"] = record_number
     if value is not None:
         if isinstance(value, (int, float, str, bool)):
             error_payload["value"] = value
@@ -38,7 +41,12 @@ def _build_mapping_error(
     return error_payload
 
 
-def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def map_data(
+    records: List[Dict[str, Any]],
+    config: MappingConfig,
+    *,
+    row_offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map input data according to the configuration.
     
@@ -95,7 +103,7 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
     
     # Process records with rules and/or date conversion
     mapped_records = []
-    for record in records:
+    for idx, record in enumerate(records, start=row_offset + 1):
         source_record = record
         if has_pre_map_transformations:
             source_record = _apply_column_transformations(record, pre_map_transformations)
@@ -125,7 +133,8 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                             message=message,
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
-                            value=value
+                            value=value,
+                            record_number=idx,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -143,7 +152,8 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                             message=message,
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
-                            value=value
+                            value=value,
+                            record_number=idx,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -167,7 +177,8 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                             message=message,
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
-                            value=value
+                            value=value,
+                            record_number=idx,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -181,7 +192,8 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                             message=message,
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
-                            value=value
+                            value=value,
+                            record_number=idx,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -221,7 +233,8 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                             message=message,
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
-                            value=value
+                            value=value,
+                            record_number=idx,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -281,7 +294,8 @@ def map_data(records: List[Dict[str, Any]], config: MappingConfig) -> Tuple[List
                                 message=message,
                                 column=col_name,
                                 expected_type=config.db_schema.get(col_name),
-                                value=original_value
+                                value=original_value,
+                                record_number=idx,
                             ))
                             logger.debug(message)
                         mapped_record[col_name] = converted_value

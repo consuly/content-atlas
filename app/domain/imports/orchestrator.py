@@ -598,6 +598,8 @@ def _execute_streaming_csv_import(
     duplicates_skipped_total = 0
     intra_file_duplicates_skipped = 0
     mapping_errors_count = 0
+    mapping_errors_sample: List[Dict[str, Any]] = []
+    MAPPING_ERROR_SAMPLE_LIMIT = 50
     type_mismatch_agg: Dict[str, Dict[str, Any]] = {}
     duplicate_rows: List[Dict[str, Any]] = []
     uniqueness_columns: List[str] = []
@@ -621,6 +623,7 @@ def _execute_streaming_csv_import(
     try:
         for chunk_num, chunk_records in enumerate(chunk_iter, start=1):
             chunk_start = time.time()
+            chunk_start_row = raw_total_rows + 1
             raw_total_rows += len(chunk_records)
 
             # Optional in-file dedupe across the entire stream
@@ -641,11 +644,59 @@ def _execute_streaming_csv_import(
 
             try:
                 map_start = time.time()
-                mapped_records, mapping_errors = map_data(chunk_records, mapping_config)
+                mapped_records, mapping_errors = map_data(
+                    chunk_records,
+                    mapping_config,
+                    row_offset=chunk_start_row - 1,
+                )
                 map_time_total += time.time() - map_start
                 mapping_errors_count += len(mapping_errors)
                 type_summary = _summarize_type_mismatches(mapping_errors)
                 _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
+
+                if mapping_errors:
+                    error_records: List[Dict[str, Any]] = []
+                    for err in mapping_errors:
+                        if isinstance(err, dict):
+                            record_number = err.get("record_number")
+                            error_message = err.get("message", str(err))
+                            error_type = err.get("type", "mapping_error")
+                            source_field = err.get("column") or err.get("source_field")
+                            target_field = err.get("target_field")
+                            source_value = err.get("value")
+                            chunk_number = err.get("chunk_number") or chunk_num
+                            error_records.append(
+                                {
+                                    "record_number": record_number,
+                                    "error_type": error_type,
+                                    "error_message": error_message,
+                                    "source_field": source_field,
+                                    "target_field": target_field,
+                                    "source_value": source_value,
+                                    "chunk_number": chunk_number,
+                                }
+                            )
+                            if len(mapping_errors_sample) < MAPPING_ERROR_SAMPLE_LIMIT:
+                                sample_entry = dict(err)
+                                sample_entry.setdefault("chunk_number", chunk_number)
+                                mapping_errors_sample.append(sample_entry)
+                        else:
+                            fallback_error = {
+                                "record_number": chunk_start_row + len(error_records),
+                                "error_type": "mapping_error",
+                                "error_message": str(err),
+                                "source_field": None,
+                                "target_field": None,
+                                "source_value": None,
+                                "chunk_number": chunk_num,
+                            }
+                            error_records.append(fallback_error)
+                            if len(mapping_errors_sample) < MAPPING_ERROR_SAMPLE_LIMIT:
+                                mapping_errors_sample.append(fallback_error)
+                    try:
+                        record_mapping_errors_batch(import_id, error_records)
+                    except Exception as exc:
+                        logger.warning("Unable to persist mapping errors for chunk %s: %s", chunk_num, exc)
 
                 mapped_records = handle_schema_transformation(
                     mapped_records,
@@ -655,14 +706,15 @@ def _execute_streaming_csv_import(
 
                 insert_start = time.time()
                 chunk_file_content = file_content if first_chunk else None
-                inserted, chunk_duplicates = insert_records(
-                    engine,
-                    mapping_config.table_name,
-                    mapped_records,
-                    config=mapping_config,
-                    file_content=chunk_file_content,
-                    file_name=file_name,
-                )
+                with TableLockManager.acquire(mapping_config.table_name):
+                    inserted, chunk_duplicates = insert_records(
+                        engine,
+                        mapping_config.table_name,
+                        mapped_records,
+                        config=mapping_config,
+                        file_content=chunk_file_content,
+                        file_name=file_name,
+                    )
                 insert_time_total += time.time() - insert_start
                 first_chunk = False
             except Exception as exc:
@@ -818,7 +870,7 @@ def _execute_streaming_csv_import(
         "duplicates_skipped": duplicates_skipped_total,
         "intra_file_duplicates_skipped": intra_file_duplicates_skipped,
         "table_name": mapping_config.table_name,
-        "mapping_errors": [],
+        "mapping_errors": mapping_errors_sample or None,
         "type_mismatch_summary": type_mismatch_summary,
         "duration_seconds": duration,
         "llm_followup": (
@@ -840,7 +892,8 @@ def _map_chunk(
     chunk_records: List[Dict[str, Any]],
     config: MappingConfig,
     chunk_num: int,
-    import_id: Optional[str] = None
+    import_id: Optional[str] = None,
+    row_offset: int = 0,
 ) -> Tuple[int, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map a single chunk of records. Designed to be called in parallel.
@@ -860,7 +913,14 @@ def _map_chunk(
         mark_chunk_in_progress(import_id, chunk_num)
     
     try:
-        mapped_records, errors = map_data(chunk_records, config)
+        mapped_records, errors = map_data(
+            chunk_records,
+            config,
+            row_offset=row_offset,
+        )
+        for error in errors:
+            if isinstance(error, dict):
+                error.setdefault("chunk_number", chunk_num)
         chunk_time = time.time() - chunk_start
         records_per_sec = len(mapped_records) / chunk_time if chunk_time > 0 else 0
         logger.info(f"⏱️  Chunk {chunk_num}: Mapped {len(mapped_records)} records in {chunk_time:.2f}s ({records_per_sec:.0f} rec/sec, {len(errors)} errors)")
@@ -925,11 +985,20 @@ def _map_chunks_parallel(
                 logger.warning("Failed to record failed status for chunk %s", chunk_number)
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all chunk mapping tasks
-        future_to_chunk = {
-            executor.submit(_map_chunk, chunk_records, config, chunk_num + 1, import_id): chunk_num
-            for chunk_num, chunk_records in enumerate(raw_chunks)
-        }
+        # Submit all chunk mapping tasks while preserving source row offsets for error traceability
+        future_to_chunk = {}
+        running_offset = 0
+        for chunk_num, chunk_records in enumerate(raw_chunks):
+            future = executor.submit(
+                _map_chunk,
+                chunk_records,
+                config,
+                chunk_num + 1,
+                import_id,
+                running_offset,
+            )
+            future_to_chunk[future] = chunk_num
+            running_offset += len(chunk_records)
         pending_futures = set(future_to_chunk.keys())
 
         while pending_futures:
@@ -1518,7 +1587,7 @@ def execute_data_import(
                 if timeout_seconds:
                     logger.info("Enforcing mapping timeout of %d seconds for sequential mapping", timeout_seconds)
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(map_data, records, mapping_config)
+                    future = executor.submit(map_data, records, mapping_config, row_offset=0)
                     try:
                         if timeout_seconds is None:
                             mapped_records, mapping_errors = future.result()
@@ -1582,21 +1651,25 @@ def execute_data_import(
                     source_field = error_msg.get("column") or error_msg.get("source_field")
                     target_field = error_msg.get("target_field")
                     source_value = error_msg.get("value")
+                    record_number = error_msg.get("record_number") or i + 1
+                    chunk_number = error_msg.get("chunk_number") or 1
                 else:
                     error_message = str(error_msg)
                     error_type = "mapping_error"
                     source_field = None
                     target_field = None
                     source_value = None
+                    record_number = i + 1
+                    chunk_number = 1
 
                 error_records.append({
-                    'record_number': i + 1,
+                    'record_number': record_number,
                     'error_type': error_type,
                     'error_message': error_message,
                     'source_field': source_field,
                     'target_field': target_field,
                     'source_value': source_value,
-                    'chunk_number': None
+                    'chunk_number': chunk_number
                 })
             
             # Batch insert errors
