@@ -2463,7 +2463,7 @@ async def analyze_file_endpoint(
                                 )
                                 update_file_status(
                                     file_id,
-                                    "mapping",
+                                    "failed",
                                     error_message=fallback_error,
                                     expected_active_job_id=job_id
                                 )

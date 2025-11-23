@@ -1,6 +1,7 @@
 import hashlib
 import json
 from sqlalchemy import text, MetaData
+from sqlalchemy.exc import DataError
 from sqlalchemy.engine import Engine
 from typing import List, Dict, Any, Tuple, Optional
 from decimal import Decimal, InvalidOperation
@@ -300,7 +301,7 @@ def coerce_value_for_sql_type(value: Any, sql_type: str) -> Any:
     # Convert based on SQL type
     sql_type_upper = sql_type.upper()
 
-    if 'INTEGER' in sql_type_upper:
+    if 'INT' in sql_type_upper or 'SERIAL' in sql_type_upper:
         # Convert floats to integers (e.g., 507.0 -> 507)
         if isinstance(value, float):
             return int(value)
@@ -788,57 +789,110 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
     """
 
     with engine.begin() as conn:
-        for row_num, record in enumerate(records, start=1):
-            # Apply type coercion based on schema if config is provided
-            coerced_record = record.copy()
-            corrections = {}
-            
-            if config and config.db_schema:
-                for col_name, value in record.items():
-                    if col_name in config.db_schema:
-                        sql_type = config.db_schema[col_name]
-                        original_value = value
-                        coerced_value = coerce_value_for_sql_type(value, sql_type)
-                        coerced_record[col_name] = coerced_value
-                        
-                        # Track corrections
-                        if str(original_value) != str(coerced_value):
-                            corrections[col_name] = {
-                                "before": str(original_value),
-                                "after": coerced_value,
-                                "correction_type": "type_coercion",
-                                "target_type": sql_type
-                            }
-                            print(f"DEBUG: Coerced column '{col_name}' from {repr(original_value)} ({type(original_value).__name__}) to {repr(coerced_value)} ({type(coerced_value).__name__}) for type {sql_type}")
+        try:
+            for row_num, record in enumerate(records, start=1):
+                # Apply type coercion based on schema if config is provided
+                coerced_record = record.copy()
+                corrections = {}
+                
+                if config and config.db_schema:
+                    for col_name, value in record.items():
+                        if col_name in config.db_schema:
+                            sql_type = config.db_schema[col_name]
+                            original_value = value
+                            coerced_value = coerce_value_for_sql_type(value, sql_type)
+                            coerced_record[col_name] = coerced_value
+                            
+                            # Track corrections
+                            if str(original_value) != str(coerced_value):
+                                corrections[col_name] = {
+                                    "before": str(original_value),
+                                    "after": coerced_value,
+                                    "correction_type": "type_coercion",
+                                    "target_type": sql_type
+                                }
+                                print(f"DEBUG: Coerced column '{col_name}' from {repr(original_value)} ({type(original_value).__name__}) to {repr(coerced_value)} ({type(coerced_value).__name__}) for type {sql_type}")
 
-            # Add metadata
-            coerced_record['_import_id'] = import_id
-            coerced_record['_source_row_number'] = row_num
-            coerced_record['_corrections_applied'] = json.dumps(corrections) if corrections else None
+                # Add metadata
+                coerced_record['_import_id'] = import_id
+                coerced_record['_source_row_number'] = row_num
+                coerced_record['_corrections_applied'] = json.dumps(corrections) if corrections else None
 
-            print(f"DEBUG: Inserting record: {coerced_record}")
-            # Insert the coerced record
-            conn.execute(text(insert_sql), coerced_record)
+                print(f"DEBUG: Inserting record: {coerced_record}")
+                # Insert the coerced record
+                conn.execute(text(insert_sql), coerced_record)
 
-        # Record file import if file-level checking is enabled (after successful insert)
-        if config and config.duplicate_check and config.duplicate_check.check_file_level and file_content:
-            file_hash = calculate_file_hash(file_content)
-            print(f"DEBUG: Recording file import with hash: {file_hash}")
-            conn.execute(text("""
-                INSERT INTO file_imports (file_hash, file_name, table_name, record_count)
-                VALUES (:file_hash, :file_name, :table_name, :record_count)
-                ON CONFLICT (file_hash) DO UPDATE
-                SET
-                    file_name = EXCLUDED.file_name,
-                    table_name = EXCLUDED.table_name,
-                    record_count = EXCLUDED.record_count,
-                    imported_at = CURRENT_TIMESTAMP
-            """), {
-                "file_hash": file_hash,
-                "file_name": file_name or "",
-                "table_name": table_name,
-                "record_count": len(records)
-            })
+            # Record file import if file-level checking is enabled (after successful insert)
+            if config and config.duplicate_check and config.duplicate_check.check_file_level and file_content:
+                file_hash = calculate_file_hash(file_content)
+                print(f"DEBUG: Recording file import with hash: {file_hash}")
+                conn.execute(text("""
+                    INSERT INTO file_imports (file_hash, file_name, table_name, record_count)
+                    VALUES (:file_hash, :file_name, :table_name, :record_count)
+                    ON CONFLICT (file_hash) DO UPDATE
+                    SET
+                        file_name = EXCLUDED.file_name,
+                        table_name = EXCLUDED.table_name,
+                        record_count = EXCLUDED.record_count,
+                        imported_at = CURRENT_TIMESTAMP
+                """), {
+                    "file_hash": file_hash,
+                    "file_name": file_name or "",
+                    "table_name": table_name,
+                    "record_count": len(records)
+                })
+        except DataError as exc:
+            msg = str(getattr(exc, "orig", exc))
+            lower_msg = msg.lower()
+            if "out of range" in lower_msg or "numeric" in lower_msg:
+                int_columns = []
+                INT32_MAX = 2_147_483_647
+
+                def _int_like(value: Any) -> Optional[int]:
+                    if value is None or isinstance(value, bool):
+                        return None
+                    try:
+                        if isinstance(value, (int,)):
+                            return value
+                        if isinstance(value, float):
+                            if math.isnan(value) or not float(value).is_integer():
+                                return None
+                            return int(value)
+                        if isinstance(value, Decimal):
+                            if value != value.to_integral():
+                                return None
+                            return int(value)
+                        text_val = str(value).strip().replace(",", "")
+                        if text_val.startswith("$"):
+                            text_val = text_val[1:]
+                        if text_val.startswith("(") and text_val.endswith(")"):
+                            text_val = f"-{text_val[1:-1]}"
+                        candidate = Decimal(text_val)
+                        if candidate != candidate.to_integral():
+                            return None
+                        return int(candidate)
+                    except Exception:
+                        return None
+
+                if config and config.db_schema:
+                    for col_name, col_type in config.db_schema.items():
+                        if not col_type:
+                            continue
+                        type_upper = col_type.upper()
+                        if "BIGINT" in type_upper or "INT" not in type_upper:
+                            continue
+                        # Look at the last attempted record (coerced_record is still in scope)
+                        overflow_val = _int_like(coerced_record.get(col_name)) if 'coerced_record' in locals() else None
+                        if overflow_val is not None and abs(overflow_val) > INT32_MAX:
+                            int_columns.append(f"{col_name}={overflow_val}")
+
+                hint = ""
+                if int_columns:
+                    hint = f" Offending values: {', '.join(int_columns)}. Consider widening these columns to BIGINT or DECIMAL."
+                raise ValueError(
+                    f"Numeric overflow inserting into table '{table_name}'.{hint}"
+                ) from exc
+            raise
 
     return len(records), duplicates_found
 

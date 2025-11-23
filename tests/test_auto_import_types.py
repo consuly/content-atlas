@@ -17,6 +17,7 @@ def test_normalize_expected_type_aliases():
     assert normalize_expected_type("Decimal") == "DECIMAL"
     assert normalize_expected_type("float") == "DECIMAL"
     assert normalize_expected_type("integer") == "INTEGER"
+    assert normalize_expected_type("bigint") == "BIGINT"
     assert normalize_expected_type("date") == "DATE"
     assert normalize_expected_type("timestamp") == "TIMESTAMP"
     assert normalize_expected_type("boolean") == "BOOLEAN"
@@ -77,3 +78,15 @@ def test_coerce_records_to_expected_types_round_trips():
 
     # Columns missing in the source should be reported
     assert summary["missing"]["status"] == "missing_source_column"
+
+
+def test_coerce_records_to_bigint():
+    raw_records = [{"id": "120000000000000000"}, {"id": "5"}]
+    expected_types = {"id": "bigint"}
+
+    converted, summary = coerce_records_to_expected_types(raw_records, expected_types)
+
+    assert int(converted[0]["id"]) == 120000000000000000
+    assert int(converted[1]["id"]) == 5
+    assert summary["id"]["expected_type"] == "BIGINT"
+    assert summary["id"]["status"] == "converted"

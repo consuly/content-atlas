@@ -669,6 +669,8 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
     """Detect the appropriate SQL type for a pandas Series with conservative approach for data consolidation."""
     # Try to infer type from sample values
     sample_values = series.dropna().head(100)  # Sample first 100 non-null values
+    INT32_MAX = 2_147_483_647
+    INT64_MAX = 9_223_372_036_854_775_807
 
     if len(sample_values) == 0:
         return "TEXT"
@@ -705,10 +707,19 @@ def detect_column_type(series: pd.Series, has_datetime_transformation: bool = Fa
 
     # Check if all values are numeric - use DECIMAL for all numeric data for maximum flexibility
     try:
-        pd.to_numeric(sample_values, errors='raise')
-        # Use DECIMAL for all numeric data to handle mixed formats (integers, floats, etc.)
-        # This enables easy data consolidation and merging across different datasets
-        return "DECIMAL"
+        numeric_series = pd.to_numeric(sample_values, errors='raise')
+        # Determine whether these are whole numbers and their magnitude
+        has_fractional = not numeric_series.apply(float.is_integer).all()
+        if has_fractional:
+            return "DECIMAL"
+
+        max_abs = numeric_series.abs().max()
+        if max_abs > INT64_MAX:
+            # Exceeds BIGINT — fall back to DECIMAL for safety
+            return "DECIMAL"
+        if max_abs > INT32_MAX:
+            return "BIGINT"
+        return "INTEGER"
     except (ValueError, TypeError):
         pass
 

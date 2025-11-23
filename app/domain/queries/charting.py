@@ -210,8 +210,8 @@ def _build_time_series_chart(time_column: Dict[str, Any], numeric_column: Dict[s
                 {
                     "label": numeric_column["name"],
                     "data": data,
-                    "borderColor": palette_color,
-                    "backgroundColor": palette_color + "33",
+                    "borderColor": [palette_color],
+                    "backgroundColor": [palette_color + "33"],
                     "fill": False,
                 }
             ],
