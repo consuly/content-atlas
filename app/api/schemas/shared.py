@@ -15,6 +15,7 @@ RESERVED_SYSTEM_TABLES = {
     "uploaded_files",
     "import_duplicates",
     "import_jobs",
+    "mapping_chunk_status",
     # Query + conversation storage
     "query_threads",
     "query_messages",
