@@ -93,8 +93,14 @@ def verify_api_key(db: Session, api_key: str) -> Optional[ApiKey]:
         return None
     
     # Check expiration
-    if api_key_record.expires_at and api_key_record.expires_at < _utcnow():
-        return None
+    expires_at = api_key_record.expires_at
+    if expires_at:
+        # Normalize naive timestamps to UTC to avoid offset-aware comparison errors
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if expires_at < _utcnow():
+            return None
     
     return api_key_record
 
