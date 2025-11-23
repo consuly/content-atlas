@@ -27,6 +27,23 @@ ChartJS.register(
 );
 
 const { Text } = Typography;
+const COLOR_PALETTE = ['#1890ff', '#fa8c16', '#52c41a', '#eb2f96', '#722ed1', '#13c2c2'];
+
+const sanitizeColor = (color: string | string[] | undefined, fallback: string) => {
+  if (Array.isArray(color)) {
+    const sanitized = color.map((value) => value || fallback);
+    return sanitized.length ? sanitized : fallback;
+  }
+
+  if (typeof color === 'string' && color.trim()) {
+    return color;
+  }
+
+  return fallback;
+};
+
+const ensureNumbers = (values: number[]) =>
+  values.map((value) => (Number.isFinite(value) ? value : Number(value) || 0));
 
 interface ChartPreviewProps {
   suggestion?: ChartSuggestion;
@@ -49,11 +66,22 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ suggestion }) => {
   }
 
   const { spec } = suggestion;
+  const datasets = spec.datasets.map((dataset, index) => {
+    const fallback = COLOR_PALETTE[index % COLOR_PALETTE.length];
+
+    return {
+      ...dataset,
+      data: ensureNumbers(dataset.data),
+      backgroundColor: sanitizeColor(dataset.backgroundColor, fallback),
+      borderColor: sanitizeColor(dataset.borderColor ?? dataset.backgroundColor, fallback),
+    };
+  });
   const data: ChartData<'bar' | 'line' | 'pie', number[], string> = {
     labels: spec.labels,
-    datasets: spec.datasets,
+    datasets,
   };
   const options = {
+    responsive: true,
     maintainAspectRatio: false,
     ...(spec.options ?? {}),
   } as ChartOptions<'bar' | 'line' | 'pie'>;
