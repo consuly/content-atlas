@@ -2,7 +2,7 @@
  * Component to display query results in a table format
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import { Table, Button, Space, Typography } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -19,6 +19,11 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   csvData, 
   maxHeight = 400 
 }) => {
+  const [pagination, setPagination] = useState({
+    current: 1,
+    pageSize: 10,
+  });
+
   const handleDownload = () => {
     // Create a blob from the CSV data
     const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
@@ -109,6 +114,25 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     }
   }, [csvData]);
 
+  useEffect(() => {
+    // Reset pagination when new results arrive
+    setPagination((prev) => ({
+      ...prev,
+      current: 1,
+    }));
+  }, [csvData]);
+
+  useEffect(() => {
+    // Clamp the current page if the dataset shrinks
+    const maxPage = Math.max(1, Math.ceil(dataSource.length / pagination.pageSize));
+    if (pagination.current > maxPage) {
+      setPagination((prev) => ({
+        ...prev,
+        current: maxPage,
+      }));
+    }
+  }, [dataSource.length, pagination.pageSize, pagination.current]);
+
   if (dataSource.length === 0) {
     return (
       <div style={{ padding: '20px', textAlign: 'center', color: '#999' }}>
@@ -136,10 +160,18 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         columns={columns}
         dataSource={dataSource}
         pagination={{
-          pageSize: 10,
+          current: pagination.current,
+          pageSize: pagination.pageSize,
           showSizeChanger: true,
           showTotal: (total) => `Total ${total} rows`,
           pageSizeOptions: ['10', '20', '50', '100'],
+          total: dataSource.length,
+        }}
+        onChange={(nextPagination) => {
+          setPagination({
+            current: nextPagination.current || 1,
+            pageSize: nextPagination.pageSize || pagination.pageSize,
+          });
         }}
         scroll={{ x: 'max-content', y: maxHeight }}
         size="small"
