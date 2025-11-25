@@ -23,7 +23,6 @@ import type {
   FilterValue,
   SortOrder,
   SorterResult,
-  TableCurrentDataSource,
   TablePaginationConfig,
 } from 'antd/es/table/interface';
 import { ArrowRightOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
@@ -158,7 +157,6 @@ export const TablesListPage: React.FC = () => {
     _pagination: TablePaginationConfig,
     _filters: Record<string, FilterValue | null>,
     sorterInfo: SorterResult<TableInfo> | SorterResult<TableInfo>[],
-    _extra: TableCurrentDataSource<TableInfo>,
   ) => {
     const currentSorter = Array.isArray(sorterInfo) ? sorterInfo[0] : sorterInfo;
     setSorter({

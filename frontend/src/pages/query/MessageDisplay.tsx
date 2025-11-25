@@ -3,11 +3,12 @@
  */
 
 import React, { useState } from 'react';
-import { Card, Badge, Collapse, Space, Typography } from 'antd';
+import { Badge, Collapse, Space, Typography } from 'antd';
 import { 
   ClockCircleOutlined, 
   DatabaseOutlined, 
-  CodeOutlined
+  CodeOutlined,
+  WarningOutlined
 } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -30,63 +31,36 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
 
   if (message.type === 'user') {
     return (
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-        <Card
-          size="small"
-          style={{
-            maxWidth: '70%',
-            backgroundColor: '#1890ff',
-            color: 'white',
-            borderRadius: 8,
-          }}
-          styles={{ body: { padding: '12px 16px' } }}
-        >
+      <div className="flex justify-end mb-4">
+        <div className="bg-brand-500 text-white p-4 rounded-2xl rounded-br-none shadow-lg max-w-[80%]">
           <Text style={{ color: 'white' }}>{message.content}</Text>
-        </Card>
+        </div>
       </div>
     );
   }
 
   // Assistant message
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
-      <Card
-        size="small"
-        style={{
-          maxWidth: '85%',
-          borderRadius: 8,
-        }}
-        styles={{ body: { padding: '16px' } }}
-      >
+    <div className="flex justify-start mb-4">
+      <div className="message-bubble-assistant p-5 rounded-2xl rounded-bl-none shadow-lg max-w-[90%] w-full">
         {/* Error message */}
         {message.error && (
-          <div style={{ marginBottom: 16 }}>
+          <div className="mb-4">
             <Badge status="error" text={<Text strong>Query Failed</Text>} />
-            <div style={{ 
-              marginTop: 8, 
-              padding: 16, 
-              backgroundColor: '#fff2f0', 
-              borderRadius: 8,
-              border: '1px solid #ffccc7'
-            }}>
-              <div style={{ marginBottom: 8 }}>
+            <div className="mt-2 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/50 rounded-lg">
+              <div className="mb-2 flex items-center gap-2 text-red-600 dark:text-red-400">
+                <WarningOutlined />
                 <Text strong type="danger">Error Details:</Text>
               </div>
               <Text type="danger" style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
                 {message.error}
               </Text>
               {message.error.includes('Network error') && (
-                <div style={{ 
-                  marginTop: 12, 
-                  padding: 12, 
-                  backgroundColor: '#fffbe6',
-                  borderRadius: 4,
-                  border: '1px solid #ffe58f'
-                }}>
-                  <Text strong style={{ display: 'block', marginBottom: 4 }}>
+                <div className="mt-3 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-900/50 rounded">
+                  <Text strong className="block mb-1 text-yellow-700 dark:text-yellow-400">
                     💡 Troubleshooting Tips:
                   </Text>
-                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                  <ul className="list-disc pl-5 m-0 text-yellow-700 dark:text-yellow-400">
                     <li>Check if the API server is running</li>
                     <li>Verify your internet connection</li>
                     <li>Ensure the API URL is correctly configured</li>
@@ -95,14 +69,8 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
                 </div>
               )}
               {message.error.includes('Authentication failed') && (
-                <div style={{ 
-                  marginTop: 12, 
-                  padding: 12, 
-                  backgroundColor: '#fffbe6',
-                  borderRadius: 4,
-                  border: '1px solid #ffe58f'
-                }}>
-                  <Text>
+                <div className="mt-3 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-900/50 rounded">
+                  <Text className="text-yellow-700 dark:text-yellow-400">
                     💡 Please try logging out and logging back in to refresh your session.
                   </Text>
                 </div>
@@ -113,7 +81,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
 
         {/* Success indicator */}
         {!message.error && message.executedSql && (
-          <div style={{ marginBottom: 12 }}>
+          <div className="mb-3">
             <Badge 
               status="success" 
               text={<Text type="success">Query executed successfully</Text>} 
@@ -122,7 +90,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
         )}
 
         {/* Markdown explanation */}
-        <div style={{ marginBottom: message.executedSql ? 16 : 0 }}>
+        <div className={`prose dark:prose-invert max-w-none ${message.executedSql ? 'mb-4' : ''}`}>
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -134,11 +102,12 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
                     style={vscDarkPlus as { [key: string]: React.CSSProperties }}
                     language={match[1]}
                     PreTag="div"
+                    customStyle={{ borderRadius: '0.5rem' }}
                   >
                     {String(children).replace(/\n$/, '')}
                   </SyntaxHighlighter>
                 ) : (
-                  <code className={className} {...props}>
+                  <code className={`${className} bg-slate-100 dark:bg-slate-700 px-1 py-0.5 rounded text-sm`} {...props}>
                     {children}
                   </code>
                 );
@@ -150,7 +119,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
         </div>
 
         {hasChart && (
-          <div style={{ marginBottom: 16 }}>
+          <div className="mb-4">
             <ChartPreview suggestion={message.chartSuggestion} />
           </div>
         )}
@@ -161,7 +130,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
             ghost
             activeKey={sqlExpanded ? ['sql'] : []}
             onChange={(keys) => setSqlExpanded(keys.includes('sql'))}
-            style={{ marginBottom: 16 }}
+            className="mb-4 border border-slate-200 dark:border-slate-700 rounded-lg"
           >
             <Panel
               header={
@@ -188,17 +157,17 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
 
         {/* Results Table */}
         {message.dataCsv && (
-          <div style={{ marginBottom: 16 }}>
+          <div className="mb-4 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
             <ResultsTable csvData={message.dataCsv} />
           </div>
         )}
 
         {/* Metadata */}
         {(typeof message.rowsReturned === 'number' || typeof message.executionTime === 'number') && (
-          <Space size="large" style={{ marginTop: 8 }}>
+          <Space size="large" className="mt-2 pt-3 border-t border-slate-100 dark:border-slate-700 w-full">
             {typeof message.rowsReturned === 'number' && (
               <Space size="small">
-                <DatabaseOutlined style={{ color: '#1890ff' }} />
+                <DatabaseOutlined className="text-brand-500" />
                 <Text type="secondary">
                   {message.rowsReturned} {message.rowsReturned === 1 ? 'row' : 'rows'}
                 </Text>
@@ -206,13 +175,13 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({ message }) => {
             )}
             {typeof message.executionTime === 'number' && (
               <Space size="small">
-                <ClockCircleOutlined style={{ color: '#52c41a' }} />
+                <ClockCircleOutlined className="text-green-500" />
                 <Text type="secondary">{message.executionTime.toFixed(2)}s</Text>
               </Space>
             )}
           </Space>
         )}
-      </Card>
+      </div>
     </div>
   );
 };

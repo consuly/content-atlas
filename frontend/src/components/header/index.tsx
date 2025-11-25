@@ -5,14 +5,12 @@ import {
   Avatar,
   Space,
   Switch,
-  theme,
   Typography,
 } from "antd";
 import React, { useContext } from "react";
 import { ColorModeContext } from "../../contexts/color-mode/context";
 
 const { Text } = Typography;
-const { useToken } = theme;
 
 type IUser = {
   id: number;
@@ -23,33 +21,22 @@ type IUser = {
 export const Header: React.FC<RefineThemedLayoutHeaderProps> = ({
   sticky = true,
 }) => {
-  const { token } = useToken();
   const { data: user } = useGetIdentity<IUser>();
   const { mode, setMode } = useContext(ColorModeContext);
 
-  const headerStyles: React.CSSProperties = {
-    backgroundColor: token.colorBgElevated,
-    display: "flex",
-    justifyContent: "flex-end",
-    alignItems: "center",
-    padding: "0px 24px",
-    height: "64px",
-  };
-
-  if (sticky) {
-    headerStyles.position = "sticky";
-    headerStyles.top = 0;
-    headerStyles.zIndex = 1;
-  }
-
   return (
-    <AntdLayout.Header style={headerStyles}>
+    <AntdLayout.Header
+      className={`flex justify-end items-center px-6 h-16 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-700 transition-colors duration-300 ${
+        sticky ? "sticky top-0 z-50" : ""
+      }`}
+      style={{ paddingInline: "24px" }} // Keep padding inline to be safe with AntD
+    >
       <Space>
         <Switch
           checkedChildren="🌛"
           unCheckedChildren="🔆"
+          checked={mode === "dark"}
           onChange={() => setMode(mode === "light" ? "dark" : "light")}
-          defaultChecked={mode === "dark"}
         />
         <Space style={{ marginLeft: "8px" }} size="middle">
           {user?.name && <Text strong>{user.name}</Text>}

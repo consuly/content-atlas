@@ -58,10 +58,12 @@ export const ImportPage: React.FC = () => {
   const [importSummaryCache, setImportSummaryCache] = useState<Record<string, ImportSummary>>({});
   const { message: messageApi } = AntdApp.useApp();
 
-  const normalizeJobStatus = (status?: string | null) =>
-    (status || '').toLowerCase().trim();
+  const normalizeJobStatus = useCallback(
+    (status?: string | null) => (status || '').toLowerCase().trim(),
+    []
+  );
 
-  const isJobActive = (file: UploadedFile) => {
+  const isJobActive = useCallback((file: UploadedFile) => {
     const normalized = normalizeJobStatus(file.active_job_status);
     const hasJobMetadata = file.active_job_id || file.active_job_stage || file.active_job_progress;
     const isTerminal =
@@ -76,7 +78,7 @@ export const ImportPage: React.FC = () => {
       (!!normalized && !isTerminal) ||
       (!normalized && !!hasJobMetadata)
     );
-  };
+  }, [normalizeJobStatus]);
 
   const isJobQueued = (file: UploadedFile) => {
     const normalized = normalizeJobStatus(file.active_job_status);
@@ -284,7 +286,16 @@ export const ImportPage: React.FC = () => {
         setLoading(false);
       }
     },
-    [activeTab, attachImportSummaries, currentPage, fetchTabCounts, messageApi, pageSize, statusGroups]
+    [
+      activeTab,
+      attachImportSummaries,
+      currentPage,
+      fetchTabCounts,
+      isJobActive,
+      messageApi,
+      pageSize,
+      statusGroups,
+    ]
   );
 
   useEffect(() => {
@@ -745,10 +756,11 @@ export const ImportPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div className="p-6">
       <Card
-        title="Upload Files"
-        style={{ marginBottom: '24px' }}
+        title={<span className="text-lg font-bold text-slate-800 dark:text-white">Upload Files</span>}
+        className="glass-panel mb-6"
+        bordered={false}
       >
         <FileUpload
           onUploadSuccess={() => {
@@ -760,12 +772,16 @@ export const ImportPage: React.FC = () => {
       </Card>
 
       <Card
-        title="Uploaded Files"
+        title={<span className="text-lg font-bold text-slate-800 dark:text-white">Uploaded Files</span>}
+        className="glass-panel"
+        bordered={false}
         extra={
           <Button
             icon={<ReloadOutlined />}
             onClick={() => fetchFiles(activeTab, currentPage, pageSize)}
             loading={loading}
+            type="text"
+            className="hover:text-brand-500"
           >
             Refresh
           </Button>

@@ -56,7 +56,11 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ suggestion }) => {
 
   if (!suggestion.should_display || !suggestion.spec) {
     return (
-      <Card size="small" bodyStyle={{ padding: '12px 16px' }} style={{ background: '#f7f9fc' }}>
+      <Card
+        size="small"
+        className="surface-muted"
+        bodyStyle={{ padding: '12px 16px' }}
+      >
         <Space direction="vertical" size={4}>
           <Text strong>Chart not shown</Text>
           <Text type="secondary">{suggestion.reason}</Text>
@@ -115,6 +119,7 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ suggestion }) => {
   return (
     <Card
       size="small"
+      className="surface-card"
       title="Suggested Chart"
       bodyStyle={{ padding: '12px 16px' }}
       style={{ marginBottom: 12 }}
