@@ -124,14 +124,14 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
 
   useEffect(() => {
     // Clamp the current page if the dataset shrinks
-    const maxPage = Math.max(1, Math.ceil(dataSource.length / pagination.pageSize));
-    if (pagination.current > maxPage) {
-      setPagination((prev) => ({
-        ...prev,
-        current: maxPage,
-      }));
-    }
-  }, [dataSource.length, pagination.pageSize, pagination.current]);
+    setPagination((prev) => {
+      const maxPage = Math.max(1, Math.ceil(dataSource.length / prev.pageSize));
+      if (prev.current > maxPage) {
+        return { ...prev, current: maxPage };
+      }
+      return prev;
+    });
+  }, [dataSource.length]);
 
   if (dataSource.length === 0) {
     return (

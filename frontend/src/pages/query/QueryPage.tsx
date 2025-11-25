@@ -240,6 +240,7 @@ export const QueryPage: React.FC = () => {
     <div style={{ padding: '24px', height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <Card
+        className="surface-card"
         style={{ marginBottom: '16px', flexShrink: 0 }}
         styles={{ body: { padding: '16px 24px' } }}
       >
@@ -277,6 +278,7 @@ export const QueryPage: React.FC = () => {
         {/* Sidebar Conversations */}
           <Card
             title="Conversations"
+            className="surface-card"
             style={{ width: 320, flexShrink: 0, overflow: 'hidden' }}
             styles={{ body: { padding: 0, height: '100%', overflow: 'auto' } }}
             extra={<Button size="small" onClick={loadConversationList} loading={isLoadingConversationList}>Refresh</Button>}
@@ -315,6 +317,7 @@ export const QueryPage: React.FC = () => {
 
         {/* Messages Area */}
         <Card
+          className="surface-card"
           style={{ 
             flex: 1, 
             marginBottom: '16px', 
@@ -369,6 +372,7 @@ export const QueryPage: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
                   <Card
                     size="small"
+                    className="surface-card"
                     style={{ maxWidth: '85%', borderRadius: 8 }}
                     bodyStyle={{ padding: '16px' }}
                   >
@@ -398,7 +402,7 @@ export const QueryPage: React.FC = () => {
       )}
 
       {/* Input Area */}
-      <Card styles={{ body: { padding: '16px' } }}>
+      <Card className="surface-card" styles={{ body: { padding: '16px' } }}>
         <QueryInput
           onSend={handleSendQuery}
           disabled={isBusy}

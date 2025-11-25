@@ -32,6 +32,7 @@ import { QueryPage } from "./pages/query";
 import { ApiKeysPage } from "./pages/api-keys";
 import { TableViewerPage } from "./pages/tables/[tableName]";
 import { TablesListPage } from "./pages/tables";
+import { Database, KeyRound, MessageSquareText, UploadCloud } from "lucide-react";
 
 const DevtoolsProviderLazy = import.meta.env.DEV
   ? React.lazy(() =>
@@ -62,7 +63,7 @@ function App() {
           list: "/query",
           meta: {
             label: "Query Database",
-            icon: "💬",
+            icon: <MessageSquareText size={20} />,
           },
         },
         {
@@ -70,7 +71,7 @@ function App() {
           list: "/import",
           meta: {
             label: "Import Data",
-            icon: "📤",
+            icon: <UploadCloud size={20} />,
           },
         },
         {
@@ -78,7 +79,7 @@ function App() {
           list: "/tables",
           meta: {
             label: "Tables",
-            icon: "🗄️",
+            icon: <Database size={20} />,
           },
         },
         {
@@ -86,7 +87,7 @@ function App() {
           list: "/api-keys",
           meta: {
             label: "API Keys",
-            icon: "🔑",
+            icon: <KeyRound size={20} />,
           },
         },
       ]}

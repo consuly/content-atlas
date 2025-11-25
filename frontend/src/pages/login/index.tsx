@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useLogin } from "@refinedev/core";
-import { Form, Input, Button, Card, Typography, Alert, Space } from "antd";
-import { MailOutlined, LockOutlined } from "@ant-design/icons";
+import { Alert, Button, Form, Input, Typography } from "antd";
+import { LockOutlined, MailOutlined } from "@ant-design/icons";
 import axios from "axios";
 import { API_URL } from "../../config";
+import { AuthLayout } from "../auth/AuthLayout";
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 interface LoginFormValues {
   email: string;
@@ -22,14 +23,13 @@ export const Login = () => {
   const onFinish = async (values: LoginFormValues) => {
     setErrorMessage("");
     setIsLoading(true);
-    
+
     login(values, {
       onSuccess: () => {
         setIsLoading(false);
       },
       onError: (error) => {
         setIsLoading(false);
-        // Display server error message
         const message = error?.message || "Login failed. Please try again.";
         setErrorMessage(message);
       },
@@ -61,136 +61,117 @@ export const Login = () => {
   }, []);
 
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        minHeight: "100vh",
-        background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-      }}
+    <AuthLayout
+      formTitle="Access your workspace"
+      formSubtitle="Sign in to keep imports, mappings, and AI checks in sync."
+      footer={
+        <div className="flex flex-col gap-2 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+          <Text type="secondary">
+            Need an account?{" "}
+            <a href="/register" className="text-brand-500">
+              Start a workspace
+            </a>
+          </Text>
+          <a href="/forgot-password" className="text-brand-500">
+            Forgot password?
+          </a>
+        </div>
+      }
     >
-      <Card
-        style={{
-          width: "100%",
-          maxWidth: 400,
-          padding: "24px",
-          boxShadow: "0 8px 24px rgba(0, 0, 0, 0.12)",
+      {requiresAdminSetup && (
+        <Alert
+          className="mb-3"
+          type="info"
+          message="Create your admin account"
+          description="No users exist yet. Create the first account to bootstrap your workspace."
+          showIcon
+          action={
+            <Button type="link" href="/register" style={{ paddingLeft: 0 }}>
+              Go to registration
+            </Button>
+          }
+        />
+      )}
+
+      {errorMessage && (
+        <Alert
+          className="mb-3"
+          message={errorMessage}
+          type="error"
+          showIcon
+          closable
+          onClose={() => setErrorMessage("")}
+        />
+      )}
+
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={onFinish}
+        requiredMark={false}
+        initialValues={{
+          email: "",
+          password: "",
         }}
       >
-        <Space direction="vertical" size="large" style={{ width: "100%" }}>
-          {/* Header */}
-          <div style={{ textAlign: "center" }}>
-            <Title level={2} style={{ marginBottom: 8 }}>
-              Content Atlas
-            </Title>
-            <Text type="secondary">Sign in to your account</Text>
-          </div>
+        <Form.Item
+          name="email"
+          label="Email"
+          rules={[
+            {
+              required: true,
+              message: "Please enter your email address",
+            },
+            {
+              type: "email",
+              message: "Please enter a valid email address",
+            },
+          ]}
+          validateTrigger={["onBlur", "onChange"]}
+        >
+          <Input
+            prefix={<MailOutlined />}
+            placeholder="your.email@example.com"
+            size="large"
+            autoComplete="email"
+          />
+        </Form.Item>
 
-          {requiresAdminSetup && (
-            <Alert
-              type="info"
-              message="Create your admin account"
-              description="No users exist yet. Please create the first account to continue."
-              showIcon
-              action={
-                <Button type="link" href="/register" style={{ paddingLeft: 0 }}>
-                  Go to registration
-                </Button>
-              }
-            />
-          )}
+        <Form.Item
+          name="password"
+          label="Password"
+          rules={[
+            {
+              required: true,
+              message: "Please enter your password",
+            },
+            {
+              min: 8,
+              message: "Password must be at least 8 characters",
+            },
+          ]}
+          validateTrigger={["onBlur", "onChange"]}
+        >
+          <Input.Password
+            prefix={<LockOutlined />}
+            placeholder="Enter your password"
+            size="large"
+            autoComplete="current-password"
+          />
+        </Form.Item>
 
-          {/* Error Alert */}
-          {errorMessage && (
-            <Alert
-              message={errorMessage}
-              type="error"
-              showIcon
-              closable
-              onClose={() => setErrorMessage("")}
-            />
-          )}
-
-          {/* Login Form */}
-          <Form
-            form={form}
-            layout="vertical"
-            onFinish={onFinish}
-            requiredMark={false}
-            initialValues={{
-              email: "",
-              password: "",
-            }}
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Button
+            type="primary"
+            htmlType="submit"
+            size="large"
+            block
+            loading={isLoading}
           >
-            <Form.Item
-              name="email"
-              label="Email"
-              rules={[
-                {
-                  required: true,
-                  message: "Please enter your email address",
-                },
-                {
-                  type: "email",
-                  message: "Please enter a valid email address",
-                },
-              ]}
-              validateTrigger={["onBlur", "onChange"]}
-            >
-              <Input
-                prefix={<MailOutlined />}
-                placeholder="your.email@example.com"
-                size="large"
-                autoComplete="email"
-              />
-            </Form.Item>
-
-            <Form.Item
-              name="password"
-              label="Password"
-              rules={[
-                {
-                  required: true,
-                  message: "Please enter your password",
-                },
-                {
-                  min: 8,
-                  message: "Password must be at least 8 characters",
-                },
-              ]}
-              validateTrigger={["onBlur", "onChange"]}
-            >
-              <Input.Password
-                prefix={<LockOutlined />}
-                placeholder="Enter your password"
-                size="large"
-                autoComplete="current-password"
-              />
-            </Form.Item>
-
-            <Form.Item style={{ marginBottom: 0 }}>
-              <Button
-                type="primary"
-                htmlType="submit"
-                size="large"
-                block
-                loading={isLoading}
-              >
-                Sign In
-              </Button>
-            </Form.Item>
-          </Form>
-
-          {/* Footer */}
-          <div style={{ textAlign: "center" }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              Don't have an account?{" "}
-              <a href="/register">Create one</a>
-            </Text>
-          </div>
-        </Space>
-      </Card>
-    </div>
+            Sign In
+          </Button>
+        </Form.Item>
+      </Form>
+    </AuthLayout>
   );
 };

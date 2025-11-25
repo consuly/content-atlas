@@ -1,0 +1,69 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&family=Inter:wght@100..900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-50: #f0f9ff;
+  --brand-100: #e0f2fe;
+  --brand-500: #0ea5e9;
+  --brand-600: #0284c7;
+  --brand-900: #0c4a6e;
+  --brand-dark: #0f172a;
+  --brand-darker: #020617;
+  --surface: rgba(255, 255, 255, 0.95);
+  --surface-muted: #f8fafc;
+  --surface-border: rgba(148, 163, 184, 0.45);
+  --surface-strong-border: #cbd5e1;
+  --grid-line: #e2e8f0;
+}
+
+.dark {
+  --surface: rgba(15, 23, 42, 0.86);
+  --surface-muted: rgba(30, 41, 59, 0.78);
+  --surface-border: rgba(148, 163, 184, 0.35);
+  --surface-strong-border: rgba(226, 232, 240, 0.18);
+  --grid-line: #1e293b;
+}
+
+@layer base {
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    @apply bg-slate-50 text-slate-900 dark:bg-brand-darker dark:text-slate-300 transition-colors duration-300;
+    background-image: linear-gradient(to right, var(--grid-line) 1px, transparent 1px), linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+}
+
+@layer components {
+
+  .glass-panel {
+    @apply bg-white/80 dark:bg-slate-800/60 backdrop-blur-md border border-slate-200 dark:border-white/10 rounded-xl shadow-lg;
+  }
+
+  .surface-card {
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    box-shadow: 0 15px 30px rgba(15, 23, 42, 0.08);
+    border-radius: 16px;
+    transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .dark .surface-card {
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
+  }
+
+  .surface-muted {
+    background: var(--surface-muted);
+    border: 1px solid var(--surface-border);
+    border-radius: 12px;
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+  }
+
+  .message-bubble-assistant {
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  }
+}

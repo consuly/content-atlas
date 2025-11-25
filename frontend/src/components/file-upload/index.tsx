@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { App as AntdApp, Upload, Modal, Button, Space } from 'antd';
-import { InboxOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import { ExclamationCircleOutlined } from '@ant-design/icons';
+import { 
+  FileSpreadsheet, 
+  FileJson, 
+  FileArchive, 
+  CloudUpload,
+  CheckCircle2
+} from 'lucide-react';
 import type { UploadProps, UploadFile } from 'antd';
 import axios from 'axios';
 import { API_URL, MAX_UPLOAD_SIZE_MB } from '../../config';
@@ -38,6 +45,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFileInfo | null>(null);
   const { message: messageApi } = AntdApp.useApp();
+
   const handleDuplicateAction = async (action: 'overwrite' | 'duplicate' | 'skip') => {
     if (!duplicateFile) return;
 
@@ -98,7 +106,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         onUploadSuccess?.([response.data.files[0]]);
         return true;
       } else if (response.data.exists) {
-        // File already exists, show duplicate modal
         setDuplicateFile({
           file,
           existingFile: response.data.existing_file,
@@ -109,7 +116,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     } catch (error) {
       const axiosError = error as { response?: { status?: number; data?: { exists?: boolean; existing_file?: UploadedFile } }; message?: string };
       if (axiosError.response?.status === 409 || axiosError.response?.data?.exists) {
-        // Duplicate file detected
         setDuplicateFile({
           file,
           existingFile: axiosError.response?.data?.existing_file as UploadedFile,
@@ -173,22 +179,66 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         messageApi.error(`${info.file.name} file upload failed.`);
       }
     },
-    onDrop(e) {
-      console.log('Dropped files', e.dataTransfer.files);
-    },
+    className: "group",
   };
 
   return (
     <>
-      <Dragger {...uploadProps}>
-        <p className="ant-upload-drag-icon">
-          <InboxOutlined />
-        </p>
-        <p className="ant-upload-text">Click or drag file to this area to upload</p>
-        <p className="ant-upload-hint">
-          Support for CSV/Excel files (.csv, .xlsx, .xls) and ZIP archives containing those files. Maximum file size: {maxFileSize}MB.
-          {multiple && ' You can upload multiple files at once.'}
-        </p>
+      <Dragger {...uploadProps} style={{ padding: '2rem', background: 'transparent', border: 'none' }}>
+        <div className="flex flex-col items-center gap-6">
+          {/* Header Status */}
+          <div className="flex items-center justify-between w-full max-w-2xl border-b border-slate-200 dark:border-slate-700 pb-4 mb-2">
+            <div className="flex items-center gap-3">
+              <CloudUpload className="text-brand-500 w-6 h-6" />
+              <span className="font-mono text-sm text-slate-500 dark:text-slate-400">s3://content-atlas-bucket/</span>
+            </div>
+            <div className="flex items-center gap-2 bg-green-500/10 text-green-600 dark:text-green-400 px-3 py-1 rounded-full border border-green-500/20 text-xs font-medium">
+              <CheckCircle2 size={12} />
+              Connected
+            </div>
+          </div>
+
+          {/* Supported Formats Grid */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-2xl mb-4">
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 flex flex-col items-center gap-2 transition-colors group-hover:border-brand-500/30">
+              <FileSpreadsheet className="text-green-500 w-8 h-8" />
+              <div className="text-center">
+                <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">CSV / TSV</div>
+                <div className="text-xs text-slate-500">Auto-detect</div>
+              </div>
+            </div>
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 flex flex-col items-center gap-2 transition-colors group-hover:border-brand-500/30">
+              <FileSpreadsheet className="text-green-500 w-8 h-8" />
+              <div className="text-center">
+                <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">Excel</div>
+                <div className="text-xs text-slate-500">Multi-sheet</div>
+              </div>
+            </div>
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 flex flex-col items-center gap-2 transition-colors group-hover:border-brand-500/30">
+              <FileJson className="text-yellow-500 w-8 h-8" />
+              <div className="text-center">
+                <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">JSON</div>
+                <div className="text-xs text-slate-500">Flattening</div>
+              </div>
+            </div>
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 flex flex-col items-center gap-2 transition-colors group-hover:border-brand-500/30">
+              <FileArchive className="text-purple-500 w-8 h-8" />
+              <div className="text-center">
+                <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">Archives</div>
+                <div className="text-xs text-slate-500">Recursive</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <p className="text-lg font-medium text-slate-700 dark:text-slate-200 mb-2">
+              Click or drag file to this area to upload
+            </p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Support for CSV/Excel files and ZIP archives. Maximum file size: {maxFileSize}MB.
+            </p>
+          </div>
+        </div>
       </Dragger>
 
       <Modal
