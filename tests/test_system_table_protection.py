@@ -18,6 +18,7 @@ def test_protected_tables_constant():
         'users',
         'file_imports',
         'import_jobs',
+        'llm_instructions',
     }
     assert PROTECTED_SYSTEM_TABLES == expected_tables
 

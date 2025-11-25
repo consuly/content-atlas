@@ -22,6 +22,7 @@ RESERVED_SYSTEM_TABLES = {
     # Core platform tables
     "users",
     "api_keys",
+    "llm_instructions",
 }
 
 _RESERVED_TABLES_LOWER = {name.lower() for name in RESERVED_SYSTEM_TABLES}
@@ -386,6 +387,7 @@ class AnalyzeFileResponse(BaseModel):
     auto_retry_attempted: bool = False
     auto_retry_error: Optional[str] = None
     needs_user_input: bool = False
+    llm_instruction_id: Optional[str] = None
 
 
 class AnalyzeB2FileRequest(BaseModel):
@@ -396,6 +398,10 @@ class AnalyzeB2FileRequest(BaseModel):
     conflict_resolution: ConflictResolutionMode = ConflictResolutionMode.ASK_USER
     auto_execute_confidence_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
     max_iterations: int = Field(default=5, ge=1, le=10)
+    llm_instruction: Optional[str] = None
+    llm_instruction_id: Optional[str] = None
+    save_llm_instruction: bool = False
+    llm_instruction_title: Optional[str] = None
 
 
 class ExecuteRecommendedImportRequest(BaseModel):
@@ -651,6 +657,32 @@ class ImportJobListResponse(BaseModel):
     offset: int
 
 
+class LlmInstructionProfile(BaseModel):
+    """Reusable LLM instruction profile."""
+    id: str
+    title: str
+    content: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+
+
+class LlmInstructionListResponse(BaseModel):
+    """Response for listing saved LLM instructions."""
+    success: bool
+    instructions: List[LlmInstructionProfile]
+
+
+class CreateLlmInstructionRequest(BaseModel):
+    title: str
+    content: str
+
+
+class UpdateLlmInstructionRequest(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+
+
 class AnalyzeFileInteractiveRequest(BaseModel):
     """Request for interactive file analysis with conversation"""
     file_id: str
@@ -659,6 +691,10 @@ class AnalyzeFileInteractiveRequest(BaseModel):
     thread_id: Optional[str] = None
     max_iterations: int = Field(default=5, ge=1, le=10)
     previous_error_message: Optional[str] = None
+    llm_instruction: Optional[str] = None
+    llm_instruction_id: Optional[str] = None
+    save_llm_instruction: bool = False
+    llm_instruction_title: Optional[str] = None
 
 
 class AnalyzeFileInteractiveResponse(BaseModel):
@@ -675,6 +711,7 @@ class AnalyzeFileInteractiveResponse(BaseModel):
     max_iterations: int = 5
     error: Optional[str] = None
     job_id: Optional[str] = None
+    llm_instruction_id: Optional[str] = None
 
 
 class ExecuteInteractiveImportRequest(BaseModel):

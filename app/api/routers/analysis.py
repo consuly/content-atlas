@@ -10,10 +10,12 @@ import os
 import uuid
 import zipfile
 import threading
+import inspect
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi.params import Form as FormParam
 from sqlalchemy.orm import Session
 from typing import Optional, Any, List, Dict, Tuple
 from dataclasses import dataclass, field
@@ -55,6 +57,12 @@ from app.domain.imports.jobs import create_import_job, update_import_job, comple
 from app.domain.imports.history import get_import_history, list_duplicate_rows
 from app.core.config import settings
 from app.domain.imports.jobs import fail_active_job
+from app.db.llm_instructions import (
+    get_llm_instruction,
+    insert_llm_instruction,
+    touch_llm_instruction,
+    create_llm_instruction_table,
+)
 
 router = APIRouter(tags=["analysis"])
 logger = logging.getLogger(__name__)
@@ -72,6 +80,55 @@ def _normalize_forced_table_name(table_name: Optional[str]) -> Optional[str]:
     if not normalized:
         raise HTTPException(status_code=400, detail="target_table_name cannot be blank")
     return normalized
+
+
+def _resolve_llm_instruction(
+    *,
+    llm_instruction: Optional[str],
+    llm_instruction_id: Optional[str],
+    save_llm_instruction: bool = False,
+    llm_instruction_title: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Resolve the instruction text from either the provided string or a saved profile.
+    Optionally save the instruction for reuse and return the saved profile id.
+    """
+    llm_instruction = llm_instruction if not isinstance(llm_instruction, FormParam) else llm_instruction.default
+    llm_instruction_id = (
+        llm_instruction_id if not isinstance(llm_instruction_id, FormParam) else llm_instruction_id.default
+    )
+    llm_instruction_title = (
+        llm_instruction_title
+        if not isinstance(llm_instruction_title, FormParam)
+        else llm_instruction_title.default
+    )
+    create_llm_instruction_table()
+    normalized_instruction = (llm_instruction or "").strip() or None
+    resolved_id: Optional[str] = None
+
+    if not normalized_instruction and llm_instruction_id:
+        record = get_llm_instruction(llm_instruction_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Instruction profile not found")
+        normalized_instruction = record.get("content") or None
+        resolved_id = record.get("id")
+        if resolved_id:
+            touch_llm_instruction(resolved_id)
+
+    if save_llm_instruction and normalized_instruction:
+        title = (llm_instruction_title or "").strip() or "Saved import instruction"
+        resolved_id = insert_llm_instruction(title, normalized_instruction)
+
+    return normalized_instruction, resolved_id
+
+
+def _invoke_analyzer(analyze_fn, **kwargs):
+    """
+    Call the analyzer, dropping kwargs that are not supported by patched test doubles.
+    """
+    sig = inspect.signature(analyze_fn)
+    filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
+    return analyze_fn(**filtered)
 
 
 def _apply_forced_table_decision(
@@ -306,6 +363,7 @@ def _process_entry_bytes(
     max_iterations: int,
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
+    llm_instruction: Optional[str],
     db_session,
     sheet_name: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
@@ -438,6 +496,7 @@ def _process_entry_bytes(
                         db=db_session,
                         target_table_name=forced_table_name,
                         target_table_mode=forced_table_mode,
+                        llm_instruction=llm_instruction,
                     )
                 )
                 summary = _summarize_archive_execution(analyze_response)
@@ -511,6 +570,7 @@ def _process_archive_entry(
     max_iterations: int,
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
+    llm_instruction: Optional[str],
 ) -> ArchiveAutoProcessFileResult:
     """Process a single archive entry in a thread."""
     # Create a new database session for this thread
@@ -544,6 +604,7 @@ def _process_archive_entry(
             max_iterations=max_iterations,
             forced_table_name=forced_table_name,
             forced_table_mode=forced_table_mode,
+            llm_instruction=llm_instruction,
             db_session=db_session,
         )
 
@@ -566,6 +627,7 @@ def _process_workbook_sheet_entry(
     max_iterations: int,
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
+    llm_instruction: Optional[str],
 ) -> ArchiveAutoProcessFileResult:
     """Process a single Excel sheet as an independent import."""
     SessionLocal = get_session_local()
@@ -585,6 +647,7 @@ def _process_workbook_sheet_entry(
             max_iterations=max_iterations,
             forced_table_name=forced_table_name,
             forced_table_mode=forced_table_mode,
+            llm_instruction=llm_instruction,
             db_session=db_session,
             sheet_name=sheet_name,
         )
@@ -659,6 +722,7 @@ def _run_archive_auto_process_job(
     job_id: str,
     forced_table_name: Optional[str] = None,
     forced_table_mode: Optional[str] = None,
+    llm_instruction: Optional[str] = None,
     prefilled_results: Optional[List[ArchiveAutoProcessFileResult]] = None,
 ) -> None:
     """Execute archive auto-processing off the main event loop."""
@@ -741,6 +805,7 @@ def _run_archive_auto_process_job(
                         max_iterations=max_iterations,
                         forced_table_name=forced_table_name,
                         forced_table_mode=forced_table_mode,
+                        llm_instruction=llm_instruction,
                     )
                     futures[future] = archive_path
 
@@ -927,6 +992,7 @@ def _run_workbook_auto_process_job(
     job_id: str,
     forced_table_name: Optional[str] = None,
     forced_table_mode: Optional[str] = None,
+    llm_instruction: Optional[str] = None,
 ) -> None:
     """Execute auto-processing for each sheet in a workbook."""
     processed_files = 0
@@ -983,6 +1049,7 @@ def _run_workbook_auto_process_job(
                     max_iterations=max_iterations,
                     forced_table_name=forced_table_name,
                     forced_table_mode=forced_table_mode,
+                    llm_instruction=llm_instruction,
                 )
                 futures[future] = sheet_name
 
@@ -1145,7 +1212,8 @@ async def _auto_retry_failed_auto_import(
     file_id: Optional[str],
     previous_error_message: str,
     max_iterations: int,
-    db: Session
+    db: Session,
+    llm_instruction: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Attempt to recover from an auto-import failure by reusing the interactive Try Again flow.
@@ -1166,7 +1234,8 @@ async def _auto_retry_failed_auto_import(
         interactive_request = AnalyzeFileInteractiveRequest(
             file_id=file_id,
             max_iterations=max_iterations,
-            previous_error_message=previous_error_message
+            previous_error_message=previous_error_message,
+            llm_instruction=llm_instruction,
         )
         interactive_response = await analyze_file_interactive_endpoint(
             request=interactive_request,
@@ -1857,6 +1926,8 @@ class InteractiveSessionState:
     status: str = "pending"
     job_id: Optional[str] = None
     sheet_name: Optional[str] = None
+    llm_instruction: Optional[str] = None
+    llm_instruction_id: Optional[str] = None
 
     def metadata_copy(self) -> Dict[str, Any]:
         """Return a safe copy of file metadata for the agent to mutate."""
@@ -1904,6 +1975,11 @@ def _build_interactive_initial_prompt(session: InteractiveSessionState) -> str:
             f"\nThe user requested mapping into the {mode_text} '{forced_table}'. "
             "Prioritize this target and avoid recommending a different table."
         )
+    if session.llm_instruction:
+        prompt += (
+            "\n\nUser instruction to apply across this import:\n"
+            f"{session.llm_instruction}"
+        )
     if session.last_error:
         prompt += (
             "\n\nThe previous execution attempt failed with this error:\n"
@@ -1938,12 +2014,14 @@ def _run_interactive_session_step(
     elif session.initial_prompt_sent and not messages:
         raise HTTPException(status_code=400, detail="user_message required for ongoing interactive session")
 
-    analysis_result = _get_analyze_file_for_import()(
+    analysis_result = _invoke_analyzer(
+        _get_analyze_file_for_import(),
         file_sample=session.sample,
         file_metadata=session.metadata_copy(),
         analysis_mode=AnalysisMode.MANUAL,
         conflict_mode=ConflictResolutionMode.ASK_USER,
         user_id=None,
+        llm_instruction=session.llm_instruction,
         max_iterations=session.max_iterations,
         thread_id=session.thread_id,
         messages=messages,
@@ -1970,7 +2048,8 @@ def _run_interactive_session_step(
         can_execute=bool(session.llm_decision),
         llm_decision=session.llm_decision,
         iterations_used=analysis_result["iterations_used"],
-        max_iterations=session.max_iterations
+        max_iterations=session.max_iterations,
+        llm_instruction_id=session.llm_instruction_id,
     )
 
 
@@ -2140,6 +2219,10 @@ async def analyze_file_endpoint(
     max_iterations: int = Form(5),
     target_table_name: Optional[str] = Form(None),
     target_table_mode: Optional[str] = Form(None),
+    llm_instruction: Optional[str] = Form(None),
+    llm_instruction_id: Optional[str] = Form(None),
+    save_llm_instruction: bool = Form(False),
+    llm_instruction_title: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -2161,6 +2244,12 @@ async def analyze_file_endpoint(
         job_id: Optional[str] = None
         forced_table_name = _normalize_forced_table_name(target_table_name)
         forced_table_mode: Optional[str] = None
+        normalized_instruction, saved_instruction_id = _resolve_llm_instruction(
+            llm_instruction=llm_instruction,
+            llm_instruction_id=llm_instruction_id,
+            save_llm_instruction=save_llm_instruction,
+            llm_instruction_title=llm_instruction_title,
+        )
         if target_table_mode:
             normalized_mode = target_table_mode.strip().lower()
             if normalized_mode not in {"existing", "new"}:
@@ -2252,6 +2341,7 @@ async def analyze_file_endpoint(
         )
         if marketing_response is not None:
             analysis_id = str(uuid.uuid4())
+            marketing_response.llm_instruction_id = saved_instruction_id or llm_instruction_id
             analysis_storage[analysis_id] = marketing_response
             if job_id:
                 marketing_response.job_id = job_id
@@ -2272,6 +2362,7 @@ async def analyze_file_endpoint(
         )
         if special_response is not None:
             analysis_id = str(uuid.uuid4())
+            special_response.llm_instruction_id = saved_instruction_id or llm_instruction_id
             analysis_storage[analysis_id] = special_response
             if job_id:
                 special_response.job_id = job_id
@@ -2296,12 +2387,14 @@ async def analyze_file_endpoint(
             file_metadata["raw_csv_rows"] = raw_csv_rows
         
         # Run AI analysis
-        analysis_result = _get_analyze_file_for_import()(
+        analysis_result = _invoke_analyzer(
+            _get_analyze_file_for_import(),
             file_sample=sample,
             file_metadata=file_metadata,
             analysis_mode=analysis_mode,
             conflict_mode=conflict_resolution,
             user_id=None,  # Could be extracted from auth
+            llm_instruction=normalized_instruction,
             max_iterations=max_iterations
         )
         
@@ -2331,6 +2424,7 @@ async def analyze_file_endpoint(
             can_auto_execute=False,  # Will be set below based on analysis_mode
             llm_decision=llm_decision,
             needs_user_input=llm_decision is None,
+            llm_instruction_id=saved_instruction_id,
         )
         if job_id:
             response.job_id = job_id
@@ -2403,7 +2497,8 @@ async def analyze_file_endpoint(
                             file_id=file_id,
                             previous_error_message=error_msg,
                             max_iterations=max_iterations,
-                            db=db
+                            db=db,
+                            llm_instruction=normalized_instruction,
                         )
                     if auto_retry_details:
                         response.auto_retry_attempted = True
@@ -2489,7 +2584,8 @@ async def analyze_file_endpoint(
                         file_id=file_id,
                         previous_error_message=error_msg,
                         max_iterations=max_iterations,
-                        db=db
+                        db=db,
+                        llm_instruction=normalized_instruction,
                     )
                 if auto_retry_details:
                     response.auto_retry_attempted = True
@@ -2593,6 +2689,10 @@ async def auto_process_archive_endpoint(
     max_iterations: int = Form(5),
     target_table_name: Optional[str] = Form(None),
     target_table_mode: Optional[str] = Form(None),
+    llm_instruction: Optional[str] = Form(None),
+    llm_instruction_id: Optional[str] = Form(None),
+    save_llm_instruction: bool = Form(False),
+    llm_instruction_title: Optional[str] = Form(None),
 ):
     """
     Queue background processing for every supported file contained within a ZIP archive.
@@ -2618,6 +2718,12 @@ async def auto_process_archive_endpoint(
         forced_table_mode = normalized_mode
     if forced_table_name and forced_table_mode is None:
         forced_table_mode = "existing"
+    normalized_instruction, saved_instruction_id = _resolve_llm_instruction(
+        llm_instruction=llm_instruction,
+        llm_instruction_id=llm_instruction_id,
+        save_llm_instruction=save_llm_instruction,
+        llm_instruction_title=llm_instruction_title,
+    )
 
     file_record = get_uploaded_file_by_id(file_id)
     if not file_record:
@@ -2674,6 +2780,7 @@ async def auto_process_archive_endpoint(
             job_id=job_id,
             forced_table_name=forced_table_name,
             forced_table_mode=forced_table_mode,
+            llm_instruction=normalized_instruction,
         ),
     )
 
@@ -2699,6 +2806,10 @@ async def resume_auto_process_archive_endpoint(
     max_iterations: int = Form(5),
     target_table_name: Optional[str] = Form(None),
     target_table_mode: Optional[str] = Form(None),
+    llm_instruction: Optional[str] = Form(None),
+    llm_instruction_id: Optional[str] = Form(None),
+    save_llm_instruction: bool = Form(False),
+    llm_instruction_title: Optional[str] = Form(None),
 ):
     """
     Resume archive auto-processing using a previous job for state.
@@ -2722,6 +2833,13 @@ async def resume_auto_process_archive_endpoint(
                 detail="target_table_mode must be either 'existing' or 'new'",
             )
         forced_table_mode = normalized_mode
+
+    normalized_instruction, saved_instruction_id = _resolve_llm_instruction(
+        llm_instruction=llm_instruction,
+        llm_instruction_id=llm_instruction_id,
+        save_llm_instruction=save_llm_instruction,
+        llm_instruction_title=llm_instruction_title,
+    )
 
     file_record = get_uploaded_file_by_id(file_id)
     if not file_record:
@@ -2838,6 +2956,7 @@ async def resume_auto_process_archive_endpoint(
             prefilled_results=prefilled_results,
             forced_table_name=forced_table_name,
             forced_table_mode=forced_table_mode,
+            llm_instruction=normalized_instruction,
         ),
     )
 
@@ -2884,6 +3003,7 @@ async def auto_process_workbook_endpoint(
     max_iterations: int = Form(5),
     target_table_name: Optional[str] = Form(None),
     target_table_mode: Optional[str] = Form(None),
+    llm_instruction: Optional[str] = Form(None),
 ):
     """
     Auto-process each sheet in an Excel workbook as independent imports.
@@ -2908,6 +3028,7 @@ async def auto_process_workbook_endpoint(
         forced_table_mode = normalized_mode
     if forced_table_name and forced_table_mode is None:
         forced_table_mode = "existing"
+    normalized_instruction = (llm_instruction or "").strip() or None
 
     file_record = get_uploaded_file_by_id(file_id)
     if not file_record:
@@ -3023,6 +3144,7 @@ async def auto_process_workbook_endpoint(
             job_id=job_id,
             forced_table_name=forced_table_name,
             forced_table_mode=forced_table_mode,
+            llm_instruction=normalized_instruction,
         ),
     )
 
@@ -3065,6 +3187,13 @@ async def analyze_b2_file_endpoint(
             records = process_xml(file_content)
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
+
+        normalized_instruction, saved_instruction_id = _resolve_llm_instruction(
+            llm_instruction=request.llm_instruction,
+            llm_instruction_id=request.llm_instruction_id,
+            save_llm_instruction=request.save_llm_instruction,
+            llm_instruction_title=request.llm_instruction_title,
+        )
         
         marketing_response = _handle_marketing_agency_special_case(
             file_name=request.file_name,
@@ -3080,6 +3209,7 @@ async def analyze_b2_file_endpoint(
         )
         if marketing_response is not None:
             analysis_id = str(uuid.uuid4())
+            marketing_response.llm_instruction_id = saved_instruction_id or request.llm_instruction_id
             analysis_storage[analysis_id] = marketing_response
             return marketing_response
 
@@ -3098,6 +3228,7 @@ async def analyze_b2_file_endpoint(
         )
         if special_response is not None:
             analysis_id = str(uuid.uuid4())
+            special_response.llm_instruction_id = saved_instruction_id or request.llm_instruction_id
             analysis_storage[analysis_id] = special_response
             return special_response
         
@@ -3112,12 +3243,14 @@ async def analyze_b2_file_endpoint(
         }
         
         # Run AI analysis
-        analysis_result = _get_analyze_file_for_import()(
+        analysis_result = _invoke_analyzer(
+            _get_analyze_file_for_import(),
             file_sample=sample,
             file_metadata=file_metadata,
             analysis_mode=request.analysis_mode,
             conflict_mode=request.conflict_resolution,
             user_id=None,
+            llm_instruction=normalized_instruction,
             max_iterations=request.max_iterations
         )
         
@@ -3132,6 +3265,8 @@ async def analyze_b2_file_endpoint(
             iterations_used=analysis_result["iterations_used"],
             max_iterations=request.max_iterations,
             can_auto_execute=False  # Will be set below based on analysis_mode
+            ,
+            llm_instruction_id=saved_instruction_id or request.llm_instruction_id
         )
         
         # Determine can_auto_execute based on analysis_mode
@@ -3227,6 +3362,21 @@ async def analyze_file_interactive_endpoint(
             if request.sheet_name and session.sheet_name and request.sheet_name != session.sheet_name:
                 raise HTTPException(status_code=400, detail="This thread is tied to a different sheet")
             session.max_iterations = request.max_iterations
+            if (
+                request.llm_instruction is not None
+                or request.llm_instruction_id
+                or request.save_llm_instruction
+            ):
+                updated_instruction, saved_instruction_id = _resolve_llm_instruction(
+                    llm_instruction=request.llm_instruction,
+                    llm_instruction_id=request.llm_instruction_id,
+                    save_llm_instruction=request.save_llm_instruction,
+                    llm_instruction_title=request.llm_instruction_title,
+                )
+                session.llm_instruction = updated_instruction
+                session.llm_instruction_id = (
+                    saved_instruction_id or request.llm_instruction_id or session.llm_instruction_id
+                )
             response = _run_interactive_session_step(
                 session,
                 user_message=request.user_message,
@@ -3240,6 +3390,7 @@ async def analyze_file_interactive_endpoint(
                     error_message=session.last_error
                 )
                 response.job_id = session.job_id
+            response.llm_instruction_id = session.llm_instruction_id
             return response
 
         if request.user_message:
@@ -3297,6 +3448,12 @@ async def analyze_file_interactive_endpoint(
             raise HTTPException(status_code=400, detail="Unsupported file type")
 
         sample, total_rows = sample_file_data(records, None, max_sample_size=100)
+        resolved_instruction, saved_instruction_id = _resolve_llm_instruction(
+            llm_instruction=request.llm_instruction,
+            llm_instruction_id=request.llm_instruction_id,
+            save_llm_instruction=request.save_llm_instruction,
+            llm_instruction_title=request.llm_instruction_title,
+        )
 
         display_name = file_record["file_name"]
         if target_sheet_name:
@@ -3334,6 +3491,8 @@ async def analyze_file_interactive_endpoint(
             max_iterations=request.max_iterations,
             job_id=job_id,
             sheet_name=target_sheet_name,
+            llm_instruction=resolved_instruction,
+            llm_instruction_id=saved_instruction_id or request.llm_instruction_id,
         )
 
         if request.previous_error_message:
@@ -3356,7 +3515,8 @@ async def analyze_file_interactive_endpoint(
                 can_execute=False,
                 llm_decision=None,
                 iterations_used=special_response.iterations_used,
-                max_iterations=request.max_iterations
+                max_iterations=request.max_iterations,
+                llm_instruction_id=session.llm_instruction_id,
             )
             if job_id:
                 update_import_job(
@@ -3382,6 +3542,7 @@ async def analyze_file_interactive_endpoint(
                     error_message=session.last_error
                 )
                 marketing_interactive.job_id = job_id
+            marketing_interactive.llm_instruction_id = session.llm_instruction_id
             return marketing_interactive
 
         _store_interactive_session(session)
@@ -3398,6 +3559,7 @@ async def analyze_file_interactive_endpoint(
                 error_message=session.last_error
             )
             response.job_id = job_id
+        response.llm_instruction_id = session.llm_instruction_id
         return response
 
     except HTTPException:

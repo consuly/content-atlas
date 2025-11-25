@@ -15,7 +15,7 @@ from .core.logging_config import configure_logging
 
 # Import routers
 from .api.routers import (
-    imports, mapping, tables, tasks, query, analysis,
+    imports, mapping, tables, tasks, query, analysis, llm_instructions,
     import_history, uploads, auth, api_keys, public_api, jobs, admin_users
 )
 
@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         from .domain.imports.jobs import ensure_import_jobs_table
         from .core.security import init_auth_tables
         from .domain.queries.history import create_query_history_tables
+        from .db.llm_instructions import create_llm_instruction_table
         
         print("Initializing database tables...")
         create_table_metadata_table()
@@ -66,6 +67,9 @@ async def lifespan(app: FastAPI):
         
         init_api_key_tables()
         print("✓ api_keys table ready")
+
+        create_llm_instruction_table()
+        print("✓ llm_instructions table ready")
 
         # Surface bootstrap requirement when no users exist
         try:
@@ -127,6 +131,7 @@ app.include_router(tasks.router)
 app.include_router(query.router)
 app.include_router(query.router_v1)
 app.include_router(analysis.router)
+app.include_router(llm_instructions.router)
 app.include_router(import_history.router)
 app.include_router(import_history.alias_router)
 app.include_router(uploads.router)
