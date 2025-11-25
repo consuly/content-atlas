@@ -667,7 +667,15 @@ def _check_for_duplicates(conn, table_name: str, records: List[Dict[str, Any]], 
         print("DEBUG: _check_for_duplicates: No duplicates found, proceeding with insertion")
 
 
-def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]], config: MappingConfig = None, file_content: bytes = None, file_name: str = None) -> Tuple[int, int]:
+def insert_records(
+    engine: Engine,
+    table_name: str,
+    records: List[Dict[str, Any]],
+    config: MappingConfig = None,
+    file_content: bytes = None,
+    file_name: str = None,
+    pre_mapped: bool = False,
+) -> Tuple[int, int]:
     """
     Insert records into the table with enhanced duplicate checking.
     
@@ -717,7 +725,7 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
             CHUNK_SIZE,
             import_id,
             has_active_import,
-            pre_mapped=False
+            pre_mapped=pre_mapped
         )
         return inserted, duplicates
     
@@ -795,7 +803,7 @@ def insert_records(engine: Engine, table_name: str, records: List[Dict[str, Any]
                 coerced_record = record.copy()
                 corrections = {}
                 
-                if config and config.db_schema:
+                if not pre_mapped and config and config.db_schema:
                     for col_name, value in record.items():
                         if col_name in config.db_schema:
                             sql_type = config.db_schema[col_name]

@@ -61,6 +61,7 @@ class AnalysisContext:
     analysis_mode: AnalysisMode
     conflict_mode: ConflictResolutionMode
     user_id: Optional[str] = None
+    llm_instruction: Optional[str] = None
     attempt_count: int = 0
     retry_count: int = 0
     error_history: List[str] = None
@@ -1659,6 +1660,7 @@ def analyze_file_for_import(
     analysis_mode: AnalysisMode = AnalysisMode.MANUAL,
     conflict_mode: ConflictResolutionMode = ConflictResolutionMode.ASK_USER,
     user_id: Optional[str] = None,
+    llm_instruction: Optional[str] = None,
     max_iterations: int = 5,
     thread_id: Optional[str] = None,
     messages: Optional[List[Dict[str, str]]] = None,
@@ -1693,7 +1695,8 @@ def analyze_file_for_import(
             existing_schema=schema_info,
             analysis_mode=analysis_mode,
             conflict_mode=conflict_mode,
-            user_id=user_id
+            user_id=user_id,
+            llm_instruction=llm_instruction,
         )
         
         # Create and run agent
@@ -1724,6 +1727,11 @@ Please analyze the file structure, compare it with existing tables, and recommen
                 prompt += (
                     f"\nUser request: map the data into the {mode_text} '{forced_table}'. "
                     "Prioritize this target and avoid recommending a different table."
+                )
+            if llm_instruction:
+                prompt += (
+                    "\n\nUser instruction (apply this to every file you import):\n"
+                    f"{llm_instruction.strip()}"
                 )
             messages_to_send = [{"role": "user", "content": prompt}]
         else:

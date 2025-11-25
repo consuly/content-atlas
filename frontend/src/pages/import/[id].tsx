@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress, Select } from 'antd';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress, Select, Checkbox } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
@@ -191,6 +191,15 @@ export const ImportMappingPage: React.FC = () => {
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
   const [interactiveSheet, setInteractiveSheet] = useState<string | undefined>(undefined);
+  const [llmInstruction, setLlmInstruction] = useState('');
+  const [instructionTitle, setInstructionTitle] = useState('');
+  const [saveInstruction, setSaveInstruction] = useState(false);
+  const [instructionOptions, setInstructionOptions] = useState<
+    { id: string; title: string; content: string }[]
+  >([]);
+  const [selectedInstructionId, setSelectedInstructionId] = useState<string | null>(null);
+  const [loadingInstructions, setLoadingInstructions] = useState(false);
+  const [instructionActionLoading, setInstructionActionLoading] = useState(false);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -214,6 +223,150 @@ export const ImportMappingPage: React.FC = () => {
       prompt: 'Explain how duplicate detection is configured. Are there better uniqueness rules we should consider?',
     },
   ];
+
+  const fetchInstructions = useCallback(async () => {
+    setLoadingInstructions(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.get<{ success: boolean; instructions: { id: string; title: string; content: string }[] }>(
+        `${API_URL}/llm-instructions`,
+        {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+      if (response.data?.success && Array.isArray(response.data.instructions)) {
+        setInstructionOptions(response.data.instructions);
+      }
+    } catch (error) {
+      console.error('Failed to load instructions', error);
+    } finally {
+      setLoadingInstructions(false);
+    }
+  }, []);
+
+  const instructionField = (
+    <div style={{ width: '100%' }}>
+      <Text strong>LLM instruction (optional)</Text>
+      <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+        This note is passed to the AI for every file in this upload (including archives and workbooks).
+      </Paragraph>
+      <Space direction="vertical" size="small" style={{ width: '100%' }}>
+        <Select
+          allowClear
+          showSearch
+          placeholder="Select a saved instruction"
+          value={selectedInstructionId || undefined}
+          onChange={(value) => {
+            setSelectedInstructionId(value || null);
+            const selected = instructionOptions.find((option) => option.id === value);
+            if (selected) {
+              setLlmInstruction(selected.content);
+              setInstructionTitle(selected.title);
+            }
+          }}
+          options={instructionOptions.map((option) => ({
+            value: option.id,
+            label: option.title,
+          }))}
+          loading={loadingInstructions}
+          style={{ width: '100%' }}
+        />
+        <TextArea
+          value={llmInstruction}
+          onChange={(e) => {
+            setLlmInstruction(e.target.value);
+            if (selectedInstructionId) {
+              setSelectedInstructionId(null);
+            }
+          }}
+          placeholder="Example: Keep phone numbers as text and do not drop rows when the address is missing."
+          autoSize={{ minRows: 2, maxRows: 4 }}
+        />
+        <Space align="start">
+          <Checkbox
+            checked={saveInstruction}
+            onChange={(e) => setSaveInstruction(e.target.checked)}
+          >
+            Save this instruction for future imports
+          </Checkbox>
+          {saveInstruction && (
+            <Input
+              value={instructionTitle}
+              onChange={(e) => setInstructionTitle(e.target.value)}
+              placeholder="Instruction name (e.g., Marketing Cleanup Rules)"
+              style={{ minWidth: 240 }}
+            />
+          )}
+        </Space>
+        {selectedInstructionId && (
+          <Space>
+            <Button
+              size="small"
+              onClick={async () => {
+                if (!selectedInstructionId) return;
+                const title = instructionTitle.trim() || 'Saved import instruction';
+                setInstructionActionLoading(true);
+                try {
+                  const token = localStorage.getItem('refine-auth');
+                  await axios.patch(
+                    `${API_URL}/llm-instructions/${selectedInstructionId}`,
+                    { title, content: llmInstruction },
+                    {
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(token && { Authorization: `Bearer ${token}` }),
+                      },
+                    }
+                  );
+                  messageApi.success('Instruction updated');
+                  await fetchInstructions();
+                } catch (err) {
+                  messageApi.error('Unable to update instruction');
+                } finally {
+                  setInstructionActionLoading(false);
+                }
+              }}
+              loading={instructionActionLoading}
+              disabled={disableMappingActions}
+            >
+              Update selected
+            </Button>
+            <Button
+              size="small"
+              danger
+              onClick={async () => {
+                if (!selectedInstructionId) return;
+                setInstructionActionLoading(true);
+                try {
+                  const token = localStorage.getItem('refine-auth');
+                  await axios.delete(`${API_URL}/llm-instructions/${selectedInstructionId}`, {
+                    headers: {
+                      ...(token && { Authorization: `Bearer ${token}` }),
+                    },
+                  });
+                  messageApi.success('Instruction deleted');
+                  setSelectedInstructionId(null);
+                  setLlmInstruction('');
+                  setInstructionTitle('');
+                  await fetchInstructions();
+                } catch (err) {
+                  messageApi.error('Unable to delete instruction');
+                } finally {
+                  setInstructionActionLoading(false);
+                }
+              }}
+              loading={instructionActionLoading}
+              disabled={disableMappingActions}
+            >
+              Delete selected
+            </Button>
+          </Space>
+        )}
+      </Space>
+    </div>
+  );
 
   const isArchiveFile = file?.file_name?.toLowerCase().endsWith('.zip') ?? false;
   const isArchive = isArchiveFile;
@@ -805,6 +958,10 @@ export const ImportMappingPage: React.FC = () => {
   }, [fetchFileDetails]);
 
   useEffect(() => {
+    void fetchInstructions();
+  }, [fetchInstructions]);
+
+  useEffect(() => {
     const loadSheets = async () => {
       if (!file?.id || !isExcelFile) {
         setSheetNames([]);
@@ -1073,13 +1230,16 @@ export const ImportMappingPage: React.FC = () => {
       messageApi.info('Auto Process failed. Asking the AI assistant for a fix...');
 
       try {
+        const payload: Record<string, unknown> = {
+          file_id: id,
+          max_iterations: 5,
+          previous_error_message: failureMessage,
+        };
+        appendInstructionPayload(payload);
+
         const analysisResponse = await axios.post(
           `${API_URL}/analyze-file-interactive`,
-          {
-            file_id: id,
-            max_iterations: 5,
-            previous_error_message: failureMessage,
-          },
+          payload,
           {
             headers: {
               'Content-Type': 'application/json',
@@ -1164,6 +1324,40 @@ export const ImportMappingPage: React.FC = () => {
     }
   };
 
+  const appendInstructionFormData = (formData: FormData) => {
+    const instruction = llmInstruction.trim();
+    const title = instructionTitle.trim();
+    if (instruction) {
+      formData.append('llm_instruction', instruction);
+    }
+    if (selectedInstructionId) {
+      formData.append('llm_instruction_id', selectedInstructionId);
+    }
+    if (saveInstruction && instruction) {
+      formData.append('save_llm_instruction', 'true');
+      if (title) {
+        formData.append('llm_instruction_title', title);
+      }
+    }
+  };
+
+  const appendInstructionPayload = (payload: Record<string, unknown>) => {
+    const instruction = llmInstruction.trim();
+    const title = instructionTitle.trim();
+    if (instruction) {
+      payload.llm_instruction = instruction;
+    }
+    if (selectedInstructionId) {
+      payload.llm_instruction_id = selectedInstructionId;
+    }
+    if (saveInstruction && instruction) {
+      payload.save_llm_instruction = true;
+      if (title) {
+        payload.llm_instruction_title = title;
+      }
+    }
+  };
+
   const validateSharedTableName = () => {
     if (useSharedTable && !sharedTableName.trim()) {
       messageApi.error('Enter a table name to reuse for all mapped files.');
@@ -1195,6 +1389,7 @@ export const ImportMappingPage: React.FC = () => {
           formData.append('sheet_names', JSON.stringify(selectedSheets));
         }
         appendSharedTableFormData(formData);
+        appendInstructionFormData(formData);
 
         const response = await axios.post(`${API_URL}/auto-process-workbook`, formData, {
           headers: {
@@ -1223,6 +1418,7 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
       appendSharedTableFormData(formData);
+      appendInstructionFormData(formData);
 
       const response = await axios.post(`${API_URL}/analyze-file`, formData, {
         headers: {
@@ -1296,7 +1492,7 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
       appendSharedTableFormData(formData);
-      appendSharedTableFormData(formData);
+      appendInstructionFormData(formData);
 
       const response = await axios.post(`${API_URL}/auto-process-archive`, formData, {
         headers: {
@@ -1359,6 +1555,7 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
       appendSharedTableFormData(formData);
+      appendInstructionFormData(formData);
 
       const response = await axios.post(`${API_URL}/auto-process-archive/resume`, formData, {
         headers: {
@@ -1422,6 +1619,7 @@ export const ImportMappingPage: React.FC = () => {
       if (options?.previousError) {
         payload.previous_error_message = options.previousError;
       }
+      appendInstructionPayload(payload);
 
       const response = await axios.post(
         `${API_URL}/analyze-file-interactive`,
@@ -1480,14 +1678,17 @@ export const ImportMappingPage: React.FC = () => {
 
     try {
       const token = localStorage.getItem('refine-auth');
+      const payload: Record<string, unknown> = {
+        file_id: id,
+        user_message: trimmed,
+        thread_id: threadId,
+        max_iterations: 5,
+      };
+      appendInstructionPayload(payload);
+
       const response = await axios.post(
         `${API_URL}/analyze-file-interactive`,
-        {
-          file_id: id,
-          user_message: trimmed,
-          thread_id: threadId,
-          max_iterations: 5,
-        },
+        payload,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -2507,15 +2708,16 @@ export const ImportMappingPage: React.FC = () => {
             <Text strong>File: </Text>
             <Text>{file.file_name}</Text>
           </div>
-          <div>
-            <Text strong>Size: </Text>
-            <Text>{formatBytes(file.file_size)}</Text>
-          </div>
-          {isExcelFile && (
-            <div style={{ maxWidth: 480 }}>
-              <Text strong>Workbook tabs</Text>
-              <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                Auto processing will create one import per selected tab using the workbook name plus the sheet name.
+        <div>
+          <Text strong>Size: </Text>
+          <Text>{formatBytes(file.file_size)}</Text>
+        </div>
+        {instructionField}
+        {isExcelFile && (
+          <div style={{ maxWidth: 480 }}>
+            <Text strong>Workbook tabs</Text>
+            <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              Auto processing will create one import per selected tab using the workbook name plus the sheet name.
               </Paragraph>
               <Select
                 mode="multiple"
@@ -2608,6 +2810,8 @@ export const ImportMappingPage: React.FC = () => {
           <ErrorLogViewer error={error} showRetry={false} />
         </div>
       )}
+
+      <div style={{ marginBottom: 16 }}>{instructionField}</div>
 
       {!result && conversation.length === 0 && (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>

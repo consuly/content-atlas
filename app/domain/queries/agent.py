@@ -33,6 +33,7 @@ PROTECTED_SYSTEM_TABLES = {
     'users',
     'file_imports',
     'import_jobs',
+    'llm_instructions',
 }
 
 # Extended list used for strict SQL validation inside the agent; covers additional

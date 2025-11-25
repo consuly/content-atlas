@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { App as AntdApp, Modal, Tabs, Button, Space, Alert, Spin, Typography } from 'antd';
+import { App as AntdApp, Modal, Tabs, Button, Space, Alert, Spin, Typography, Input, Select, Checkbox } from 'antd';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../error-log-viewer';
@@ -8,6 +8,7 @@ import { formatUserFacingError } from '../../utils/errorMessages';
 import { API_URL } from '../../config';
 
 const { Text, Paragraph } = Typography;
+const { TextArea } = Input;
 
 interface MappingModalProps {
   visible: boolean;
@@ -15,6 +16,12 @@ interface MappingModalProps {
   fileName: string;
   onClose: () => void;
   onSuccess: () => void;
+}
+
+interface LlmInstructionProfile {
+  id: string;
+  title: string;
+  content: string;
 }
 
 export const MappingModal: React.FC<MappingModalProps> = ({
@@ -31,6 +38,13 @@ export const MappingModal: React.FC<MappingModalProps> = ({
   const [errorDetails, setErrorDetails] = useState<Record<string, unknown> | null>(null);
   const { message: messageApi } = AntdApp.useApp();
   const friendlyError = error ? formatUserFacingError(error) : null;
+  const [llmInstruction, setLlmInstruction] = useState('');
+  const [saveInstruction, setSaveInstruction] = useState(false);
+  const [instructionTitle, setInstructionTitle] = useState('');
+  const [instructionOptions, setInstructionOptions] = useState<LlmInstructionProfile[]>([]);
+  const [selectedInstructionId, setSelectedInstructionId] = useState<string | null>(null);
+  const [loadingInstructions, setLoadingInstructions] = useState(false);
+  const [instructionActionLoading, setInstructionActionLoading] = useState(false);
   
   // Interactive mode state
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -54,10 +68,160 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     },
   ];
 
+  const fetchInstructions = async () => {
+    setLoadingInstructions(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.get<{ success: boolean; instructions: LlmInstructionProfile[] }>(
+        `${API_URL}/llm-instructions`,
+        {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+      if (response.data?.success && Array.isArray(response.data.instructions)) {
+        setInstructionOptions(response.data.instructions);
+      }
+    } catch (err) {
+      console.error('Failed to load instructions', err);
+    } finally {
+      setLoadingInstructions(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (visible) {
+      void fetchInstructions();
+    }
+  }, [visible]);
+
+  const instructionField = (
+    <div style={{ width: '100%' }}>
+      <Text strong>LLM instruction (optional)</Text>
+      <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+        This note is sent to the AI for every file in this import so it can honor your special rules.
+      </Paragraph>
+      <Space direction="vertical" size="small" style={{ width: '100%' }}>
+        <Select
+          allowClear
+          showSearch
+          placeholder="Select a saved instruction"
+          value={selectedInstructionId || undefined}
+          onChange={(value) => {
+            setSelectedInstructionId(value || null);
+            const selected = instructionOptions.find((option) => option.id === value);
+            if (selected) {
+              setLlmInstruction(selected.content);
+              setInstructionTitle(selected.title);
+            }
+          }}
+          options={instructionOptions.map((option) => ({
+            value: option.id,
+            label: option.title,
+          }))}
+          loading={loadingInstructions}
+          style={{ width: '100%' }}
+        />
+        <TextArea
+          value={llmInstruction}
+          onChange={(e) => {
+            setLlmInstruction(e.target.value);
+            if (selectedInstructionId) {
+              setSelectedInstructionId(null);
+            }
+          }}
+          placeholder="Example: Always treat phone numbers as text and never drop rows with empty addresses."
+          autoSize={{ minRows: 2, maxRows: 4 }}
+        />
+        <Space align="start">
+          <Checkbox
+            checked={saveInstruction}
+            onChange={(e) => setSaveInstruction(e.target.checked)}
+          >
+            Save this instruction for future imports
+          </Checkbox>
+          {saveInstruction && (
+            <Input
+              value={instructionTitle}
+              onChange={(e) => setInstructionTitle(e.target.value)}
+              placeholder="Instruction name (e.g., Marketing Cleanup Rules)"
+              style={{ minWidth: 240 }}
+            />
+          )}
+        </Space>
+        {selectedInstructionId && (
+          <Space>
+            <Button
+              size="small"
+              onClick={async () => {
+                if (!selectedInstructionId) return;
+                const title = instructionTitle.trim() || 'Saved import instruction';
+                setInstructionActionLoading(true);
+                try {
+                  const token = localStorage.getItem('refine-auth');
+                  await axios.patch(
+                    `${API_URL}/llm-instructions/${selectedInstructionId}`,
+                    { title, content: llmInstruction },
+                    {
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(token && { Authorization: `Bearer ${token}` }),
+                      },
+                    }
+                  );
+                  messageApi.success('Instruction updated');
+                  await fetchInstructions();
+                } catch (err) {
+                  messageApi.error('Unable to update instruction');
+                } finally {
+                  setInstructionActionLoading(false);
+                }
+              }}
+              loading={instructionActionLoading}
+            >
+              Update selected
+            </Button>
+            <Button
+              size="small"
+              danger
+              onClick={async () => {
+                if (!selectedInstructionId) return;
+                setInstructionActionLoading(true);
+                try {
+                  const token = localStorage.getItem('refine-auth');
+                  await axios.delete(`${API_URL}/llm-instructions/${selectedInstructionId}`, {
+                    headers: {
+                      ...(token && { Authorization: `Bearer ${token}` }),
+                    },
+                  });
+                  messageApi.success('Instruction deleted');
+                  setSelectedInstructionId(null);
+                  setLlmInstruction('');
+                  setInstructionTitle('');
+                  await fetchInstructions();
+                } catch (err) {
+                  messageApi.error('Unable to delete instruction');
+                } finally {
+                  setInstructionActionLoading(false);
+                }
+              }}
+              loading={instructionActionLoading}
+            >
+              Delete selected
+            </Button>
+          </Space>
+        )}
+      </Space>
+    </div>
+  );
+
   const handleAutoProcess = async () => {
     setLoading(true);
     setError(null);
     setErrorDetails(null);
+    const instruction = llmInstruction.trim();
+    const instructionName = instructionTitle.trim();
 
     try {
       const token = localStorage.getItem('refine-auth');
@@ -66,6 +230,18 @@ export const MappingModal: React.FC<MappingModalProps> = ({
       formData.append('analysis_mode', 'auto_always');
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
+      if (instruction) {
+        formData.append('llm_instruction', instruction);
+      }
+      if (selectedInstructionId) {
+        formData.append('llm_instruction_id', selectedInstructionId);
+      }
+      if (saveInstruction && instruction) {
+        formData.append('save_llm_instruction', 'true');
+        if (instructionName) {
+          formData.append('llm_instruction_title', instructionName);
+        }
+      }
 
       const response = await axios.post(`${API_URL}/analyze-file`, formData, {
         headers: {
@@ -99,6 +275,8 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     setError(null);
     setConversation([]);
     setNeedsUserInput(true);
+    const instruction = llmInstruction.trim();
+    const instructionName = instructionTitle.trim();
 
     try {
       const token = localStorage.getItem('refine-auth');
@@ -107,6 +285,10 @@ export const MappingModal: React.FC<MappingModalProps> = ({
         {
           file_id: fileId,
           max_iterations: 5,
+          ...(instruction ? { llm_instruction: instruction } : {}),
+          ...(selectedInstructionId ? { llm_instruction_id: selectedInstructionId } : {}),
+          ...(saveInstruction && instruction ? { save_llm_instruction: true } : {}),
+          ...(saveInstruction && instructionName ? { llm_instruction_title: instructionName } : {}),
         },
         {
           headers: {
@@ -140,6 +322,8 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     if (!threadId) return;
     const trimmed = messageToSend.trim();
     if (!trimmed) return;
+    const instruction = llmInstruction.trim();
+    const instructionName = instructionTitle.trim();
 
     setLoading(true);
     setError(null);
@@ -156,6 +340,10 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           user_message: trimmed,
           thread_id: threadId,
           max_iterations: 5,
+          ...(instruction ? { llm_instruction: instruction } : {}),
+          ...(selectedInstructionId ? { llm_instruction_id: selectedInstructionId } : {}),
+          ...(saveInstruction && instruction ? { save_llm_instruction: true } : {}),
+          ...(saveInstruction && instructionName ? { llm_instruction_title: instructionName } : {}),
         },
         {
           headers: {
@@ -270,6 +458,10 @@ export const MappingModal: React.FC<MappingModalProps> = ({
     setUserInput('');
     setCanExecute(false);
     setNeedsUserInput(true);
+    setLlmInstruction('');
+    setInstructionTitle('');
+    setSaveInstruction(false);
+    setSelectedInstructionId(null);
     onClose();
   };
 
@@ -303,6 +495,7 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           <Text strong>File: </Text>
           <Text>{fileName}</Text>
         </div>
+        {instructionField}
 
         <Button
           type="primary"
@@ -347,6 +540,8 @@ export const MappingModal: React.FC<MappingModalProps> = ({
           style={{ marginBottom: 24 }}
         />
       )}
+
+      <div style={{ marginBottom: 16 }}>{instructionField}</div>
 
       {conversation.length === 0 ? (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
