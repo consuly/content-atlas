@@ -118,3 +118,63 @@ def test_map_data_splits_international_phone():
     assert mapped[1]["country_code"] == "1"
     assert mapped[1]["subscriber_number"] == "4155557890"
 
+
+def test_column_regex_replace_runs_before_mapping():
+    records = [
+        {"raw_phone": "(555) 111-2222"},
+        {"raw_phone": "+1 333 444 5555"},
+    ]
+
+    rules = {
+        "column_transformations": [
+            {
+                "type": "regex_replace",
+                "source_column": "raw_phone",
+                "target_column": "clean_phone",
+                "pattern": "[^0-9]",
+                "replacement": "",
+            }
+        ]
+    }
+
+    config = _base_config(
+        mappings={"phone": "clean_phone"},
+        rules=rules,
+    )
+
+    mapped, errors = map_data(records, config)
+    assert not errors
+    assert mapped[0]["phone"] == "5551112222"
+    assert mapped[1]["phone"] == "13334445555"
+
+
+def test_column_regex_replace_outputs_groups():
+    records = [
+        {"raw_email": "alpha@example.com"},
+        {"raw_email": "beta@test.org"},
+    ]
+
+    rules = {
+        "column_transformations": [
+            {
+                "type": "regex_replace",
+                "source_column": "raw_email",
+                "pattern": r"^([^@]+)@(.+)$",
+                "outputs": [
+                    {"name": "user_part", "group": 1},
+                    {"name": "domain_part", "group": 2},
+                ],
+            }
+        ]
+    }
+
+    config = _base_config(
+        mappings={"user": "user_part", "domain": "domain_part"},
+        rules=rules,
+    )
+
+    mapped, errors = map_data(records, config)
+    assert not errors
+    assert mapped[0]["user"] == "alpha"
+    assert mapped[0]["domain"] == "example.com"
+    assert mapped[1]["domain"] == "test.org"

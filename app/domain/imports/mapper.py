@@ -104,6 +104,7 @@ def map_data(
     # Process records with rules and/or date conversion
     mapped_records = []
     for idx, record in enumerate(records, start=row_offset + 1):
+        record_number = record.get("_source_record_number") or idx
         source_record = record
         if has_pre_map_transformations:
             source_record = _apply_column_transformations(record, pre_map_transformations)
@@ -134,7 +135,7 @@ def map_data(
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
                             value=value,
-                            record_number=idx,
+                            record_number=record_number,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -153,7 +154,7 @@ def map_data(
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
                             value=value,
-                            record_number=idx,
+                            record_number=record_number,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -178,7 +179,7 @@ def map_data(
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
                             value=value,
-                            record_number=idx,
+                            record_number=record_number,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -193,7 +194,7 @@ def map_data(
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
                             value=value,
-                            record_number=idx,
+                            record_number=record_number,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -234,7 +235,7 @@ def map_data(
                             column=col_name,
                             expected_type=config.db_schema.get(col_name),
                             value=value,
-                            record_number=idx,
+                            record_number=record_number,
                         ))
                         logger.warning(message)
                         mapped_record[col_name] = None
@@ -339,10 +340,83 @@ def _apply_column_transformations(
             _apply_compose_international_phone(updated_record, record, transformation)
         elif t_type == "split_international_phone":
             _apply_split_international_phone(updated_record, record, transformation)
+        elif t_type == "regex_replace":
+            _apply_regex_replace(updated_record, record, transformation)
         else:
             logger.debug("Unknown column transformation type '%s' skipped", t_type)
 
     return updated_record if updated_record is not None else record
+
+
+def _apply_regex_replace(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    """Regex substitution (with optional capture outputs) on a column before mapping."""
+    pattern = transformation.get("pattern")
+    replacement = transformation.get("replacement", "")
+    source_column = transformation.get("source_column") or transformation.get("column")
+    target_column = (
+        transformation.get("target_column")
+        or transformation.get("target_field")
+        or source_column
+    )
+    outputs = transformation.get("outputs") or transformation.get("targets") or []
+    skip_on_no_match = transformation.get("skip_on_no_match", False)
+
+    if not pattern or not source_column or not target_column:
+        return
+
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        logger.debug("Invalid regex pattern for regex_replace: %s", pattern)
+        return
+
+    value = source_record.get(source_column)
+    if value is None:
+        destination[target_column] = None
+        return
+    if isinstance(value, float) and pd.isna(value):
+        destination[target_column] = None
+        return
+
+    text = str(value)
+    match = compiled.search(text)
+
+    if outputs:
+        if not match:
+            if skip_on_no_match:
+                return
+            for output in outputs:
+                name = output.get("name") or output.get("field") or output.get("column")
+                if name:
+                    destination[name] = None
+            return
+
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+            name = output.get("name") or output.get("field") or output.get("column")
+            if not name:
+                continue
+            group_id = output.get("group") or output.get("index")
+            if group_id is None:
+                destination[name] = match.group(0)
+                continue
+            try:
+                destination[name] = match.group(group_id)
+            except IndexError:
+                destination[name] = output.get("default")
+            except Exception:
+                destination[name] = output.get("default")
+        return
+
+    if not match and skip_on_no_match:
+        return
+
+    destination[target_column] = compiled.sub(replacement, text)
 
 
 def _apply_split_multi_value(

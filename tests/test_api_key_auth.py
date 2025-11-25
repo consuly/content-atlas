@@ -3,11 +3,18 @@ Regression tests for API key authentication behaviors.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 os.environ["SKIP_DB_INIT"] = "1"
 
 from app.core.api_key_auth import ApiKey, hash_api_key, verify_api_key  # noqa: E402
+
+
+def _naive_utc_now() -> datetime:
+    """
+    Return a naive UTC datetime for regression checks while avoiding deprecated utcnow().
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class _FakeQuery:
@@ -37,7 +44,7 @@ def test_verify_api_key_handles_naive_future_expiration():
         key_hash=hash_api_key(plain_key),
         app_name="test-app",
         is_active=True,
-        expires_at=datetime.utcnow() + timedelta(days=1),
+        expires_at=_naive_utc_now() + timedelta(days=1),
     )
 
     db = _FakeSession(record)
@@ -52,7 +59,7 @@ def test_verify_api_key_rejects_naive_expired_key():
         key_hash=hash_api_key(plain_key),
         app_name="test-app",
         is_active=True,
-        expires_at=datetime.utcnow() - timedelta(days=1),
+        expires_at=_naive_utc_now() - timedelta(days=1),
     )
 
     db = _FakeSession(record)
