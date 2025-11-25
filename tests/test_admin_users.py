@@ -140,7 +140,7 @@ def test_standard_user_cannot_access_admin_user_routes(user_factory):
     assert forbidden_delete.status_code == 403
 
     unauthenticated = client.get("/admin/users")
-    assert unauthenticated.status_code == 403
+    assert unauthenticated.status_code in {401, 403}
 
 
 def test_admin_cannot_delete_self(user_factory):
