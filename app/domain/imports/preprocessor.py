@@ -125,7 +125,10 @@ def _apply_explode_columns(
 
     value_df = df[source_columns].copy()
     value_df = value_df.map(lambda v: _normalize_value(v, strip_whitespace))
-    stacked = value_df.stack(dropna=True).reset_index()
+    # future_stack enables the upcoming stack behavior and silences pandas deprecation warnings.
+    # Drop NA values manually because dropna cannot be combined with future_stack=True.
+    stacked = value_df.stack(future_stack=True).reset_index()
+    stacked = stacked.dropna(subset=[0])
     if stacked.empty:
         return (df.drop(columns=source_columns, errors="ignore").to_dict("records") if include_original or keep_empty_rows else []), errors
 
