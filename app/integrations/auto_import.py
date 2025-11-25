@@ -486,6 +486,7 @@ def execute_llm_import_decision(
 
         expected_column_types = llm_decision.get("expected_column_types") or {}
         column_transformations = llm_decision.get("column_transformations") or []
+        row_transformations = llm_decision.get("row_transformations") or []
         column_type_enforcement_log: Dict[str, Dict[str, Any]] = {}
         if expected_column_types:
             records, column_type_enforcement_log = coerce_records_to_expected_types(
@@ -508,6 +509,12 @@ def execute_llm_import_decision(
         
         # Get target columns (keys in inverted_mapping, which were values in original column_mapping)
         target_columns = list(inverted_mapping.keys())
+
+        rules_payload: Dict[str, Any] = {}
+        if column_transformations:
+            rules_payload["column_transformations"] = column_transformations
+        if row_transformations:
+            rules_payload["row_transformations"] = row_transformations
         
         # Build db_schema prioritizing LLM expectations and falling back to heuristics where absent
         import re
@@ -662,7 +669,7 @@ def execute_llm_import_decision(
                 table_name=target_table,
                 db_schema=final_table_schema or existing_table_schema or {},
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
-                rules={"column_transformations": column_transformations} if column_transformations else {},
+                rules=rules_payload,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=True,
@@ -678,7 +685,7 @@ def execute_llm_import_decision(
                 table_name=target_table,
                 db_schema=db_schema,
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
-                rules={"column_transformations": column_transformations} if column_transformations else {},
+                rules=rules_payload,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=True,

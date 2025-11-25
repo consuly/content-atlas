@@ -1066,6 +1066,91 @@ def _normalize_column_transformations_for_decision(
                 entry["source_column"] = entry["column"]
             if "outputs" not in entry and entry.get("targets"):
                 entry["outputs"] = entry["targets"]
+        elif t_type == "regex_replace":
+            if "source_column" not in entry and "column" in entry:
+                entry["source_column"] = entry["column"]
+            if "target_column" not in entry:
+                entry["target_column"] = entry.get("target_field") or entry.get("source_column")
+
+        normalized.append(entry)
+
+    return normalized
+
+
+def _normalize_row_transformations_for_decision(
+    transformations: Optional[List[Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Sanitize row-level transformations before storing on the LLM decision.
+    Supports explode_columns, filter_rows, regex_replace, and conditional_transform.
+    """
+    if not transformations:
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for raw in transformations:
+        if not isinstance(raw, dict):
+            continue
+        entry = dict(raw)
+        t_type = entry.get("type") or entry.get("action")
+        if not t_type:
+            continue
+        if t_type == "explode_columns":
+            sources = entry.get("source_columns") or entry.get("columns") or []
+            target = entry.get("target_column") or entry.get("target_field") or entry.get("column")
+            if not sources or not target:
+                logger.debug("Skipping explode_columns without sources/target: %s", raw)
+                continue
+            normalized.append(
+                {
+                    "type": "explode_columns",
+                    "source_columns": sources,
+                    "target_column": target,
+                    "drop_source_columns": entry.get("drop_source_columns", True),
+                    "include_original_row": entry.get("include_original_row", False),
+                    "keep_empty_rows": entry.get("keep_empty_rows", False),
+                    "dedupe_values": entry.get("dedupe_values", True),
+                    "case_insensitive_dedupe": entry.get("case_insensitive_dedupe", True),
+                    "strip_whitespace": entry.get("strip_whitespace", True),
+                }
+            )
+            continue
+        if t_type == "filter_rows":
+            normalized.append(
+                {
+                    "type": "filter_rows",
+                    "include_regex": entry.get("include_regex"),
+                    "exclude_regex": entry.get("exclude_regex"),
+                    "columns": entry.get("columns") or entry.get("source_columns"),
+                }
+            )
+            continue
+        if t_type == "regex_replace":
+            columns = entry.get("columns") or entry.get("source_columns") or entry.get("target_columns")
+            pattern = entry.get("pattern")
+            if not pattern or not columns:
+                logger.debug("Skipping regex_replace without pattern/columns: %s", raw)
+                continue
+            normalized.append(
+                {
+                    "type": "regex_replace",
+                    "pattern": pattern,
+                    "replacement": entry.get("replacement", ""),
+                    "columns": columns,
+                }
+            )
+            continue
+        if t_type == "conditional_transform":
+            normalized.append(
+                {
+                    "type": "conditional_transform",
+                    "include_regex": entry.get("include_regex"),
+                    "exclude_regex": entry.get("exclude_regex"),
+                    "columns": entry.get("columns") or entry.get("source_columns"),
+                    "actions": _normalize_row_transformations_for_decision(entry.get("actions") or entry.get("transformations")),
+                }
+            )
+            continue
 
         normalized.append(entry)
 
@@ -1310,6 +1395,7 @@ def make_import_decision(
     expected_column_types: Optional[Dict[str, str]] = None,
     schema_migrations: Optional[List[Dict[str, Any]]] = None,
     column_transformations: Optional[List[Dict[str, Any]]] = None,
+    row_transformations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Make final import decision with strategy and target table.
@@ -1334,6 +1420,7 @@ def make_import_decision(
             before importing (e.g., [{"action": "replace_column", ...}]).
         column_transformations: Optional list of source data transformation instructions
             (e.g., split arrays, compose phone numbers) the executor should perform before mapping.
+        row_transformations: Optional list of row-level preprocessing instructions (e.g., explode email columns).
         
     Returns:
         Confirmation of decision recorded
@@ -1429,6 +1516,11 @@ def make_import_decision(
         "expected_column_types": expected_types,
         "schema_migrations": migrations,
         "column_transformations": normalized_transformations,
+        "row_transformations": _normalize_row_transformations_for_decision(
+            row_transformations
+            if row_transformations is not None
+            else context.file_metadata.get("detected_row_transformations")
+        ),
         "forced_target_table": target_table if forced_table else None,
         "forced_table_mode": forced_table_mode if forced_table else None,
     }
@@ -1444,6 +1536,7 @@ def make_import_decision(
         "expected_column_types": expected_types,
         "schema_migrations": migrations,
         "column_transformations": normalized_transformations,
+        "row_transformations": context.file_metadata["llm_decision"]["row_transformations"],
     }
 
 
@@ -1610,6 +1703,10 @@ You MUST call the make_import_decision tool before providing your final response
      • `{"type": "compose_international_phone", "target_column": "phone_e164", "components": [{"role": "country_code", "column": "country_code"}, {"role": "area_code", "column": "area_code"}, {"role": "subscriber_number", "column": "phone_number"}]}`
      • `{"type": "split_international_phone", "source_column": "intl_phone", "outputs": [{"name": "country_code", "role": "country_code"}, {"name": "subscriber_number", "role": "subscriber_number"}]}`
    - If no preprocessing is needed, pass an empty list (`[]`). Do **not** omit the argument.
+6. **row_transformations**: When rows must be duplicated/filtered/cleaned before mapping (e.g., split multiple email columns into entries, drop rows missing valid emails, regex-clean phone numbers), provide explicit instructions. Examples:
+   • `{"type": "explode_columns", "source_columns": ["email_1", "email_2", "email_3"], "target_column": "email", "drop_source_columns": true}`
+   • `{"type": "filter_rows", "include_regex": ".+@.+", "columns": ["email"]}`
+   • `{"type": "regex_replace", "pattern": "[^0-9]", "replacement": "", "columns": ["phone_raw"]}`
 
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:

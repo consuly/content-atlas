@@ -268,7 +268,7 @@ Default settings in `/analyze-file` endpoint:
 2. **Preview Mode**: Show what will be imported before executing
 3. **Undo/Rollback**: Ability to undo an import
 4. **Batch Processing**: Map multiple files at once
-5. **Custom Rules**: User-defined mapping rules
+5. **Custom Rules**: User-defined mapping rules (column transformations, row-level preprocessing; see `docs/ROW_TRANSFORMATIONS.md`)
 6. **History View**: See past conversations and decisions
 
 ## Related Documentation

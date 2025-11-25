@@ -29,6 +29,7 @@ from .processors.csv_processor import (
 from .processors.json_processor import process_json
 from .processors.xml_processor import process_xml
 from .mapper import map_data
+from .preprocessor import apply_row_transformations
 from app.db.models import (
     create_file_imports_table_if_not_exists,
     create_table_if_not_exists,
@@ -463,7 +464,7 @@ def _determine_uniqueness_columns(mapping_config: MappingConfig, sample_record: 
     if mapping_config.unique_columns:
         return mapping_config.unique_columns
     if sample_record:
-        return list(sample_record.keys())
+        return [key for key in sample_record.keys() if not str(key).startswith("_")]
     return []
 
 
@@ -706,7 +707,15 @@ def _execute_streaming_csv_import(
             chunk_start_row = raw_total_rows + 1
             raw_total_rows += len(chunk_records)
 
-            # Optional in-file dedupe across the entire stream
+            preprocess_errors: List[Dict[str, Any]] = []
+            # Apply pandas-backed row transforms before dedupe/mapping (e.g., explode email columns)
+            chunk_records, preprocess_errors = apply_row_transformations(
+                chunk_records,
+                mapping_config,
+                row_offset=chunk_start_row - 1,
+            )
+
+            # Optional in-file dedupe across the entire stream (after preprocessing)
             chunk_records, intra_chunk_skipped = _dedupe_records_streaming_chunk(
                 chunk_records,
                 mapping_config,
@@ -729,14 +738,15 @@ def _execute_streaming_csv_import(
                     mapping_config,
                     row_offset=chunk_start_row - 1,
                 )
+                combined_errors = preprocess_errors + mapping_errors
                 map_time_total += time.time() - map_start
-                mapping_errors_count += len(mapping_errors)
+                mapping_errors_count += len(combined_errors)
                 type_summary = _summarize_type_mismatches(mapping_errors)
                 _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
 
-                if mapping_errors:
+                if combined_errors:
                     error_records: List[Dict[str, Any]] = []
-                    for err in mapping_errors:
+                    for err in combined_errors:
                         if isinstance(err, dict):
                             record_number = err.get("record_number")
                             error_message = err.get("message", str(err))
@@ -804,7 +814,7 @@ def _execute_streaming_csv_import(
                 raise
             else:
                 if import_id:
-                    mark_chunk_completed(import_id, chunk_num, errors_count=len(mapping_errors))
+                    mark_chunk_completed(import_id, chunk_num, errors_count=len(combined_errors))
 
             records_inserted_total += inserted
             duplicates_skipped_total += chunk_duplicates
@@ -1579,8 +1589,16 @@ def execute_data_import(
                             f"{row_count_warning} Tried reprocessing from row {header_row_idx + 1} but still saw {adjusted_row_count} rows."
                         )
 
-            if row_count_warning:
-                logger.warning("Row count check warning: %s", row_count_warning)
+        if row_count_warning:
+            logger.warning("Row count check warning: %s", row_count_warning)
+
+        preprocess_errors: List[Dict[str, Any]] = []
+        if not pre_mapped:
+            records, preprocess_errors = apply_row_transformations(
+                records,
+                mapping_config,
+                row_offset=0,
+            )
 
         # Optional quick in-file dedupe before mapping
         records, intra_file_duplicates_skipped = _dedupe_records_in_memory(
@@ -1693,7 +1711,11 @@ def execute_data_import(
                     except Exception as exc:
                         mark_chunk_failed(import_id, 1, str(exc))
                         raise
-                mark_chunk_completed(import_id, 1, errors_count=len(mapping_errors))
+                mark_chunk_completed(
+                    import_id,
+                    1,
+                    errors_count=len(preprocess_errors) + len(mapping_errors),
+                )
                 _update_job_progress(
                     job_id,
                     stage="mapping",
@@ -1721,12 +1743,13 @@ def execute_data_import(
         logger.info(f"Mapped records ready for caching (if file hash available)")
         
         # Track mapping completion and errors
-        if mapping_errors:
-            logger.warning(f"Mapping errors encountered: {len(mapping_errors)} errors")
+        combined_errors = preprocess_errors + mapping_errors
+        if combined_errors:
+            logger.warning(f"Mapping errors encountered: {len(combined_errors)} errors")
             
             # Convert error strings to structured format for storage
             error_records = []
-            for i, error_msg in enumerate(mapping_errors):
+            for i, error_msg in enumerate(combined_errors):
                 if isinstance(error_msg, dict):
                     error_message = error_msg.get("message", str(error_msg))
                     error_type = error_msg.get("type", "mapping_error")
@@ -1766,7 +1789,7 @@ def execute_data_import(
             update_mapping_status(
                 import_id,
                 mapping_status,
-                errors_count=len(mapping_errors),
+                errors_count=len(combined_errors),
                 duration_seconds=map_time
             )
         else:
@@ -1960,7 +1983,7 @@ def execute_data_import(
             "duplicates_skipped": duplicates_skipped,
             "intra_file_duplicates_skipped": intra_file_duplicates_skipped,
             "table_name": mapping_config.table_name,
-            "mapping_errors": mapping_errors if mapping_errors else [],
+            "mapping_errors": combined_errors if combined_errors else [],
             "type_mismatch_summary": type_mismatch_summary,
             "duration_seconds": duration,
             "llm_followup": followup_message or None,
