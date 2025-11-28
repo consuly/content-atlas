@@ -45,6 +45,29 @@ def insert_llm_instruction(title: str, content: str) -> str:
     return instruction_id
 
 
+def find_llm_instruction_by_content(content: str) -> Optional[Dict[str, str]]:
+    """Return the most recently updated instruction that exactly matches the content."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT id, title, content, created_at, updated_at, last_used_at
+                FROM llm_instructions
+                WHERE content = :content
+                ORDER BY COALESCE(last_used_at, updated_at) DESC
+                LIMIT 1
+                """
+            ),
+            {"content": content},
+        ).mappings().first()
+        if not result:
+            return None
+        record = dict(result)
+        record["id"] = str(record["id"])
+        return record
+
+
 def get_llm_instruction(instruction_id: str) -> Optional[Dict[str, str]]:
     """Fetch a single instruction profile."""
     engine = get_engine()

@@ -11,6 +11,7 @@ import csv
 import io
 import math
 import re
+from difflib import get_close_matches
 from collections.abc import Mapping, Sequence
 from sqlalchemy import text, inspect
 import time
@@ -94,6 +95,15 @@ def _columns_cover_mapping(records: List[Dict[str, Any]], mapping_config: Option
         source for source in mapping_config.mappings.values() if source
     }
     return required_sources.issubset(available_columns)
+
+
+def _generated_columns(columns: set[Any]) -> set[str]:
+    """Return the synthetic col_* style columns present in a record set."""
+    return {
+        str(col)
+        for col in columns
+        if isinstance(col, str) and re.fullmatch(r"col_\d+", str(col))
+    }
 
 
 def _count_csv_rows(file_content: bytes) -> Optional[int]:
@@ -281,6 +291,56 @@ def _count_file_rows(file_content: bytes, file_type: str, header_present: Option
     return RowCountResult(total_rows=None, data_rows=None)
 
 
+def _maybe_reparse_generated_headerless_records(
+    *,
+    records: List[Dict[str, Any]],
+    mapping_config: MappingConfig,
+    file_content: bytes,
+    csv_has_header: Optional[bool],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """
+    If records look headerless (col_0, col_1, ...) but the mapping expects
+    named columns and header detection says a header exists, reprocess with
+    headers enabled to recover the original column names.
+    """
+    if not records or not file_content or not mapping_config or not mapping_config.mappings:
+        return records, False
+    if csv_has_header is False:
+        return records, False
+
+    sample_columns = set(records[0].keys())
+    synthetic_cols = _generated_columns(sample_columns)
+    if not synthetic_cols:
+        return records, False
+
+    expected_human_sources = {
+        src
+        for src in mapping_config.mappings.values()
+        if src and not re.fullmatch(r"col_\d+", str(src))
+    }
+    if not expected_human_sources:
+        return records, False
+
+    if _columns_cover_mapping(records, mapping_config):
+        return records, False
+
+    logger.info(
+        "Parsed CSV columns look generated (%s) but mapping expects headers (%s); "
+        "reprocessing with header=True",
+        sorted(list(synthetic_cols))[:5],
+        sorted(list(expected_human_sources))[:5],
+    )
+    reparsed_records = process_csv(file_content, has_header=True)
+    if _columns_cover_mapping(reparsed_records, mapping_config):
+        return reparsed_records, True
+
+    logger.warning(
+        "Reprocessing CSV with header=True did not align with mapping; "
+        "continuing with originally parsed records",
+    )
+    return records, False
+
+
 def _update_job_progress(
     job_id: Optional[str],
     *,
@@ -452,6 +512,79 @@ def _build_type_mismatch_followup(table_name: str, summary: List[Dict[str, Any]]
     )
 
     return "\n".join(lines)
+
+
+def _reconcile_uniqueness_columns(
+    engine,
+    table_name: str,
+    mapping_config: MappingConfig,
+    sample_record: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    """
+    Validate/repair uniqueness columns against the live table schema right before insertion.
+    Returns the resolved uniqueness columns and a list of adjustments that were applied.
+    """
+    desired = _determine_uniqueness_columns(mapping_config, sample_record)
+    if not desired:
+        return [], []
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        )
+        existing_columns = [row[0] for row in result]
+
+    existing_set = set(existing_columns)
+    resolved: List[str] = []
+    adjustments: List[Dict[str, str]] = []
+    unresolved_missing: List[str] = []
+
+    for col in desired:
+        if col in existing_set:
+            resolved.append(col)
+            continue
+
+        fallback: Optional[str] = None
+        if col == "contact_full_name" and "full_name" in existing_set:
+            fallback = "full_name"
+        else:
+            close = get_close_matches(col, existing_columns, n=1, cutoff=0.78)
+            if close:
+                fallback = close[0]
+            elif col.endswith("s") and col[:-1] in existing_set:
+                fallback = col[:-1]
+            elif not col.endswith("s") and f"{col}s" in existing_set:
+                fallback = f"{col}s"
+
+        if fallback:
+            adjustments.append({"requested": col, "resolved_to": fallback})
+            resolved.append(fallback)
+        else:
+            unresolved_missing.append(col)
+
+    # Deduplicate while preserving order
+    seen = set()
+    resolved_unique: List[str] = []
+    for col in resolved:
+        if col not in seen:
+            resolved_unique.append(col)
+            seen.add(col)
+
+    if unresolved_missing:
+        preview = ", ".join(sorted(existing_columns)[:10])
+        raise ValueError(
+            f"Uniqueness columns {unresolved_missing} not found on table '{table_name}' after schema reconciliation. "
+            f"Existing columns (sample): {preview}. Update the mapping uniqueness_columns or add the missing columns before retrying."
+        )
+
+    return resolved_unique, adjustments
 
 
 def _determine_uniqueness_columns(mapping_config: MappingConfig, sample_record: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -1385,6 +1518,7 @@ def execute_data_import(
     intra_file_duplicates_skipped = 0
     chunk_status_summary: Dict[str, int] = {}
     widened_columns: List[Dict[str, Any]] = []
+    uniqueness_adjustments: List[Dict[str, str]] = []
     
     try:
         type_mismatch_summary: List[Dict[str, Any]] = []
@@ -1499,6 +1633,22 @@ def execute_data_import(
                 len(records)
             )
             used_cached_records = False
+
+        # If the cached/LLM-provided parse looks headerless but we expect headers,
+        # reprocess with header=True to recover the source column names.
+        if file_type == "csv":
+            records, reparsed = _maybe_reparse_generated_headerless_records(
+                records=records,
+                mapping_config=mapping_config,
+                file_content=file_content,
+                csv_has_header=csv_has_header,
+            )
+            if reparsed:
+                parse_time = time.time() - parse_start
+                logger.info(
+                    "Reparsed CSV with header row to align with mapping; now have %d records",
+                    len(records),
+                )
 
         if not _records_look_like_mappings(records):
             raise ValueError(
@@ -1827,6 +1977,29 @@ def execute_data_import(
             if not table_exists or import_strategy == "NEW_TABLE":
                 create_table_if_not_exists(engine, mapping_config)
                 logger.info(f"Created table: {mapping_config.table_name}")
+
+            # Re-validate uniqueness columns against the live schema right before insertion
+            if (
+                mapping_config.check_duplicates
+                and mapping_config.duplicate_check
+                and mapping_config.duplicate_check.enabled
+                and not mapping_config.duplicate_check.force_import
+            ):
+                resolved_uniqueness, uniqueness_adjustments = _reconcile_uniqueness_columns(
+                    engine,
+                    mapping_config.table_name,
+                    mapping_config,
+                    mapped_records[0] if mapped_records else None,
+                )
+                if resolved_uniqueness:
+                    mapping_config.duplicate_check.uniqueness_columns = resolved_uniqueness
+                    mapping_config.unique_columns = resolved_uniqueness
+                if uniqueness_adjustments:
+                    logger.info(
+                        "Reconciled uniqueness columns for '%s': %s",
+                        mapping_config.table_name,
+                        uniqueness_adjustments,
+                    )
             
             # Insert records
             try:
@@ -1841,6 +2014,56 @@ def execute_data_import(
                 )
             except ValueError as exc:
                 error_text = str(exc)
+                if "Uniqueness columns" in error_text:
+                    mapping_errors = [
+                        {
+                            "type": "uniqueness_validation",
+                            "message": error_text,
+                        }
+                    ]
+                    duration = time.time() - start_time
+                    complete_import_tracking(
+                        import_id=import_id,
+                        status="failed",
+                        total_rows_in_file=raw_total_rows,
+                        rows_processed=raw_total_rows,
+                        rows_inserted=0,
+                        rows_skipped=0,
+                        duplicates_found=0,
+                        duration_seconds=duration,
+                        parsing_time_seconds=parse_time,
+                        duplicate_check_time_seconds=None,
+                        insert_time_seconds=None,
+                        error_message=error_text,
+                        metadata={
+                            "widened_columns": widened_columns or None,
+                            "uniqueness_column_adjustments": uniqueness_adjustments or None,
+                        },
+                    )
+                    if job_id:
+                        update_import_job(
+                            job_id,
+                            status="waiting_user",
+                            stage="analysis",
+                            error_message=error_text,
+                        )
+                    llm_followup = (
+                        "Uniqueness columns do not exist on the target table. "
+                        "Update duplicate_check.uniqueness_columns (or add the missing columns) "
+                        "and retry."
+                    )
+                    return {
+                        "success": False,
+                        "message": error_text,
+                        "records_processed": 0,
+                        "duplicates_skipped": 0,
+                        "table_name": mapping_config.table_name,
+                        "import_id": import_id,
+                        "mapping_errors": mapping_errors,
+                        "llm_followup": llm_followup,
+                        "needs_user_input": True,
+                        "type_mismatch_summary": type_mismatch_summary,
+                    }
                 if "Numeric overflow" in error_text:
                     mapping_errors = [
                         {
@@ -1929,6 +2152,8 @@ def execute_data_import(
             metadata_payload["widened_columns"] = widened_columns
         if row_count_warning:
             metadata_payload["row_count_warning"] = row_count_warning
+        if uniqueness_adjustments:
+            metadata_payload["uniqueness_column_adjustments"] = uniqueness_adjustments
 
         duplicate_rows: List[Dict[str, Any]] = []
         duplicate_total = duplicates_skipped

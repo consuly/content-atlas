@@ -59,7 +59,9 @@ from app.core.config import settings
 from app.domain.imports.jobs import fail_active_job
 from app.db.llm_instructions import (
     get_llm_instruction,
+    find_llm_instruction_by_content,
     insert_llm_instruction,
+    update_llm_instruction,
     touch_llm_instruction,
     create_llm_instruction_table,
 )
@@ -69,7 +71,9 @@ logger = logging.getLogger(__name__)
 _preloaded_file_contents: Dict[str, bytes] = {}
 ARCHIVE_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xls")
 ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_auto_process.log")
+MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.log")
 _archive_log_lock = threading.Lock()
+_failure_log_lock = threading.Lock()
 
 
 def _normalize_forced_table_name(table_name: Optional[str]) -> Optional[str]:
@@ -116,8 +120,22 @@ def _resolve_llm_instruction(
             touch_llm_instruction(resolved_id)
 
     if save_llm_instruction and normalized_instruction:
-        title = (llm_instruction_title or "").strip() or "Saved import instruction"
-        resolved_id = insert_llm_instruction(title, normalized_instruction)
+        desired_title = (llm_instruction_title or "").strip()
+        existing_instruction = find_llm_instruction_by_content(normalized_instruction)
+
+        if existing_instruction:
+            resolved_id = existing_instruction.get("id")
+            existing_title = existing_instruction.get("title") or ""
+            if desired_title and desired_title != existing_title and resolved_id:
+                updated = update_llm_instruction(resolved_id, title=desired_title)
+                resolved_id = updated["id"] if updated else resolved_id
+            if resolved_id:
+                touch_llm_instruction(resolved_id)
+        else:
+            resolved_id = insert_llm_instruction(
+                desired_title or "Saved import instruction",
+                normalized_instruction,
+            )
 
     return normalized_instruction, resolved_id
 
@@ -170,6 +188,24 @@ def _log_archive_debug(payload: Dict[str, Any]) -> None:
                 handle.write(json.dumps(record, default=str) + "\n")
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Archive debug log write failed: %s", exc)
+
+
+def _log_mapping_failure(payload: Dict[str, Any]) -> None:
+    """
+    Append a structured JSON line describing a mapping failure for debugging.
+    Errors here should never break the main flow.
+    """
+    try:
+        os.makedirs(os.path.dirname(MAPPING_FAILURE_LOG), exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            **payload,
+        }
+        with _failure_log_lock:
+            with open(MAPPING_FAILURE_LOG, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, default=str) + "\n")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Mapping failure log write failed: %s", exc)
 
 
 def _guess_content_type(file_name: str) -> str:
@@ -368,6 +404,9 @@ def _process_entry_bytes(
     sheet_name: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
     """Shared worker logic for archive entries and workbook sheets."""
+    analysis_response: Optional[AnalyzeFileResponse] = None
+    waited_for_cached_plan_without_decision = False
+
     # 2. B2 Upload (parallel)
     try:
         upload_result = upload_file_to_b2(
@@ -417,6 +456,29 @@ def _process_entry_bytes(
 
     # 4. Analysis & Execution (parallel analysis, serialized insertion via TableLockManager)
     summary = {}
+    def _run_fresh_analysis() -> tuple[Optional[AnalyzeFileResponse], Dict[str, Any]]:
+        """Run analysis and return both the response and summarized outcome."""
+        _preloaded_file_contents[uploaded_file_id] = entry_bytes
+        try:
+            local_response = asyncio.run(
+                analyze_file_endpoint(
+                    file=None,
+                    file_id=uploaded_file_id,
+                    sample_size=None,
+                    analysis_mode=analysis_mode,
+                    conflict_resolution=conflict_resolution,
+                    auto_execute_confidence_threshold=auto_execute_confidence_threshold,
+                    max_iterations=max_iterations,
+                    db=db_session,
+                    target_table_name=forced_table_name,
+                    target_table_mode=forced_table_mode,
+                    llm_instruction=llm_instruction,
+                )
+            )
+            return local_response, _summarize_archive_execution(local_response)
+        finally:
+            _preloaded_file_contents.pop(uploaded_file_id, None)
+
     try:
         marketing_response: Optional[AnalyzeFileResponse] = None
         if settings.enable_marketing_fixture_shortcuts:
@@ -478,41 +540,31 @@ def _process_entry_bytes(
                     llm_decision=applied_decision,
                 )
             else:
-                # No plan materialized—fall back to fresh analysis.
-                cached_plan = cached_after_wait
-        else:
-            _preloaded_file_contents[uploaded_file_id] = entry_bytes
-
-            try:
-                analyze_response = asyncio.run(
-                    analyze_file_endpoint(
-                        file=None,
-                        file_id=uploaded_file_id,
-                        sample_size=None,
-                        analysis_mode=analysis_mode,
-                        conflict_resolution=conflict_resolution,
-                        auto_execute_confidence_threshold=auto_execute_confidence_threshold,
-                        max_iterations=max_iterations,
-                        db=db_session,
-                        target_table_name=forced_table_name,
-                        target_table_mode=forced_table_mode,
-                        llm_instruction=llm_instruction,
-                    )
-                )
-                summary = _summarize_archive_execution(analyze_response)
-
-                if fingerprint and analyze_response.llm_decision:
+                # No plan materialized—fall back to fresh analysis so we still produce a result.
+                waited_for_cached_plan_without_decision = True
+                analysis_response, summary = _run_fresh_analysis()
+                if fingerprint and analysis_response and analysis_response.llm_decision:
                     with fingerprint_lock:
-                        existing_cache = fingerprint_cache.get(fingerprint) or {}
-                        event = existing_cache.get("event") or cached_plan_event
+                        event = cached_plan_event or (cached_after_wait or {}).get("event")
                         fingerprint_cache[fingerprint] = {
-                            "llm_decision": analyze_response.llm_decision,
+                            "llm_decision": analysis_response.llm_decision,
                             "event": event,
                         }
                         if event:
                             event.set()
-            finally:
-                _preloaded_file_contents.pop(uploaded_file_id, None)
+        else:
+            analysis_response, summary = _run_fresh_analysis()
+
+            if fingerprint and analysis_response and analysis_response.llm_decision:
+                with fingerprint_lock:
+                    existing_cache = fingerprint_cache.get(fingerprint) or {}
+                    event = existing_cache.get("event") or cached_plan_event
+                    fingerprint_cache[fingerprint] = {
+                        "llm_decision": analysis_response.llm_decision,
+                        "event": event,
+                    }
+                    if event:
+                        event.set()
 
     except HTTPException as exc:
         summary = {
@@ -531,6 +583,14 @@ def _process_entry_bytes(
         }
         if cached_plan_event:
             cached_plan_event.set()
+
+    # Ensure we always surface a failure reason, even if a cached plan never arrived.
+    summary = summary or {}
+    if not summary.get("message"):
+        fallback = "Automatic processing failed"
+        if waited_for_cached_plan_without_decision:
+            fallback += " after cached plan lookup returned no decision"
+        summary["message"] = fallback
 
     if cached_plan_event and fingerprint:
         with fingerprint_lock:
@@ -815,6 +875,33 @@ def _run_archive_auto_process_job(
                     try:
                         file_result = future.result()
                         results.append(file_result)
+
+                        error_message = getattr(file_result, "message", None)
+                        if not error_message and getattr(file_result, "status", None) == "failed":
+                            error_message = (
+                                f"Failed with no error message returned "
+                                f"(status={getattr(file_result, 'status', None)}, path={archive_path})"
+                            )
+
+                        if getattr(file_result, "status", None) == "failed":
+                            _log_mapping_failure(
+                                {
+                                    "event": "archive_entry_failed",
+                                    "job_id": job_id,
+                                    "file_id": file_id,
+                                    "archive_name": archive_name,
+                                    "archive_path": getattr(file_result, "archive_path", archive_path),
+                                    "stored_file_name": getattr(file_result, "stored_file_name", None),
+                                    "uploaded_file_id": getattr(file_result, "uploaded_file_id", None),
+                                    "sheet_name": getattr(file_result, "sheet_name", None),
+                                    "error": error_message,
+                                    "analysis_mode": analysis_mode.value,
+                                    "conflict_resolution": conflict_resolution.value,
+                                    "forced_table_name": forced_table_name,
+                                    "forced_table_mode": forced_table_mode,
+                                    "raw_result": getattr(file_result, "model_dump", lambda: {})(),
+                                }
+                            )
                         
                         uploaded_file_id = getattr(file_result, "uploaded_file_id", None)
                         if file_result.status == "processed" and uploaded_file_id:
@@ -906,7 +993,7 @@ def _run_archive_auto_process_job(
                                 "forced_table_mode": forced_table_mode,
                             },
                         )
-                        
+                            
                     except Exception as exc:
                         logger.exception(f"Error processing archive entry {archive_path}: {exc}")
                         # Handle catastrophic worker failure
@@ -921,6 +1008,20 @@ def _run_archive_auto_process_job(
                                 "archive_name": archive_name,
                                 "archive_path": archive_path,
                                 "error": str(exc),
+                            }
+                        )
+                        _log_mapping_failure(
+                            {
+                                "event": "archive_entry_exception",
+                                "job_id": job_id,
+                                "file_id": file_id,
+                                "archive_name": archive_name,
+                                "archive_path": archive_path,
+                                "error": str(exc),
+                                "analysis_mode": analysis_mode.value,
+                                "conflict_resolution": conflict_resolution.value,
+                                "forced_table_name": forced_table_name,
+                                "forced_table_mode": forced_table_mode,
                             }
                         )
         finally:
@@ -1059,6 +1160,33 @@ def _run_workbook_auto_process_job(
                     file_result = future.result()
                     results.append(file_result)
 
+                    error_message = getattr(file_result, "message", None)
+                    if not error_message and getattr(file_result, "status", None) == "failed":
+                        error_message = (
+                            f"Failed with no error message returned "
+                            f"(status={getattr(file_result, 'status', None)}, sheet={sheet_name})"
+                        )
+
+                    if getattr(file_result, "status", None) == "failed":
+                        _log_mapping_failure(
+                            {
+                                "event": "workbook_entry_failed",
+                                "job_id": job_id,
+                                "file_id": file_id,
+                                "workbook_name": workbook_name,
+                                "sheet_name": getattr(file_result, "sheet_name", sheet_name),
+                                "archive_path": getattr(file_result, "archive_path", sheet_name),
+                                "stored_file_name": getattr(file_result, "stored_file_name", None),
+                                "uploaded_file_id": getattr(file_result, "uploaded_file_id", None),
+                                "error": error_message,
+                                "analysis_mode": analysis_mode.value,
+                                "conflict_resolution": conflict_resolution.value,
+                                "forced_table_name": forced_table_name,
+                                "forced_table_mode": forced_table_mode,
+                                "raw_result": getattr(file_result, "model_dump", lambda: {})(),
+                            }
+                        )
+
                     uploaded_file_id = getattr(file_result, "uploaded_file_id", None)
                     if file_result.status == "processed" and uploaded_file_id:
                         try:
@@ -1159,6 +1287,20 @@ def _run_workbook_auto_process_job(
                             "workbook_name": workbook_name,
                             "sheet_name": sheet_name,
                             "error": str(exc),
+                        }
+                    )
+                    _log_mapping_failure(
+                        {
+                            "event": "workbook_entry_exception",
+                            "job_id": job_id,
+                            "file_id": file_id,
+                            "workbook_name": workbook_name,
+                            "sheet_name": sheet_name,
+                            "error": str(exc),
+                            "analysis_mode": analysis_mode.value,
+                            "conflict_resolution": conflict_resolution.value,
+                            "forced_table_name": forced_table_name,
+                            "forced_table_mode": forced_table_mode,
                         }
                     )
 
@@ -2562,8 +2704,24 @@ async def analyze_file_endpoint(
                                     error_message=fallback_error,
                                     expected_active_job_id=job_id
                                 )
-                            else:
-                                update_file_status(file_id, "failed", error_message=fallback_error)
+                        else:
+                            update_file_status(file_id, "failed", error_message=fallback_error)
+
+                        _log_mapping_failure(
+                            {
+                                "event": "auto_process_failed",
+                                "source": "auto_process_single",
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "job_id": job_id,
+                                "error": fallback_error,
+                                "analysis_mode": analysis_mode.value,
+                                "conflict_resolution": conflict_resolution.value,
+                                "strategy": (llm_decision or {}).get("strategy") if llm_decision else None,
+                                "target_table": (llm_decision or {}).get("target_table") if llm_decision else None,
+                                "auto_retry_attempted": bool(auto_retry_details),
+                            }
+                        )
 
                         response.llm_response += f"\n\n❌ AUTO-EXECUTION FAILED:\n"
                         response.llm_response += f"- Error: {error_msg}\n"
@@ -2643,6 +2801,22 @@ async def analyze_file_endpoint(
                             job_id = None
                         else:
                             update_file_status(file_id, "failed", error_message=final_error)
+
+                    _log_mapping_failure(
+                        {
+                            "event": "auto_process_failed",
+                            "source": "auto_process_single",
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "job_id": job_id,
+                            "error": final_error,
+                            "analysis_mode": analysis_mode.value,
+                            "conflict_resolution": conflict_resolution.value,
+                            "strategy": (llm_decision or {}).get("strategy") if llm_decision else None,
+                            "target_table": (llm_decision or {}).get("target_table") if llm_decision else None,
+                            "auto_retry_attempted": bool(auto_retry_details),
+                        }
+                    )
 
                     response.llm_response += f"\n\n❌ AUTO-EXECUTION ERROR: {error_msg}\n"
                     if auto_retry_details and auto_retry_details.get("error"):

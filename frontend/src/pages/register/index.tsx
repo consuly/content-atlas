@@ -50,16 +50,16 @@ export const Register = () => {
       formTitle="Create your workspace"
       formSubtitle="Set up your Consuly Content Atlas account to start importing with fidelity."
       footer={
-        <div className="flex flex-col gap-2 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-          <Text type="secondary">
+        <div className="flex flex-col gap-2 text-sm text-slate-500 sm:items-center sm:justify-between">
+          <span>
+            Invite your team from the dashboard once you're in.
+          </span>
+          <Text>
             Already have an account?{" "}
             <a href="/login" className="text-brand-500">
               Sign in instead
             </a>
           </Text>
-          <span className="text-xs text-slate-500">
-            Invite your team from the dashboard once you're in.
-          </span>
         </div>
       }
     >

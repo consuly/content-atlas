@@ -118,12 +118,12 @@ export const AuthLayout = ({
                   <p className="text-xs font-semibold uppercase tracking-[0.28em] text-brand-500">
                     Content Atlas
                   </p>
-                  <h2 className="text-2xl font-bold text-white">
+                  <h2 className="text-2xl font-bold text-black/90">
                     {formTitle}
                   </h2>
                   <p className="text-sm text-slate-400">{formSubtitle}</p>
                 </div>
-                <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-100">
+                <span className="rounded-full border border-brand-500 bg-brand-500 px-3 py-1 text-xs font-semibold text-brand-100">
                   Secure
                 </span>
               </div>
