@@ -1,3 +1,5 @@
+import pytest
+
 from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
 from app.domain.imports.mapper import map_data
 
@@ -117,6 +119,22 @@ def test_map_data_splits_international_phone():
     assert mapped[0]["subscriber_number"] == "2079461234"
     assert mapped[1]["country_code"] == "1"
     assert mapped[1]["subscriber_number"] == "4155557890"
+
+
+def test_map_data_requires_column_mappings():
+    records = [{"name": "Alice"}]
+    config = _base_config(mappings={})
+
+    with pytest.raises(ValueError, match="no column mappings"):
+        map_data(records, config)
+
+
+def test_map_data_errors_when_sources_missing_from_rows():
+    records = [{"transformed_col": "value"}]
+    config = _base_config(mappings={"target": "original_field"})
+
+    with pytest.raises(ValueError, match="source columns are missing"):
+        map_data(records, config)
 
 
 def test_column_regex_replace_runs_before_mapping():

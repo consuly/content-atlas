@@ -6,6 +6,7 @@ and registers all API routers.
 """
 import os
 from datetime import datetime
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -101,12 +102,23 @@ async def lifespan(app: FastAPI):
     pass
 
 
+# Read API guide for documentation
+description_text = "A data consolidation platform for SMBs to consolidate data from multiple sources into PostgreSQL"
+try:
+    guide_path = Path(__file__).parent.parent / "docs" / "PUBLIC_API_GUIDE.md"
+    if guide_path.exists():
+        description_text = guide_path.read_text(encoding="utf-8")
+except Exception as e:
+    print(f"Warning: Could not load API guide for documentation: {e}")
+
 # Initialize FastAPI application
 app = FastAPI(
-    title="Data Mapper API",
+    title="Content Atlas API",
     version="1.0.0",
-    description="A data consolidation platform for SMBs to consolidate data from multiple sources into PostgreSQL",
-    lifespan=lifespan
+    description=description_text,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # Configure CORS middleware

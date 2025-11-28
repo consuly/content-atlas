@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { useLogin } from "@refinedev/core";
-import { Alert, Button, Form, Input, Typography } from "antd";
+import { Alert, Button, Form, Input } from "antd";
 import { LockOutlined, MailOutlined } from "@ant-design/icons";
 import axios from "axios";
 import { API_URL } from "../../config";
 import { AuthLayout } from "../auth/AuthLayout";
-
-const { Text } = Typography;
 
 interface LoginFormValues {
   email: string;
@@ -66,12 +64,6 @@ export const Login = () => {
       formSubtitle="Sign in to keep imports, mappings, and AI checks in sync."
       footer={
         <div className="flex flex-col gap-2 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-          <Text type="secondary">
-            Need an account?{" "}
-            <a href="/register" className="text-brand-500">
-              Start a workspace
-            </a>
-          </Text>
           <a href="/forgot-password" className="text-brand-500">
             Forgot password?
           </a>
@@ -83,13 +75,18 @@ export const Login = () => {
           className="mb-3"
           type="info"
           message="Create your admin account"
-          description="No users exist yet. Create the first account to bootstrap your workspace."
-          showIcon
-          action={
-            <Button type="link" href="/register" style={{ paddingLeft: 0 }}>
-              Go to registration
-            </Button>
+          description={
+            <div className="flex flex-col gap-2">
+              <span>
+                No users exist yet. Create the first account to bootstrap your
+                workspace.
+              </span>
+              <Button type="link" href="/register" style={{ paddingLeft: 0 }}>
+                Go to registration
+              </Button>
+            </div>
           }
+          showIcon
         />
       )}
 

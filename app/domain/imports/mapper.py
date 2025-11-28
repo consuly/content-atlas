@@ -57,13 +57,43 @@ def map_data(
     - Automatically converts date columns based on schema type
 
     Returns:
-        Tuple of (mapped_records, list_of_all_errors)
+    Tuple of (mapped_records, list_of_all_errors)
     """
     all_errors: List[Dict[str, Any]] = []
     
     # Pre-compute mapping items ONCE (not N times in loop)
     # Convert to tuple for faster iteration
     mapping_items = tuple(config.mappings.items())
+    if not mapping_items:
+        raise ValueError("Mapping configuration contains no column mappings; aborting to prevent empty inserts.")
+
+    rules = config.rules or {}
+    pre_map_transformations = rules.get("column_transformations", [])
+    has_pre_map_transformations = bool(pre_map_transformations)
+
+    source_fields = {src for _, src in mapping_items if src}
+    if not source_fields:
+        raise ValueError("Mapping configuration is missing source column references; cannot map records safely.")
+
+    if records:
+        observed_columns: set = set()
+        for record in records[:50]:  # Sample a subset to keep checks cheap
+            try:
+                effective_record = (
+                    _apply_column_transformations(record, pre_map_transformations)
+                    if has_pre_map_transformations
+                    else record
+                )
+                observed_columns.update(effective_record.keys())
+            except Exception:
+                continue
+        observed_columns.discard(None)
+        if source_fields.isdisjoint(observed_columns):
+            raise ValueError(
+                "Mapped source columns are missing from the transformed data. "
+                f"Expected at least one of {sorted(source_fields)}, "
+                f"but saw columns {sorted(observed_columns)[:10]}."
+            )
     
     # Identify date/timestamp/integer columns from schema for automatic conversion
     date_columns = set()
@@ -83,13 +113,10 @@ def map_data(
                 numeric_columns.add(col_name)
     
     # Check if we need to apply rules or date conversions
-    rules = config.rules or {}
     has_rules = bool(rules)
     has_date_columns = bool(date_columns)
     has_integer_columns = bool(integer_columns)
     has_numeric_columns = bool(numeric_columns - integer_columns)
-    pre_map_transformations = rules.get("column_transformations", [])
-    has_pre_map_transformations = bool(pre_map_transformations)
     
     # Fast path: no rules and no date/integer columns to convert
     if not has_rules and not has_date_columns and not has_integer_columns and not has_numeric_columns and not has_pre_map_transformations:

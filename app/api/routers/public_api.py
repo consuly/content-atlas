@@ -17,28 +17,35 @@ from app.domain.queries.agent import query_database_with_agent
 router = APIRouter(prefix="/api/v1", tags=["public-api"])
 
 
-@router.post("/query", response_model=QueryDatabaseResponse)
+@router.post(
+    "/query", 
+    response_model=QueryDatabaseResponse,
+    summary="Run Natural Language Query",
+    description="Translates a natural language prompt into SQL, executes it, and returns both a conversational summary and CSV data."
+)
 async def public_query_database_endpoint(
     request: QueryDatabaseRequest,
     api_key: ApiKey = Depends(get_api_key_from_header),
     db: Session = Depends(get_db)
 ):
     """
-    Execute natural language queries against the database (Public API).
+    **Execute natural language queries against the database.**
     
-    This endpoint is designed for external applications to query the database
-    using natural language. It requires API key authentication.
+    This endpoint is designed for external applications to query the database using natural language.
+    It automatically handles schema context and maintains conversation history if a `thread_id` is provided.
+
+    **Authentication:**
+    Requires `X-API-Key` header.
+
+    **Features:**
+    *   **Natural Language to SQL:** Converts English questions into accurate SQL.
+    *   **Context Awareness:** Remembers previous questions in the thread.
+    *   **Safety:** Read-only access; blocks modification queries.
     
-    Authentication: X-API-Key header
-    
-    Parameters:
-    - prompt: Natural language query
-    - thread_id: Optional conversation thread ID for memory continuity
-    
-    Returns:
-    - Query results in CSV format
-    - Executed SQL query
-    - Execution metadata
+    **Returns:**
+    *   `response`: The AI's conversational answer.
+    *   `data_csv`: The raw result set in CSV format.
+    *   `executed_sql`: The actual SQL that was run.
     """
     try:
         # Execute query using the same agent as internal endpoint
@@ -58,18 +65,24 @@ async def public_query_database_endpoint(
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
-@router.get("/tables", response_model=TablesListResponse)
+@router.get(
+    "/tables", 
+    response_model=TablesListResponse,
+    summary="List Available Tables",
+    description="Lists all user-accessible tables along with their current row counts."
+)
 async def public_list_tables_endpoint(
     api_key: ApiKey = Depends(get_api_key_from_header),
     db: Session = Depends(get_db)
 ):
     """
-    List all available tables (Public API).
+    **List all available reporting tables.**
     
-    Authentication: X-API-Key header
-    
-    Returns:
-    - List of table names with row counts
+    Returns a list of tables that are available for querying, including their name and current row count.
+    System tables and internal metadata tables are excluded.
+
+    **Authentication:**
+    Requires `X-API-Key` header.
     """
     try:
         engine = get_engine()
@@ -105,22 +118,28 @@ async def public_list_tables_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/tables/{table_name}/schema", response_model=TableSchemaResponse)
+@router.get(
+    "/tables/{table_name}/schema", 
+    response_model=TableSchemaResponse,
+    summary="Get Table Schema",
+    description="Returns detailed column information for a specific table to help with validation or prompt construction."
+)
 async def public_get_table_schema_endpoint(
     table_name: str,
     api_key: ApiKey = Depends(get_api_key_from_header),
     db: Session = Depends(get_db)
 ):
     """
-    Get table schema information (Public API).
+    **Get table schema information.**
     
-    Authentication: X-API-Key header
-    
-    Parameters:
-    - table_name: Name of the table
-    
-    Returns:
-    - Table column information
+    Returns the column names, data types, and nullability for the specified table.
+    Useful for building validation logic or understanding the data structure before querying.
+
+    **Authentication:**
+    Requires `X-API-Key` header.
+
+    **Errors:**
+    *   `404`: If the table does not exist or is a protected system table.
     """
     try:
         if is_reserved_system_table(table_name):

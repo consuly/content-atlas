@@ -3,6 +3,7 @@ import io
 import os
 import time
 import zipfile
+import threading
 from typing import Dict
 
 import pytest
@@ -10,6 +11,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.main import app
+from app.db.session import get_session_local
+from app.api.schemas.shared import (
+    AnalyzeFileResponse,
+    AnalysisMode,
+    AutoExecutionResult,
+    ConflictResolutionMode,
+)
 from tests.utils.system_tables import ensure_system_tables_ready
 
 
@@ -103,6 +111,10 @@ def fake_b2_storage(monkeypatch):
     monkeypatch.setattr("app.integrations.b2.upload_file_to_b2", fake_upload)
     monkeypatch.setattr("app.integrations.b2.download_file_from_b2", fake_download)
     monkeypatch.setattr("app.main.download_file_from_b2", fake_download, raising=False)
+    monkeypatch.setattr("app.api.routers.analysis.upload_file_to_b2", fake_upload)
+    monkeypatch.setattr(
+        "app.api.routers.analysis._download_file_from_b2", fake_download, raising=False
+    )
     return storage
 
 
@@ -359,6 +371,72 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_b2_storag
     assert metadata["failed_files"] == 0
     assert analysis_calls["count"] == 1  # second entry reused cached decision
     assert execution_calls["count"] == 2  # still executes both files
+
+
+@pytest.mark.not_b2
+def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fake_b2_storage):
+    """If a cached fingerprint lacks a decision, the worker should still analyze and return a result."""
+    analysis_module = importlib.import_module("app.api.routers.analysis")
+    cached_event = threading.Event()
+    cached_event.set()
+    fingerprint_cache = {"shared-fp": {"event": cached_event}}
+    fingerprint_lock = threading.Lock()
+    analyze_calls = {"count": 0}
+
+    async def fake_analyze_file_endpoint(**_kwargs):
+        analyze_calls["count"] += 1
+        return AnalyzeFileResponse(
+            success=True,
+            llm_response="ok",
+            llm_decision={
+                "strategy": "NEW_TABLE",
+                "target_table": "clients_list",
+                "column_mapping": {"name": "name"},
+            },
+            auto_execution_result=AutoExecutionResult(
+                success=True,
+                strategy_executed="NEW_TABLE",
+                table_name="clients_list",
+                records_processed=1,
+                duplicates_skipped=0,
+                import_id="import-1",
+            ),
+            can_auto_execute=True,
+        )
+
+    monkeypatch.setattr(analysis_module, "analyze_file_endpoint", fake_analyze_file_endpoint)
+    monkeypatch.setattr(
+        analysis_module, "_build_structure_fingerprint", lambda *_args, **_kwargs: "shared-fp"
+    )
+
+    entry_bytes = "name\nalpha\n".encode()
+    session_local = get_session_local()
+    db_session = session_local()
+    try:
+        result = analysis_module._process_entry_bytes(
+            entry_bytes=entry_bytes,
+            archive_path="shared.csv",
+            entry_name="shared.csv",
+            stored_file_name="shared.csv",
+            archive_folder="uploads/test",
+            fingerprint_cache=fingerprint_cache,
+            fingerprint_lock=fingerprint_lock,
+            analysis_mode=AnalysisMode.AUTO_ALWAYS,
+            conflict_resolution=ConflictResolutionMode.LLM_DECIDE,
+            auto_execute_confidence_threshold=0.9,
+            max_iterations=3,
+            forced_table_name="clients_list",
+            forced_table_mode="existing",
+            llm_instruction=None,
+            db_session=db_session,
+        )
+    finally:
+        db_session.close()
+
+    assert analyze_calls["count"] == 1  # fallback analysis ran instead of returning an empty summary
+    assert result.status == "processed"
+    assert result.message
+    assert fingerprint_cache["shared-fp"].get("llm_decision")
 
 
 @pytest.mark.not_b2
