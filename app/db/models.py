@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from sqlalchemy import text, MetaData
 from sqlalchemy.exc import DataError
 from sqlalchemy.engine import Engine
@@ -102,6 +103,17 @@ def sanitize_column_names(db_schema: Dict[str, str]) -> Tuple[Dict[str, str], Di
             sanitized_schema[col_name] = col_type
     
     return sanitized_schema, rename_mapping
+
+
+def _safe_identifier(base: str) -> str:
+    """
+    Convert an arbitrary identifier (e.g., table name) into a safe SQL identifier
+    fragment. Used for derived names like indexes where quoting is not ideal.
+    """
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', base)
+    if not sanitized or sanitized[0].isdigit():
+        sanitized = f"t_{sanitized}"
+    return sanitized.lower()
 
 
 def create_file_imports_table_if_not_exists(engine: Engine):
@@ -223,6 +235,7 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
 
             # Add metadata columns for import tracking
             # These columns enable undo/rollback and change review functionality
+            index_name = f"idx_{_safe_identifier(table_name)}_import_id"
             create_sql = f"""
             CREATE TABLE "{table_name}" (
                 _row_id SERIAL PRIMARY KEY,
@@ -234,7 +247,7 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
             );
             
             -- Create index on import_id for efficient queries
-            CREATE INDEX idx_{table_name}_import_id ON "{table_name}"(_import_id);
+            CREATE INDEX {index_name} ON "{table_name}"(_import_id);
             """
 
             conn.execute(text(create_sql))

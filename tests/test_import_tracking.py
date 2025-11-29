@@ -35,6 +35,7 @@ def cleanup_test_tables():
         "test_multiple_imports",
         "test_metadata_hidden",
         "test_auto_recreate",
+        "test-hyphen-index",
     ]
     
     # Cleanup before test
@@ -118,6 +119,22 @@ Bob Wilson,35
             # Source row numbers should be 1, 2, 3
             row_numbers = sorted([row[1] for row in rows])
             assert row_numbers == [1, 2, 3], "Source row numbers should be 1, 2, 3"
+
+    def test_hyphenated_table_name_index_is_sanitized(self, cleanup_test_tables):
+        """Ensure table creation works with hyphenated names and index is valid."""
+        engine = get_engine()
+        config = MappingConfig(
+            table_name="test-hyphen-index",
+            db_schema={"name": "TEXT"},
+            mappings={"name": "name"},
+        )
+
+        create_table_if_not_exists(engine, config)
+
+        inspector = inspect(engine)
+        indexes = inspector.get_indexes("test-hyphen-index")
+        index_names = {idx["name"] for idx in indexes}
+        assert "idx_test_hyphen_index_import_id" in index_names
 
 
 class TestCorrectionsTracking:

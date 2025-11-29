@@ -207,6 +207,71 @@ def test_replace_column_final_name_renames_new_column():
     assert "budget_text" not in columns
     assert "budget" in columns
     assert rows == [("500", 500)]
+
+
+def test_replace_column_handles_non_numeric_values_when_casting_to_decimal():
+    engine = create_engine("sqlite:///:memory:")
+    table_name = "clients_list"
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f'''
+                CREATE TABLE "{table_name}" (
+                    id INTEGER PRIMARY KEY,
+                    company_linkedin_id TEXT
+                )
+                '''
+            )
+        )
+        conn.execute(
+            text(
+                f'''
+                INSERT INTO "{table_name}" (id, company_linkedin_id)
+                VALUES (1, '12345'), (2, 'guerrilla-marketing-coaching')
+                '''
+            )
+        )
+
+    migrations = [
+        {
+            "action": "replace_column",
+            "column_name": "company_linkedin_id",
+            "new_type": "DECIMAL",
+        }
+    ]
+
+    results = apply_schema_migrations(engine, table_name, migrations)
+    assert results == [
+        {
+            "action": "replace_column",
+            "old_column": "company_linkedin_id",
+            "new_column": "company_linkedin_id",
+            "status": "applied",
+        }
+    ]
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f'''
+                SELECT company_linkedin_id, company_linkedin_id_legacy
+                FROM "{table_name}"
+                ORDER BY id
+                '''
+            )
+        ).fetchall()
+
+    normalized_rows = [
+        (str(value) if value is not None else None, legacy)
+        for value, legacy in rows
+    ]
+    assert normalized_rows == [
+        ("12345", "12345"),
+        (None, "guerrilla-marketing-coaching"),
+    ]
+
+
 def test_add_column_creates_new_column_and_populates_from_existing():
     engine = create_engine("sqlite:///:memory:")
     table_name = "client_data"
