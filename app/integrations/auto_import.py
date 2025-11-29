@@ -444,7 +444,7 @@ def execute_llm_import_decision(
     try:
         strategy = llm_decision["strategy"]
         target_table = llm_decision["target_table"]
-        column_mapping = llm_decision.get("column_mapping", {})
+        column_mapping = dict(llm_decision.get("column_mapping", {}))
         unique_columns = llm_decision.get("unique_columns", [])
         has_header = llm_decision.get("has_header")
         forced_table = ensure_safe_table_name(llm_decision.get("forced_target_table") or target_table)
@@ -487,6 +487,9 @@ def execute_llm_import_decision(
         expected_column_types = llm_decision.get("expected_column_types") or {}
         column_transformations = llm_decision.get("column_transformations") or []
         row_transformations = llm_decision.get("row_transformations") or []
+        instruction_text = llm_decision.get("llm_instruction") or ""
+        multi_value_directives = llm_decision.get("multi_value_directives") or []
+        require_explicit_multi_value = bool(llm_decision.get("require_explicit_multi_value"))
         column_type_enforcement_log: Dict[str, Dict[str, Any]] = {}
         if expected_column_types:
             records, column_type_enforcement_log = coerce_records_to_expected_types(
@@ -500,6 +503,20 @@ def execute_llm_import_decision(
         # Build MappingConfig using LLM's column mapping
         # IMPORTANT: LLM provides {source_col: target_col} but mapper.py expects {target_col: source_col}
         # We need to INVERT the mapping for mapper.py to work correctly
+
+        (
+            column_mapping,
+            column_transformations,
+            row_transformations,
+        ) = _synthesize_multi_value_rules(
+            column_mapping,
+            column_transformations,
+            row_transformations,
+            records,
+            instruction_text,
+            multi_value_directives=multi_value_directives,
+            require_explicit_multi_value=require_explicit_multi_value,
+        )
         
         # Invert the column_mapping: {source: target} -> {target: source}
         inverted_mapping = {target_col: source_col for source_col, target_col in column_mapping.items()}
@@ -750,3 +767,349 @@ def execute_llm_import_decision(
             "strategy_attempted": llm_decision.get("strategy"),
             "target_table": llm_decision.get("target_table")
         }
+
+
+def _mentions_multi_value_instruction(instruction_text: str) -> bool:
+    """
+    Very small heuristic to decide if the user asked for one-value-per-row logic.
+
+    We intentionally keep this loose so we only synthesize rules when the user
+    explicitly hints at multi-value handling.
+    """
+    if not instruction_text:
+        return False
+    lowered = instruction_text.lower()
+    keywords = [
+        "multiple",
+        "one per",
+        "explode",
+        "split",
+        "separate",
+        "per row",
+        "each",
+    ]
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _looks_like_email_column(source_column: str, target_column: str, records: List[Dict[str, Any]]) -> bool:
+    """Heuristic to decide whether a column likely contains emails."""
+    name_hints = ("email", "e-mail", "mail")
+    if any(hint in str(source_column).lower() for hint in name_hints):
+        return True
+    if any(hint in str(target_column).lower() for hint in name_hints):
+        return True
+
+    for record in records[:25]:
+        value = record.get(source_column)
+        if isinstance(value, str) and "@" in value:
+            return True
+        if isinstance(value, list) and any(isinstance(item, str) and "@" in item for item in value):
+            return True
+    return False
+
+
+def _find_numbered_siblings(source_column: str, available_columns: Set[str]) -> List[str]:
+    """
+    Detect sibling columns that share a base name with numeric suffixes.
+    Example: Email 1, Email 2, Email_3.
+    """
+    def _base(name: str) -> str:
+        return re.sub(r"[\s_-]*\d+$", "", name).strip().lower()
+
+    base = _base(source_column)
+    if not base:
+        return []
+
+    def _suffix_int(name: str) -> int:
+        m = re.search(r"(\\d+)$", name)
+        try:
+            return int(m.group(1)) if m else 0
+        except Exception:
+            return 0
+
+    candidates: List[tuple[int, str]] = []
+    for col in available_columns:
+        if _base(col) != base:
+            continue
+        candidates.append((_suffix_int(col), col))
+
+    candidates.sort(key=lambda pair: pair[0])
+    return [col for _, col in candidates]
+
+
+def _detect_delimited_values(records: List[Dict[str, Any]], column: str) -> Dict[str, Any]:
+    """
+    Look for comma/semicolon-delimited or JSON-array values to infer multi-value columns.
+    """
+    max_items = 1
+    saw_multi = False
+    for record in records[:50]:
+        value = record.get(column)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            max_items = max(max_items, len(value))
+            saw_multi = saw_multi or len(value) > 1
+            continue
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                max_items = max(max_items, len(parsed))
+                saw_multi = saw_multi or len(parsed) > 1
+                continue
+        except Exception:
+            pass
+        parts = [p.strip() for p in re.split(r"[;,]", text) if p.strip()]
+        if len(parts) > 1:
+            max_items = max(max_items, len(parts))
+            saw_multi = True
+    return {"max_items": max_items, "saw_multi": saw_multi}
+
+
+def _resolve_delimiter(delimiter: Optional[str]) -> str:
+    """Map human-friendly delimiter hints to actual separators."""
+    if not delimiter:
+        return ","
+    normalized = delimiter.strip().lower()
+    if normalized in {"comma", ",", "","default"}:
+        return ","
+    if normalized in {"semicolon", "semi-colon", ";"}:
+        return ";"
+    if normalized in {"pipe", "|"}:
+        return "|"
+    if normalized in {"tab", "\\t"}:
+        return "\t"
+    if normalized in {"space", " "}:
+        return " "
+    return delimiter
+
+
+def _directive_outputs(source_column: str, directive: Dict[str, Any], max_items: int = 5) -> List[str]:
+    """Build output column names for a directive-driven split."""
+    explicit = directive.get("outputs")
+    if explicit and isinstance(explicit, list):
+        return [str(name) for name in explicit if name]
+    return [f"{source_column}_item_{idx+1}" for idx in range(max_items)]
+
+
+def _apply_multi_value_directives(
+    directives: List[Dict[str, Any]],
+    available_columns: Set[str],
+    column_mapping: Dict[str, str],
+    column_transformations: List[Dict[str, Any]],
+    row_transformations: List[Dict[str, Any]],
+) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Apply explicit directives supplied by the LLM/user."""
+    updated_mapping = dict(column_mapping)
+    updated_col_xforms = list(column_transformations)
+    updated_row_xforms = list(row_transformations)
+
+    for directive in directives or []:
+        if not isinstance(directive, dict):
+            continue
+        source_col = directive.get("source_column")
+        if not source_col:
+            continue
+        if source_col not in available_columns:
+            logger.info("MULTI-VALUE: Skipping directive; source column '%s' not found", source_col)
+            continue
+        target_col = directive.get("target_column") or column_mapping.get(source_col) or source_col
+        delimiter = _resolve_delimiter(directive.get("delimiter"))
+        outputs = _directive_outputs(source_col, directive, max_items=int(directive.get("max_items") or 5))
+
+        updated_col_xforms.append(
+            {
+                "type": "split_multi_value_column",
+                "source_column": source_col,
+                "delimiter": delimiter,
+                "outputs": [{"name": name, "index": idx} for idx, name in enumerate(outputs)],
+            }
+        )
+        updated_row_xforms.append(
+            {
+                "type": "explode_columns",
+                "source_columns": outputs,
+                "target_column": target_col,
+                "drop_source_columns": True,
+                "strip_whitespace": True,
+                "dedupe_values": True,
+                "case_insensitive_dedupe": True,
+            }
+        )
+
+        # Rewrite mapping to read from the exploded target
+        for mapped_source, mapped_target in list(updated_mapping.items()):
+            if mapped_target == target_col or mapped_target == source_col:
+                updated_mapping.pop(mapped_source, None)
+        updated_mapping[target_col] = target_col
+
+    return updated_mapping, updated_col_xforms, updated_row_xforms
+
+
+def _synthesize_multi_value_rules(
+    column_mapping: Dict[str, str],
+    column_transformations: List[Dict[str, Any]],
+    row_transformations: List[Dict[str, Any]],
+    records: List[Dict[str, Any]],
+    instruction_text: str,
+    *,
+    multi_value_directives: Optional[List[Dict[str, Any]]] = None,
+    require_explicit_multi_value: bool = False,
+) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    If the user instruction asks for multi-value rows to be split/one-per-row (or we
+    detect obvious numbered sources), synthesize column/row transforms and rewrite the
+    mapping to point to the exploded column so mapper.py sees the right source.
+    """
+    if not records or not column_mapping:
+        return column_mapping, column_transformations, row_transformations
+
+    instruction_flags_multi = _mentions_multi_value_instruction(instruction_text)
+    has_numbered_sources = any(re.search(r"\d+$", src) for src in column_mapping.keys())
+
+    available_columns: Set[str] = set()
+    for record in records[:50]:
+        available_columns.update(record.keys())
+
+    # Honor explicit directives first
+    if multi_value_directives:
+        column_mapping, column_transformations, row_transformations = _apply_multi_value_directives(
+            multi_value_directives,
+            available_columns,
+            column_mapping,
+            column_transformations,
+            row_transformations,
+        )
+
+    if require_explicit_multi_value:
+        return column_mapping, column_transformations, row_transformations
+
+    if not instruction_flags_multi and not has_numbered_sources:
+        return column_mapping, column_transformations, row_transformations
+
+    updated_mapping = dict(column_mapping)
+    updated_col_xforms = list(column_transformations)
+    updated_row_xforms = list(row_transformations)
+
+    existing_explodes = {
+        rt.get("target_column") or rt.get("target_field") or rt.get("column")
+        for rt in row_transformations
+        if isinstance(rt, dict) and rt.get("type") == "explode_columns"
+    }
+
+    exploded_targets: Set[str] = set()
+
+    # Group sources by target to detect fan-in mappings (multiple sources -> same target).
+    targets_to_sources: Dict[str, List[str]] = {}
+    for src, tgt in column_mapping.items():
+        if not tgt:
+            continue
+        targets_to_sources.setdefault(tgt, []).append(src)
+
+    for source_col, target_col in list(column_mapping.items()):
+        if not target_col:
+            continue
+        if target_col in existing_explodes:
+            continue
+
+        sibling_sources = _find_numbered_siblings(source_col, available_columns)
+        delimited = _detect_delimited_values(records, source_col)
+
+        sources_to_use: List[str] = []
+        need_split = False
+        split_outputs: List[str] = []
+        transform_added = False
+
+        explode_target = target_col
+        # If the target looks like a numbered field (email_1, phone_2), collapse to base.
+        m_target_num = re.match(r"^(.*?)[\s_-]?(\d+)$", target_col)
+        if m_target_num:
+            explode_target = m_target_num.group(1) or target_col
+            explode_target = explode_target.strip("_ ").lower()
+            if not explode_target:
+                explode_target = target_col
+
+        fan_in_sources = targets_to_sources.get(target_col, [])
+
+        if sibling_sources and len(sibling_sources) > 1:
+            # Always include the mapped source column first for stability
+            sources_to_use = sorted({source_col, *sibling_sources}, key=lambda c: c.lower())
+            # Also pull in non-numbered columns that clearly belong to the same base (e.g., "Primary Email")
+            if explode_target:
+                related = {
+                    col
+                    for col in available_columns
+                    if explode_target in str(col).lower()
+                }
+                sources_to_use = sorted(set(sources_to_use) | related, key=lambda c: c.lower())
+            transform_added = True
+        elif fan_in_sources and len(fan_in_sources) > 1:
+            # Multiple sources mapped to the same target; explode them.
+            sources_to_use = sorted(
+                {
+                    src
+                    for src in fan_in_sources
+                    if "validation" not in src.lower() and "total ai" not in src.lower()
+                },
+                key=lambda c: c.lower(),
+            )
+            transform_added = True
+        elif delimited.get("saw_multi"):
+            if not _looks_like_email_column(source_col, target_col, records):
+                # Avoid synthesizing split/explode for non-email fields (e.g., location strings with commas).
+                continue
+            need_split = True
+            max_items = max(2, min(delimited.get("max_items", 1), 10))
+            split_outputs = [f"{source_col}_item_{idx+1}" for idx in range(max_items)]
+            sources_to_use = split_outputs
+            transform_added = True
+        else:
+            continue
+
+        if need_split:
+            updated_col_xforms.append(
+                {
+                    "type": "split_multi_value_column",
+                    "source_column": source_col,
+                    "outputs": [
+                        {"name": name, "index": idx}
+                        for idx, name in enumerate(split_outputs)
+                    ],
+                }
+            )
+
+        updated_row_xforms.append(
+            {
+                "type": "explode_columns",
+                "source_columns": sources_to_use,
+                "target_column": explode_target,
+                "drop_source_columns": True,
+                "strip_whitespace": True,
+                "dedupe_values": True,
+                "case_insensitive_dedupe": True,
+            }
+        )
+
+        # Rewrite mapping so mapper.py reads from the exploded column name.
+        if transform_added:
+            for mapped_source, mapped_target in list(updated_mapping.items()):
+                if (
+                    mapped_target == target_col
+                    or mapped_target == explode_target
+                    or str(mapped_target).startswith(f"{explode_target}_")
+                ):
+                    updated_mapping.pop(mapped_source, None)
+            updated_mapping[explode_target] = explode_target
+            exploded_targets.add(explode_target)
+
+    for target_col in exploded_targets:
+        # Ensure exploded targets are present and ordered last so inversion prefers them
+        updated_mapping.pop(target_col, None)
+        updated_mapping[target_col] = target_col
+
+    return updated_mapping, updated_col_xforms, updated_row_xforms

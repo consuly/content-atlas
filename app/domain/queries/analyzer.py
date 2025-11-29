@@ -1523,6 +1523,7 @@ def make_import_decision(
         ),
         "forced_target_table": target_table if forced_table else None,
         "forced_table_mode": forced_table_mode if forced_table else None,
+        "llm_instruction": context.llm_instruction,
     }
     
     return {
