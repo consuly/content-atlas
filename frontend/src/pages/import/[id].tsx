@@ -262,6 +262,58 @@ export const ImportMappingPage: React.FC = () => {
     [effectiveArchiveResult]
   );
 
+  const archiveFailureSummary = useMemo(() => {
+    if (!isArchiveFile || !effectiveArchiveResult) {
+      return null;
+    }
+
+    const failedFiles =
+      typeof effectiveArchiveResult.failed_files === 'number' && effectiveArchiveResult.failed_files > 0
+        ? effectiveArchiveResult.failed_files
+        : 0;
+    const processedFiles =
+      typeof effectiveArchiveResult.processed_files === 'number'
+        ? effectiveArchiveResult.processed_files
+        : 0;
+    const skippedFiles =
+      typeof effectiveArchiveResult.skipped_files === 'number'
+        ? effectiveArchiveResult.skipped_files
+        : 0;
+    const resultCount = Array.isArray(effectiveArchiveResult.results)
+      ? effectiveArchiveResult.results.length
+      : 0;
+    const totalFilesFromResult =
+      typeof effectiveArchiveResult.total_files === 'number'
+        ? effectiveArchiveResult.total_files
+        : resultCount;
+    const derivedTotal =
+      totalFilesFromResult ||
+      processedFiles + failedFiles + skippedFiles ||
+      resultCount;
+    const totalFiles = Math.max(derivedTotal, 0);
+    const successfulFiles = Math.max(0, totalFiles - failedFiles - skippedFiles);
+    const hasPartialFailure =
+      failedFiles > 0 && totalFiles > 0 && failedFiles < totalFiles;
+
+    return {
+      totalFiles,
+      failedFiles,
+      successfulFiles,
+      skippedFiles,
+      hasPartialFailure,
+    };
+  }, [effectiveArchiveResult, isArchiveFile]);
+
+  const hasPartialArchiveFailure = !!archiveFailureSummary?.hasPartialFailure;
+  const archiveFailedFileCount = archiveFailureSummary?.failedFiles ?? 0;
+  const archiveTotalFileCount = archiveFailureSummary?.totalFiles ?? 0;
+  const archiveSuccessfulFileCount = archiveFailureSummary?.successfulFiles ?? 0;
+  const archiveSkippedFileCount = archiveFailureSummary?.skippedFiles ?? 0;
+  const archiveTotalForDisplay =
+    archiveTotalFileCount ||
+    archiveSuccessfulFileCount + archiveFailedFileCount + archiveSkippedFileCount;
+  const shouldHideJobAlert = isArchiveFile && hasPartialArchiveFailure;
+
   const archiveAggregates = useMemo(() => {
     if (!effectiveArchiveResult) {
       return null;
@@ -2611,6 +2663,9 @@ export const ImportMappingPage: React.FC = () => {
     },
   ];
 
+  const suppressArchiveFailureAlert =
+    file?.status === 'failed' && !!archiveFailureSummary?.hasPartialFailure;
+
   const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
     {
       title: 'Archive Path',
@@ -2647,12 +2702,6 @@ export const ImportMappingPage: React.FC = () => {
       key: 'duplicates_skipped',
       render: (value?: number | null) =>
         typeof value === 'number' ? value.toLocaleString() : '-',
-    },
-    {
-      title: 'Message',
-      dataIndex: 'message',
-      key: 'message',
-      render: (value?: string | null) => value || '-',
     },
     {
       title: 'Actions',
@@ -2715,7 +2764,7 @@ export const ImportMappingPage: React.FC = () => {
           </Col>
         </Row>
       )}
-      {effectiveArchiveResult.failed_files > 0 && (
+      {effectiveArchiveResult.failed_files > 0 && !suppressArchiveFailureAlert && (
         <>
           <Alert
             type="error"
@@ -3100,7 +3149,7 @@ export const ImportMappingPage: React.FC = () => {
         Back to Import List
       </Button>
 
-      {displayJobInfo && (
+      {displayJobInfo && !shouldHideJobAlert && (
         <Alert
           type={
             displayJobInfo.status === 'failed'
@@ -3225,11 +3274,54 @@ export const ImportMappingPage: React.FC = () => {
         <Card title={`Failed Mapping: ${file.file_name}`}>
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <Alert
-              message="Mapping failed"
-              description="We couldn’t finish mapping this file. Follow the guidance below or open the technical details for more context."
-              type="error"
+              message={
+                hasPartialArchiveFailure
+                  ? `${archiveFailedFileCount} file${archiveFailedFileCount === 1 ? '' : 's'} didn't map properly`
+                  : 'Mapping failed'
+              }
+              description={
+                hasPartialArchiveFailure
+                  ? `We imported ${archiveSuccessfulFileCount} of ${archiveTotalForDisplay || archiveSuccessfulFileCount + archiveFailedFileCount} files from this archive, but some need attention. Review the archive paths below.`
+                  : 'We couldn’t finish mapping this file. Follow the guidance below or open the technical details for more context.'
+              }
+              type={hasPartialArchiveFailure ? 'warning' : 'error'}
               showIcon
             />
+
+            {hasPartialArchiveFailure && failedArchiveResults.length > 0 && (
+              <Card
+                size="small"
+                type="inner"
+                title="Files needing attention"
+              >
+                <Table
+                  dataSource={failedArchiveResults.map((entry, index) => ({
+                    key: `${entry.archive_path}-${index}`,
+                    archive_path: entry.archive_path,
+                    status: entry.status,
+                  }))}
+                  columns={[
+                    {
+                      title: 'Archive Path',
+                      dataIndex: 'archive_path',
+                      key: 'archive_path',
+                      render: (value: string) => <Text code>{value}</Text>,
+                    },
+                    {
+                      title: 'Status',
+                      dataIndex: 'status',
+                      key: 'status',
+                      render: (value: ArchiveFileStatus) => (
+                        <Tag color={value === 'failed' ? 'red' : 'default'}>{value}</Tag>
+                      ),
+                    },
+                  ]}
+                  pagination={false}
+                  size="small"
+                  scroll={{ x: 'max-content' }}
+                />
+              </Card>
+            )}
 
             <Card title="What to do next" size="small" type="inner">
               <Space direction="vertical" size="small" style={{ width: '100%' }}>
