@@ -819,6 +819,9 @@ def _execute_streaming_csv_import(
     uniqueness_columns: List[str] = []
     chunk_status_summary: Dict[str, int] = {}
     row_count_warning: Optional[str] = None
+    estimated_total_chunks: Optional[int] = None
+    if row_count_info and row_count_info.data_rows:
+        estimated_total_chunks = max(1, math.ceil(row_count_info.data_rows / CHUNK_SIZE))
 
     update_mapping_status(import_id, "in_progress")
     engine = get_engine()
@@ -831,6 +834,20 @@ def _execute_streaming_csv_import(
         file_content,
         has_header=has_header,
         chunk_size=CHUNK_SIZE,
+    )
+
+    initial_progress_metadata: Dict[str, Any] = {
+        "chunks_completed": 0,
+        "source": source_type,
+    }
+    if estimated_total_chunks:
+        initial_progress_metadata["total_chunks"] = estimated_total_chunks
+
+    _update_job_progress(
+        job_id,
+        stage="mapping",
+        progress=0,
+        metadata=initial_progress_metadata,
     )
 
     first_chunk = True
@@ -962,17 +979,20 @@ def _execute_streaming_csv_import(
             # Progress update (best-effort; estimate assumes at least one more chunk)
             estimated_denominator = max(raw_total_rows + CHUNK_SIZE, 1)
             progress_pct = min(99, int((raw_total_rows / estimated_denominator) * 100))
+            progress_metadata: Dict[str, Any] = {
+                "chunks_completed": chunk_num,
+                "rows_processed": mapped_total_rows,
+                "rows_inserted": records_inserted_total,
+                "duplicates_skipped": duplicates_skipped_total,
+                "source": source_type,
+            }
+            if estimated_total_chunks:
+                progress_metadata["total_chunks"] = estimated_total_chunks
             _update_job_progress(
                 job_id,
                 stage="mapping",
                 progress=progress_pct,
-                metadata={
-                    "chunks_completed": chunk_num,
-                    "rows_processed": mapped_total_rows,
-                    "rows_inserted": records_inserted_total,
-                    "duplicates_skipped": duplicates_skipped_total,
-                    "source": source_type,
-                },
+                metadata=progress_metadata,
             )
     except Exception as exc:
         _mark_mapping_failed(
@@ -1047,17 +1067,21 @@ def _execute_streaming_csv_import(
     if chunk_status_summary:
         metadata_payload["mapping_chunk_status"] = chunk_status_summary
 
+    final_progress_metadata: Dict[str, Any] = {
+        "chunks_completed": chunk_num if 'chunk_num' in locals() else 0,
+        "rows_processed": mapped_total_rows,
+        "rows_inserted": records_inserted_total,
+        "duplicates_skipped": duplicates_skipped_total,
+        "source": source_type,
+    }
+    if estimated_total_chunks:
+        final_progress_metadata["total_chunks"] = estimated_total_chunks
+
     _update_job_progress(
         job_id,
         stage="mapping",
         progress=100,
-        metadata={
-            "chunks_completed": chunk_num if 'chunk_num' in locals() else 0,
-            "rows_processed": mapped_total_rows,
-            "rows_inserted": records_inserted_total,
-            "duplicates_skipped": duplicates_skipped_total,
-            "source": source_type,
-        },
+        metadata=final_progress_metadata,
     )
 
     expected_data_rows = row_count_info.data_rows if row_count_info else None

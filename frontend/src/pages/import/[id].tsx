@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress, Select, Checkbox } from 'antd';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress, Select, Checkbox, Collapse } from 'antd';
 import type { BreadcrumbProps, DescriptionsProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
@@ -208,6 +208,7 @@ export const ImportMappingPage: React.FC = () => {
   const [canExecute, setCanExecute] = useState(false);
   const [needsUserInput, setNeedsUserInput] = useState(true);
   const [showInteractiveRetry, setShowInteractiveRetry] = useState(false);
+  const [retryModalVisible, setRetryModalVisible] = useState(false);
   const quickActions = [
     { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
     {
@@ -400,7 +401,10 @@ export const ImportMappingPage: React.FC = () => {
     processing ||
     archiveProcessing ||
     archiveResumeLoading;
-  const isMappingInProgress = processing || file?.status === 'mapping' || mappingJobActive;
+  const isMappingInProgress =
+    (processing || file?.status === 'mapping' || mappingJobActive) &&
+    effectiveJobStatus !== 'failed' &&
+    file?.status !== 'failed';
   const mappingStageLabel = displayJobInfo?.stage ?? file?.active_job_stage ?? file?.active_job_status ?? null;
   const mappingProgress =
     typeof displayJobInfo?.progress === 'number'
@@ -408,10 +412,81 @@ export const ImportMappingPage: React.FC = () => {
       : typeof file?.active_job_progress === 'number'
         ? file.active_job_progress
         : null;
+  const mappingChunkProgress = useMemo(() => {
+    const metadata = displayJobInfo?.metadata;
+    if (!metadata || typeof metadata !== 'object') {
+      return null;
+    }
+
+    const asRecord = metadata as Record<string, unknown>;
+    const toNumber = (value: unknown): number | null => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+      if (typeof value === 'string') {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return null;
+    };
+
+    const totalChunks =
+      toNumber(asRecord.total_chunks) ??
+      toNumber((asRecord as Record<string, unknown>).chunks_total) ??
+      toNumber((asRecord as Record<string, unknown>).totalChunks) ??
+      null;
+    const chunksCompleted =
+      toNumber(asRecord.chunks_completed) ??
+      toNumber((asRecord as Record<string, unknown>).chunksCompleted) ??
+      null;
+
+    if (totalChunks === null && chunksCompleted === null) {
+      return null;
+    }
+
+    const normalizedTotal = totalChunks && totalChunks > 0 ? totalChunks : null;
+    const normalizedCompleted = Math.max(0, chunksCompleted ?? 0);
+    const percent =
+      normalizedTotal !== null && normalizedTotal > 0
+        ? Math.min(100, Math.floor((normalizedCompleted / normalizedTotal) * 100))
+        : null;
+
+    return {
+      totalChunks: normalizedTotal,
+      chunksCompleted: normalizedCompleted,
+      percent,
+    };
+  }, [displayJobInfo?.metadata]);
   const normalizedMappingProgress =
     typeof mappingProgress === 'number' && Number.isFinite(mappingProgress)
       ? Math.min(100, Math.max(0, mappingProgress))
-      : null;
+      : mappingChunkProgress?.percent ?? null;
+  const chunkProgressLabel = useMemo(() => {
+    if (!mappingChunkProgress) {
+      return null;
+    }
+    if (mappingChunkProgress.totalChunks) {
+      const clampedCurrent = Math.min(mappingChunkProgress.chunksCompleted, mappingChunkProgress.totalChunks);
+      return `Chunk ${clampedCurrent}/${mappingChunkProgress.totalChunks}`;
+    }
+    if (mappingChunkProgress.chunksCompleted > 0) {
+      return `Chunks completed: ${mappingChunkProgress.chunksCompleted}`;
+    }
+    return null;
+  }, [mappingChunkProgress]);
+  const progressDisplayPercent = normalizedMappingProgress;
+  const renderProgressLabel = useCallback(
+    (percent?: number) => {
+      if (typeof percent === 'number' && chunkProgressLabel) {
+        return `${Math.round(percent)}% • ${chunkProgressLabel}`;
+      }
+      if (typeof percent === 'number') {
+        return `${Math.round(percent)}%`;
+      }
+      return chunkProgressLabel ?? undefined;
+    },
+    [chunkProgressLabel]
+  );
 
   const instructionField = (
     <div style={{ width: '100%' }}>
@@ -490,6 +565,7 @@ export const ImportMappingPage: React.FC = () => {
                   messageApi.success('Instruction updated');
                   await fetchInstructions();
                 } catch (err) {
+                  console.error('Unable to update instruction', err);
                   messageApi.error('Unable to update instruction');
                 } finally {
                   setInstructionActionLoading(false);
@@ -519,6 +595,7 @@ export const ImportMappingPage: React.FC = () => {
                   setInstructionTitle('');
                   await fetchInstructions();
                 } catch (err) {
+                  console.error('Unable to delete instruction', err);
                   messageApi.error('Unable to delete instruction');
                 } finally {
                   setInstructionActionLoading(false);
@@ -1184,6 +1261,7 @@ export const ImportMappingPage: React.FC = () => {
   useEffect(() => {
     if (file && file.status !== 'failed' && showInteractiveRetry) {
       setShowInteractiveRetry(false);
+      setRetryModalVisible(false);
     }
   }, [file, showInteractiveRetry]);
 
@@ -1215,6 +1293,50 @@ export const ImportMappingPage: React.FC = () => {
       clearInterval(intervalId);
     };
   }, [file?.active_job_id, fetchJobDetails, fetchFileDetails]);
+
+  const appendSharedTableFormData = (formData: FormData) => {
+    if (useSharedTable && sharedTableName.trim()) {
+      formData.append('target_table_name', sharedTableName.trim());
+      formData.append('target_table_mode', sharedTableMode);
+    }
+  };
+
+  const appendInstructionFormData = (formData: FormData) => {
+    const instruction = llmInstruction.trim();
+    const title = instructionTitle.trim();
+    if (instruction) {
+      formData.append('llm_instruction', instruction);
+    }
+    if (selectedInstructionId) {
+      formData.append('llm_instruction_id', selectedInstructionId);
+    }
+    if (saveInstruction && instruction) {
+      formData.append('save_llm_instruction', 'true');
+      if (title) {
+        formData.append('llm_instruction_title', title);
+      }
+    }
+  };
+
+  const appendInstructionPayload = useCallback(
+    (payload: Record<string, unknown>) => {
+      const instruction = llmInstruction.trim();
+      const title = instructionTitle.trim();
+      if (instruction) {
+        payload.llm_instruction = instruction;
+      }
+      if (selectedInstructionId) {
+        payload.llm_instruction_id = selectedInstructionId;
+      }
+      if (saveInstruction && instruction) {
+        payload.save_llm_instruction = true;
+        if (title) {
+          payload.llm_instruction_title = title;
+        }
+      }
+    },
+    [instructionTitle, llmInstruction, saveInstruction, selectedInstructionId]
+  );
 
   const attemptAutoRecoveryWithLLM = useCallback(
     async (failureMessage: string): Promise<AutoRecoveryOutcome> => {
@@ -1314,49 +1436,8 @@ export const ImportMappingPage: React.FC = () => {
         };
       }
     },
-    [fetchFileDetails, id, messageApi]
+    [appendInstructionPayload, fetchFileDetails, id, messageApi]
   );
-
-  const appendSharedTableFormData = (formData: FormData) => {
-    if (useSharedTable && sharedTableName.trim()) {
-      formData.append('target_table_name', sharedTableName.trim());
-      formData.append('target_table_mode', sharedTableMode);
-    }
-  };
-
-  const appendInstructionFormData = (formData: FormData) => {
-    const instruction = llmInstruction.trim();
-    const title = instructionTitle.trim();
-    if (instruction) {
-      formData.append('llm_instruction', instruction);
-    }
-    if (selectedInstructionId) {
-      formData.append('llm_instruction_id', selectedInstructionId);
-    }
-    if (saveInstruction && instruction) {
-      formData.append('save_llm_instruction', 'true');
-      if (title) {
-        formData.append('llm_instruction_title', title);
-      }
-    }
-  };
-
-  const appendInstructionPayload = (payload: Record<string, unknown>) => {
-    const instruction = llmInstruction.trim();
-    const title = instructionTitle.trim();
-    if (instruction) {
-      payload.llm_instruction = instruction;
-    }
-    if (selectedInstructionId) {
-      payload.llm_instruction_id = selectedInstructionId;
-    }
-    if (saveInstruction && instruction) {
-      payload.save_llm_instruction = true;
-      if (title) {
-        payload.llm_instruction_title = title;
-      }
-    }
-  };
 
   const validateSharedTableName = () => {
     if (useSharedTable && !sharedTableName.trim()) {
@@ -1656,6 +1737,7 @@ export const ImportMappingPage: React.FC = () => {
     if (!id || processing) return;
 
     setShowInteractiveRetry(true);
+    setRetryModalVisible(true);
     setActiveTab('interactive');
 
     const cleanedError = file?.error_message?.trim();
@@ -3125,12 +3207,13 @@ export const ImportMappingPage: React.FC = () => {
               {mappingStageLabel && (
                 <Text type="secondary">Stage: {mappingStageLabel.replace(/_/g, ' ')}</Text>
               )}
-              {normalizedMappingProgress !== null && (
+              {progressDisplayPercent !== null && (
                 <Progress
-                  percent={normalizedMappingProgress}
+                  percent={progressDisplayPercent}
                   status="active"
                   size="small"
                   style={{ width: 260 }}
+                  format={renderProgressLabel}
                 />
               )}
             </Space>
@@ -3142,45 +3225,62 @@ export const ImportMappingPage: React.FC = () => {
         <Card title={`Failed Mapping: ${file.file_name}`}>
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <Alert
-              message="Mapping Failed"
-              description="The file mapping process encountered an error. Please review the details below and try again."
+              message="Mapping failed"
+              description="We couldn’t finish mapping this file. Follow the guidance below or open the technical details for more context."
               type="error"
               showIcon
             />
 
-            {file.error_message && (
-              <Card title="Error Details" size="small" type="inner">
-                <ErrorLogViewer error={file.error_message} showRetry={false} />
-              </Card>
-            )}
-            {isArchiveFile && archiveResultsPanel}
-            <Space>
-              {!showInteractiveRetry && (
-                <Button 
-                  type="primary"
-                  onClick={handleRetryInteractive}
-                  disabled={processing}
-                >
-                  {processing ? 'Starting...' : 'Try Again'}
-                </Button>
-              )}
-              <Button 
-                icon={<ArrowLeftOutlined />}
-                onClick={() => navigate('/import')}
-              >
-                Back to Import List
-              </Button>
-            </Space>
+            <Card title="What to do next" size="small" type="inner">
+              <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                <Paragraph style={{ marginBottom: 8 }}>
+                  Retry the import with the AI assistant to adjust mappings, or return to the import list if you need to update the source file first.
+                </Paragraph>
+                <Space wrap>
+                  <Button 
+                    type="primary"
+                    onClick={handleRetryInteractive}
+                    disabled={processing}
+                    loading={processing}
+                  >
+                    {processing ? 'Starting retry...' : 'Retry with AI assistant'}
+                  </Button>
+                  <Button 
+                    icon={<ArrowLeftOutlined />}
+                    onClick={() => navigate('/import')}
+                  >
+                    Back to Import List
+                  </Button>
+                </Space>
+              </Space>
+            </Card>
 
-            {showInteractiveRetry && (
-              <Card 
-                title="Retry with AI Assistant" 
-                size="small" 
-                type="inner"
-              >
-                {interactiveTabContent}
-              </Card>
-            )}
+            <Collapse bordered={false}>
+              <Collapse.Panel header="Technical details (optional)" key="technical-details">
+                {file.error_message ? (
+                  <Card title="Error Details" size="small" type="inner" style={{ marginBottom: 12 }}>
+                    <ErrorLogViewer error={file.error_message} showRetry={false} />
+                  </Card>
+                ) : (
+                  <Text type="secondary">No error details reported for this job.</Text>
+                )}
+                {isArchiveFile && archiveResultsPanel}
+              </Collapse.Panel>
+            </Collapse>
+
+            <Modal
+              open={retryModalVisible}
+              onCancel={() => {
+                setRetryModalVisible(false);
+                setShowInteractiveRetry(false);
+              }}
+              footer={null}
+              width={920}
+              destroyOnClose
+              title="Retry with AI Assistant"
+            >
+              {interactiveTabContent}
+            </Modal>
           </Space>
         </Card>
       ) : file.status === 'mapped' ? (

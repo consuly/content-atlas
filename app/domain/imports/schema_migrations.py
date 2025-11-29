@@ -91,10 +91,49 @@ def _normalize_replace_column_payload(
     return normalized
 
 
-def _default_using_expression(old_column: str, new_type: str) -> str:
-    """Build a generic USING expression suitable for multiple SQL dialects."""
-    quoted_old = _quote(old_column)
+def _safe_numeric_cast_expression(
+    old_column: str, new_type: str, dialect_name: str
+) -> str:
+    """
+    Build a safe numeric cast that avoids blowing up on non-numeric strings.
+
+    Postgres gets a regex guard, SQLite falls back to a glob-based check. Both
+    paths return NULL instead of raising when the source value cannot be cast.
+    """
+    value_as_text = f"TRIM(CAST({_quote(old_column)} AS TEXT))"
+
+    if dialect_name == "postgresql":
+        return (
+            f"CASE WHEN {value_as_text} ~ '^[+-]?[0-9]+(\\.[0-9]+)?$' "
+            f"THEN CAST({value_as_text} AS {new_type}) ELSE NULL END"
+        )
+
+    if dialect_name == "sqlite":
+        return (
+            f"CASE WHEN {value_as_text} GLOB '*[^0-9.+-]*' "
+            f"OR TRIM({value_as_text}) = '' "
+            f"THEN NULL ELSE CAST({value_as_text} AS {new_type}) END"
+        )
+
+    # Default to a simple cast for other dialects.
+    return f"CAST({value_as_text} AS {new_type})"
+
+
+def _default_using_expression(
+    old_column: str, new_type: str, dialect_name: str | None = None
+) -> str:
+    """Build a dialect-aware USING expression that tolerates bad data."""
     new_type_upper = new_type.upper()
+    dialect = (dialect_name or "").lower()
+
+    if new_type_upper.startswith(
+        ("DECIMAL", "NUMERIC", "INT", "SMALLINT", "BIGINT")
+    ):
+        return _safe_numeric_cast_expression(
+            old_column, new_type_upper, dialect
+        )
+
+    quoted_old = _quote(old_column)
     return f"CAST({quoted_old} AS {new_type_upper})"
 
 
@@ -123,6 +162,7 @@ def _apply_add_column(
     new_column_spec = migration.get("new_column") or {}
     column_name = new_column_spec.get("name")
     column_type = new_column_spec.get("type")
+    dialect_name = conn.engine.dialect.name
 
     if not column_name or not column_type:
         raise SchemaMigrationError(
@@ -174,7 +214,9 @@ def _apply_add_column(
         if using_expression:
             expression = using_expression
         elif copy_from:
-            expression = _default_using_expression(copy_from, column_type)
+            expression = _default_using_expression(
+                copy_from, column_type, dialect_name
+            )
         else:
             raise SchemaMigrationError(
                 "add_column migration set 'copy_data' but did not provide "
@@ -233,6 +275,7 @@ def _apply_replace_column(
         new_column_spec.get("final_name") or temp_new_column_name
     )
     new_column_type = new_column_spec.get("type")
+    dialect_name = conn.engine.dialect.name
 
     if not original_old_column or not temp_new_column_name or not new_column_type:
         raise SchemaMigrationError(
@@ -297,7 +340,7 @@ def _apply_replace_column(
 
     if copy_data:
         expr = using_expression or _default_using_expression(
-            original_old_column, new_column_type
+            original_old_column, new_column_type, dialect_name
         )
         update_sql = (
             f'UPDATE {_quote(table_name)} '

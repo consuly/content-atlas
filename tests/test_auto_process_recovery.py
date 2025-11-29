@@ -96,6 +96,7 @@ def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b
         for table in (
             "marketing_agency_contacts",
             "marketing_agency_leads_us",
+            "clients_list",
         ):
             conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
 
