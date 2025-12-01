@@ -612,15 +612,27 @@ def execute_llm_import_decision(
             final_table_schema = dict(db_schema)
         
         # Stabilize uniqueness columns for duplicate checks when the table already exists.
-        effective_unique_columns = unique_columns
+        # Default to the last successful uniqueness set to keep dedupe behaviour stable.
+        # Allow explicit override via llm_decision.get("allow_unique_override").
+        effective_unique_columns = unique_columns or []
+        allow_unique_override = bool(llm_decision.get("allow_unique_override"))
         if table_exists:
             previous_unique = _load_previous_uniqueness_columns(engine, target_table)
             if previous_unique:
-                effective_unique_columns = previous_unique
-                logger.info(
-                    "AUTO-IMPORT: Using previous uniqueness columns for duplicate detection: %s",
-                    effective_unique_columns,
-                )
+                if allow_unique_override and effective_unique_columns and set(previous_unique) != set(effective_unique_columns):
+                    logger.info(
+                        "AUTO-IMPORT: LLM override requested; using new uniqueness columns %s instead of previous %s",
+                        effective_unique_columns,
+                        previous_unique,
+                    )
+                else:
+                    if set(previous_unique) != set(effective_unique_columns):
+                        logger.info(
+                            "AUTO-IMPORT: Keeping existing uniqueness columns %s and ignoring proposed %s to preserve deduplication",
+                            previous_unique,
+                            effective_unique_columns or [],
+                        )
+                    effective_unique_columns = previous_unique
 
         schema_migrations = llm_decision.get("schema_migrations") or []
         if table_exists:
@@ -681,7 +693,7 @@ def execute_llm_import_decision(
             )
         effective_unique_columns = normalized_uniques
 
-        if table_exists and strategy in ["MERGE_EXACT", "ADAPT_DATA"]:
+        if table_exists and strategy in ["MERGE_EXACT", "ADAPT_DATA", "EXTEND_TABLE"]:
             logger.info(f"AUTO-IMPORT: Table '{target_table}' exists, will merge into it")
             # For merging, we only need the mappings, not the schema
             # The existing table schema will be used
@@ -982,18 +994,24 @@ def _synthesize_multi_value_rules(
     instruction_text: str,
     *,
     multi_value_directives: Optional[List[Dict[str, Any]]] = None,
-    require_explicit_multi_value: bool = False,
+    require_explicit_multi_value: bool = True,
 ) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     If the user instruction asks for multi-value rows to be split/one-per-row (or we
     detect obvious numbered sources), synthesize column/row transforms and rewrite the
     mapping to point to the exploded column so mapper.py sees the right source.
+    
+    NOTE: As of the fix for record multiplication issues, this function now defaults to
+    require_explicit_multi_value=True to prevent automatic explosion of numbered columns
+    (like Email 1, Email 2, etc.) which was causing massive record multiplication.
+    Multi-value explosion will only occur when:
+    1. Explicit multi_value_directives are provided by the LLM
+    2. The instruction text explicitly mentions multi-value handling
     """
     if not records or not column_mapping:
         return column_mapping, column_transformations, row_transformations
 
     instruction_flags_multi = _mentions_multi_value_instruction(instruction_text)
-    has_numbered_sources = any(re.search(r"\d+$", src) for src in column_mapping.keys())
 
     available_columns: Set[str] = set()
     for record in records[:50]:
@@ -1017,20 +1035,25 @@ def _synthesize_multi_value_rules(
         targets_to_sources.setdefault(tgt, []).append(src)
 
     fan_in_present = any(len(sources) > 1 for sources in targets_to_sources.values())
-    numbered_sources_present = any(_find_numbered_siblings(src, available_columns) for src in column_mapping.keys())
-    # When explicit mode is on, still honor a direct instruction OR obvious multiple-source mapping (fan-in or numbered siblings).
-    # This keeps user-supplied instructions (e.g., "split multiple emails into one per row") working
-    # while avoiding implicit auto-detection if no such instruction is present.
+    
+    # IMPORTANT: Only proceed with automatic multi-value explosion if explicitly requested
+    # This prevents the massive record multiplication that was occurring with numbered columns
     if (
         require_explicit_multi_value
         and not instruction_flags_multi
         and not multi_value_directives
         and not fan_in_present
-        and not numbered_sources_present
     ):
+        logger.info(
+            "AUTO-IMPORT: Skipping automatic multi-value explosion (require_explicit_multi_value=True, "
+            "no explicit instruction or directives, no fan-in mapping detected)"
+        )
         return column_mapping, column_transformations, row_transformations
 
-    if not instruction_flags_multi and not has_numbered_sources:
+    if not instruction_flags_multi and not fan_in_present:
+        logger.info(
+            "AUTO-IMPORT: Skipping multi-value explosion (no explicit instruction and no fan-in mapping)"
+        )
         return column_mapping, column_transformations, row_transformations
 
     updated_mapping = dict(column_mapping)
@@ -1059,7 +1082,8 @@ def _synthesize_multi_value_rules(
         target = rt.get("target_column") or rt.get("target_field") or rt.get("column")
         if not target:
             continue
-        sources = set(rt.get("source_columns") or rt.get("columns") or [])
+        raw_sources = list(rt.get("source_columns") or rt.get("columns") or [])
+        sources = set(raw_sources)
         mapped_sources = set(targets_to_sources.get(target, []))
         if mapped_sources:
             sources |= mapped_sources
@@ -1074,6 +1098,9 @@ def _synthesize_multi_value_rules(
         existing_sources = [col for col in sorted(sources, key=lambda c: str(c).lower()) if col in available_columns]
         if existing_sources:
             rt["source_columns"] = existing_sources
+        elif raw_sources:
+            # Keep synthetic split outputs (e.g., *_item_1) even though they aren't in the raw CSV.
+            rt["source_columns"] = sorted(set(raw_sources), key=lambda c: str(c).lower())
         else:
             rt["source_columns"] = []
         for mapped_source, mapped_target in list(updated_mapping.items()):

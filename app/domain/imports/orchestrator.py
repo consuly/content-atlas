@@ -584,6 +584,44 @@ def _reconcile_uniqueness_columns(
             f"Existing columns (sample): {preview}. Update the mapping uniqueness_columns or add the missing columns before retrying."
         )
 
+    # Drop uniqueness columns that are effectively empty in the target table AND the incoming sample.
+    # This prevents null-heavy keys (e.g., primary_email) from suppressing duplicate detection.
+    if resolved_unique:
+        pruned: List[str] = []
+        with engine.connect() as conn:
+            for col in resolved_unique:
+                # Count non-null values in the existing table for this column
+                non_null_count: Optional[int] = None
+                try:
+                    count_result = conn.execute(
+                        text(f'SELECT COUNT("{col}") FROM "{table_name}"')
+                    )
+                    non_null_count = count_result.scalar()
+                except Exception:
+                    # If we can't count, keep the column (fail-safe)
+                    pass
+
+                sample_val = None
+                if sample_record is not None:
+                    sample_val = sample_record.get(col)
+
+                is_sample_empty = sample_val in (None, "", [])
+                is_table_empty_for_col = non_null_count == 0 if non_null_count is not None else False
+
+                if is_table_empty_for_col and is_sample_empty:
+                    adjustments.append(
+                        {
+                            "requested": col,
+                            "resolved_to": None,
+                            "reason": "column has no non-null values in target table and incoming sample; dropping from dedupe key",
+                        }
+                    )
+                    continue
+
+                pruned.append(col)
+
+        resolved_unique = pruned
+
     return resolved_unique, adjustments
 
 
@@ -955,6 +993,7 @@ def _execute_streaming_csv_import(
                         file_content=chunk_file_content,
                         file_name=file_name,
                         pre_mapped=True,
+                        import_id=import_id,
                     )
                 insert_time_total += time.time() - insert_start
                 first_chunk = False
@@ -2015,9 +2054,24 @@ def execute_data_import(
                     mapping_config,
                     mapped_records[0] if mapped_records else None,
                 )
-                if resolved_uniqueness:
-                    mapping_config.duplicate_check.uniqueness_columns = resolved_uniqueness
-                    mapping_config.unique_columns = resolved_uniqueness
+                resolved_for_insert = resolved_uniqueness
+                if not resolved_for_insert:
+                    fallback_candidates = [
+                        col for col in ("contact_full_name", "company_name", "primary_email")
+                        if mapped_records and mapped_records[0].get(col) is not None
+                    ]
+                    if fallback_candidates:
+                        resolved_for_insert = fallback_candidates
+                        logger.info(
+                            "No uniqueness columns survived reconciliation; "
+                            "falling back to %s for duplicate detection",
+                            resolved_for_insert,
+                        )
+
+                if resolved_for_insert:
+                    mapping_config.duplicate_check.uniqueness_columns = resolved_for_insert
+                    mapping_config.unique_columns = resolved_for_insert
+
                 if uniqueness_adjustments:
                     logger.info(
                         "Reconciled uniqueness columns for '%s': %s",
@@ -2035,6 +2089,7 @@ def execute_data_import(
                     file_content=file_content,
                     file_name=file_name,
                     pre_mapped=True,
+                    import_id=import_id,
                 )
             except ValueError as exc:
                 error_text = str(exc)
