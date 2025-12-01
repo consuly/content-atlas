@@ -232,3 +232,37 @@ def test_make_import_decision_accepts_well_formed_add_column_migration():
 
     assert result["success"] is True
     assert context.file_metadata["llm_decision"]["schema_migrations"] == migrations
+
+
+def test_make_import_decision_infers_filter_rows_regex():
+    """Filter rows with missing regex gets an inferred include_regex to avoid mapper errors."""
+    context = _build_analysis_context({"file_type": "csv"})
+    runtime = SimpleNamespace(context=context)
+
+    row_transformations = [
+        {
+            "type": "filter_rows",
+            "columns": ["primary_email"],
+        }
+    ]
+
+    result = make_import_decision.func(
+        strategy="NEW_TABLE",
+        target_table="contacts_import",
+        reasoning="Need to drop rows without usable emails.",
+        purpose_short="Contact emails",
+        column_mapping={"Primary Email": "primary_email"},
+        runtime=runtime,
+        unique_columns=["primary_email"],
+        has_header=True,
+        expected_column_types={"Primary Email": "TEXT"},
+        row_transformations=row_transformations,
+    )
+
+    assert result["success"] is True
+    stored = context.file_metadata["llm_decision"]["row_transformations"]
+    payload = next((rt for rt in stored if rt.get("type") == "filter_rows"), None)
+    assert payload is not None, "filter_rows transformation should be preserved"
+    assert payload.get("include_regex"), "include_regex should be inferred when missing"
+    assert payload.get("exclude_regex") is None
+    assert payload.get("columns") == ["primary_email"]

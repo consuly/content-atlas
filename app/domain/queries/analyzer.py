@@ -1099,6 +1099,14 @@ def _normalize_row_transformations_for_decision(
     if not transformations:
         return []
 
+    def _infer_filter_regex(columns: Optional[List[str]]) -> Optional[str]:
+        if not columns:
+            return None
+        lowered = [str(col).lower() for col in columns if col]
+        if any("email" in col or "mail" in col for col in lowered):
+            return r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"
+        return r".+"
+
     normalized: List[Dict[str, Any]] = []
     for raw in transformations:
         if not isinstance(raw, dict):
@@ -1149,12 +1157,28 @@ def _normalize_row_transformations_for_decision(
             )
             continue
         if t_type == "filter_rows":
+            columns = entry.get("columns") or entry.get("source_columns")
+            include_regex = entry.get("include_regex")
+            exclude_regex = entry.get("exclude_regex")
+            if not include_regex and not exclude_regex:
+                include_regex = _infer_filter_regex(columns)
+                if include_regex:
+                    logger.info(
+                        "Normalized filter_rows without regex; inferred include_regex='%s'",
+                        include_regex,
+                    )
+                else:
+                    logger.info(
+                        "Dropping filter_rows without include/exclude regex or columns: %s",
+                        raw,
+                    )
+                    continue
             normalized.append(
                 {
                     "type": "filter_rows",
-                    "include_regex": entry.get("include_regex"),
-                    "exclude_regex": entry.get("exclude_regex"),
-                    "columns": entry.get("columns") or entry.get("source_columns"),
+                    "include_regex": include_regex,
+                    "exclude_regex": exclude_regex,
+                    "columns": columns,
                 }
             )
             continue
