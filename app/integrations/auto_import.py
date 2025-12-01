@@ -816,39 +816,12 @@ def _canonicalize_clients_list_mapping(
     records: List[Dict[str, Any]],
 ) -> Dict[str, str]:
     """
-    Align LLM-provided mapping to the canonical clients_list schema so downstream
-    import steps create the expected columns even if the model uses synonyms.
+    Pass-through for clients_list mappings.
+
+    We avoid any hard-coded column remapping or auto-adding inferred fields so the
+    caller's mapping stays untouched and can align to whatever schema the user expects.
     """
-    if not column_mapping:
-        return column_mapping
-
-    updated = dict(column_mapping)
-
-    target_synonyms = {
-        "full_name": "contact_full_name",
-        "job_title": "title",
-        "seniority_level": "seniority",
-        "company_website": "website",
-    }
-    for source, target in list(updated.items()):
-        canonical = target_synonyms.get(str(target).strip())
-        if canonical:
-            updated[source] = canonical
-
-    available_sources: Set[str] = set()
-    for row in records[:50]:
-        available_sources.update(row.keys())
-
-    def _add_if_missing(source: str, target: str):
-        if source in available_sources and target not in updated.values():
-            updated[source] = target
-
-    _add_if_missing("Department", "department")
-    _add_if_missing("Company Name - Cleaned", "company_name_cleaned")
-    _add_if_missing("Contact LI Profile URL", "contact_li_profile_url")
-    _add_if_missing("Primary Email", "primary_email")
-
-    return updated
+    return dict(column_mapping)
 
 
 def _find_numbered_siblings(source_column: str, available_columns: Set[str]) -> List[str]:
@@ -1099,9 +1072,6 @@ def _synthesize_multi_value_rules(
 
     for source_col, target_col in list(column_mapping.items()):
         if not target_col:
-            continue
-        if target_col == "primary_email" and existing_explodes:
-            # Avoid a second explode that would drop source columns already consumed by the email explode.
             continue
         if target_col in existing_explodes:
             continue
