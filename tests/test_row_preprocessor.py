@@ -188,3 +188,52 @@ def test_conditional_transform_only_applies_to_matching_rows():
     emails = {row["email"] for row in transformed}
     assert "good@example.com" in emails
     assert "keep@example.com" in emails
+
+
+def test_explode_list_rows_expands_list_column_and_dedupes():
+    records = [
+        {"name": "Alice", "emails": "a@example.com; a@example.com; b@example.com"},
+        {"name": "Bob", "emails": None},
+    ]
+    rules = {
+        "row_transformations": [
+            {
+                "type": "explode_list_rows",
+                "source_column": "emails",
+                "target_column": "email",
+                "delimiter": ";",
+                "dedupe_values": True,
+                "drop_source_column": True,
+            }
+        ]
+    }
+    config = _config_with_rules(rules)
+
+    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    assert errors == []
+    assert len(transformed) == 2
+    assert {row["email"] for row in transformed} == {"a@example.com", "b@example.com"}
+    assert all("emails" not in row for row in transformed)
+
+
+def test_concat_columns_respects_skip_nulls_defaults():
+    records = [
+        {"first": "Alice", "last": "Smith"},
+        {"first": "Bob", "last": None},
+    ]
+    rules = {
+        "row_transformations": [
+            {
+                "type": "concat_columns",
+                "sources": ["first", "last"],
+                "target_column": "full_name",
+                "separator": " ",
+            }
+        ]
+    }
+    config = _config_with_rules(rules)
+
+    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    assert errors == []
+    assert transformed[0]["full_name"] == "Alice Smith"
+    assert transformed[1]["full_name"] == "Bob"

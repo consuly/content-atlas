@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Tuple
 import logging
 import re
+import json
 import pandas as pd
 
 from app.api.schemas.shared import MappingConfig
@@ -27,6 +28,27 @@ def apply_row_transformations(
 
     transformed = records
     all_errors: List[Dict[str, Any]] = []
+
+    # Some row transformations (e.g., explode_columns) depend on helper columns
+    # produced by column-level rules such as split_multi_value_column. Because
+    # row transforms run before map_data applies column transformations, we
+    # materialize the subset of column transformations that generate additional
+    # fields so they are available here.
+    helper_col_xforms = []
+    column_transformations = rules.get("column_transformations") or []
+    if column_transformations:
+        helper_col_xforms = [
+            ct
+            for ct in column_transformations
+            if isinstance(ct, dict) and ct.get("type") in {"split_multi_value_column", "explode_list_column"}
+        ]
+    if helper_col_xforms:
+        from app.domain.imports.mapper import _apply_column_transformations  # Local import to avoid cycles
+
+        transformed = [
+            _apply_column_transformations(record, helper_col_xforms) or record
+            for record in transformed
+        ]
 
     for transformation in transformations:
         if not isinstance(transformation, dict):
@@ -55,6 +77,20 @@ def apply_row_transformations(
             all_errors.extend(errors)
         elif t_type == "conditional_transform":
             transformed, errors = _apply_conditional_transform(
+                transformed,
+                transformation,
+                row_offset=row_offset,
+            )
+            all_errors.extend(errors)
+        elif t_type == "explode_list_rows":
+            transformed, errors = _apply_explode_list_rows(
+                transformed,
+                transformation,
+                row_offset=row_offset,
+            )
+            all_errors.extend(errors)
+        elif t_type == "concat_columns":
+            transformed, errors = _apply_concat_columns(
                 transformed,
                 transformation,
                 row_offset=row_offset,
@@ -166,6 +202,82 @@ def _apply_explode_columns(
     return exploded_records, errors
 
 
+def _apply_explode_list_rows(
+    records: List[Dict[str, Any]],
+    transformation: Dict[str, Any],
+    *,
+    row_offset: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Explode a single list-like column into multiple rows (pandas explode style).
+    """
+    errors: List[Dict[str, Any]] = []
+    source_column = transformation.get("source_column") or transformation.get("column")
+    target_column = transformation.get("target_column") or transformation.get("target_field") or source_column
+    delimiter = transformation.get("delimiter")
+    drop_source = transformation.get("drop_source_column", True)
+    include_original = transformation.get("include_original_row", False)
+    keep_empty_rows = transformation.get("keep_empty_rows", False)
+    strip_whitespace = transformation.get("strip_whitespace", True)
+    dedupe_values = transformation.get("dedupe_values", True)
+    case_insensitive_dedupe = transformation.get("case_insensitive_dedupe", True)
+
+    if not source_column or not target_column:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": "explode_list_rows requires source_column and target_column",
+            }
+        )
+        return records, errors
+
+    df = pd.DataFrame.from_records(records)
+    if df.empty:
+        return [], errors
+    if "_source_record_number" not in df.columns:
+        df["_source_record_number"] = [row_offset + idx + 1 for idx in range(len(df))]
+
+    if source_column not in df.columns:
+        df[source_column] = None
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": f"Source column '{source_column}' missing for explode_list_rows",
+                "column": source_column,
+            }
+        )
+
+    df[target_column] = df[source_column].apply(
+        lambda v: _parse_list_for_explode(v, delimiter=delimiter, strip_whitespace=strip_whitespace)
+    )
+
+    if dedupe_values:
+        df[target_column] = df[target_column].apply(
+            lambda values: _dedupe_preserve_order(values, case_insensitive_dedupe)
+        )
+
+    exploded = df.explode(target_column, ignore_index=True)
+    exploded[target_column] = exploded[target_column].apply(
+        lambda v: v.strip() if strip_whitespace and isinstance(v, str) else v
+    )
+    exploded = exploded.dropna(subset=[target_column])
+
+    base_df = exploded.drop(columns=[source_column], errors="ignore") if drop_source else exploded.copy()
+
+    exploded_records = _df_to_records(base_df)
+
+    if include_original:
+        original = _df_to_records(df.drop(columns=[target_column], errors="ignore") if drop_source else df.copy())
+        exploded_records = original + exploded_records
+    elif keep_empty_rows:
+        has_values = set(exploded.get("_source_record_number", []))
+        original = _df_to_records(df.drop(columns=[target_column], errors="ignore") if drop_source else df.copy())
+        empty_rows = [row for row in original if row.get("_source_record_number") not in has_values]
+        exploded_records = empty_rows + exploded_records
+
+    return exploded_records, errors
+
+
 def _apply_filter_rows(
     records: List[Dict[str, Any]],
     transformation: Dict[str, Any],
@@ -238,6 +350,67 @@ def _apply_filter_rows(
     final_mask = include_mask & ~exclude_mask
     filtered = df.loc[final_mask].copy()
     return _df_to_records(filtered), errors
+
+
+def _apply_concat_columns(
+    records: List[Dict[str, Any]],
+    transformation: Dict[str, Any],
+    *,
+    row_offset: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Concatenate multiple columns into one string column row-by-row.
+    """
+    errors: List[Dict[str, Any]] = []
+    sources = transformation.get("sources") or transformation.get("columns") or []
+    target_column = transformation.get("target_column") or transformation.get("target_field") or transformation.get("column")
+    separator = transformation.get("separator", " ")
+    strip_whitespace = transformation.get("strip_whitespace", True)
+    skip_nulls = transformation.get("skip_nulls", True)
+    null_replacement = transformation.get("null_replacement", "")
+
+    if not sources or not target_column:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": "concat_columns requires sources and target_column",
+            }
+        )
+        return records, errors
+
+    df = pd.DataFrame.from_records(records)
+    if df.empty:
+        return [], errors
+
+    for src in sources:
+        if src not in df.columns:
+            df[src] = None
+            errors.append(
+                {
+                    "type": "row_transformation",
+                    "message": f"Source column '{src}' missing for concat_columns",
+                    "column": src,
+                }
+            )
+
+    def _merge_row(row: pd.Series) -> Any:
+        pieces: List[str] = []
+        for src in sources:
+            value = row.get(src)
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                if skip_nulls:
+                    continue
+                value = null_replacement
+            text = str(value)
+            if strip_whitespace:
+                text = text.strip()
+            if skip_nulls and not text:
+                continue
+            pieces.append(text)
+        return separator.join(pieces) if pieces else None
+
+    df[target_column] = df.apply(_merge_row, axis=1)
+    return _df_to_records(df), errors
 
 
 def _apply_regex_replace(
@@ -480,3 +653,56 @@ def _df_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
             elif pd.isna(val):
                 record[key] = None
     return records
+
+
+def _parse_list_for_explode(value: Any, *, delimiter: str = None, strip_whitespace: bool = True) -> List[Any]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    if isinstance(value, list):
+        values = value
+    elif isinstance(value, str):
+        text = value.strip() if strip_whitespace else value
+        if not text:
+            return []
+        # Try JSON first
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            values = parsed
+        else:
+            if delimiter:
+                parts = re.split(re.escape(delimiter), text)
+            else:
+                email_tokens = re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+", text, flags=re.IGNORECASE)
+                if len(email_tokens) > 1:
+                    parts = email_tokens
+                else:
+                    parts = re.split(r"[;,]", text)
+            values = [part.strip() if strip_whitespace else part for part in parts if part or not strip_whitespace]
+            if not values:
+                values = [text]
+    else:
+        values = [value]
+
+    cleaned = []
+    for v in values:
+        if isinstance(v, str) and strip_whitespace:
+            v = v.strip()
+        if v in ("", None):
+            continue
+        cleaned.append(v)
+    return cleaned
+
+
+def _dedupe_preserve_order(values: List[Any], case_insensitive: bool) -> List[Any]:
+    seen = set()
+    deduped: List[Any] = []
+    for v in values:
+        key = v.lower() if case_insensitive and isinstance(v, str) else v
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(v)
+    return deduped

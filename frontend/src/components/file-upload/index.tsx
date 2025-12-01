@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { App as AntdApp, Upload, Modal, Button, Space } from 'antd';
+import { App as AntdApp, Upload, Modal, Button, Space, Switch } from 'antd';
 import { ExclamationCircleOutlined } from '@ant-design/icons';
 import { 
   FileSpreadsheet, 
@@ -44,6 +44,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 }) => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFileInfo | null>(null);
+  const [duplicateCheckEnabled, setDuplicateCheckEnabled] = useState(true);
   const { message: messageApi } = AntdApp.useApp();
 
   const handleDuplicateAction = async (action: 'overwrite' | 'duplicate' | 'skip') => {
@@ -90,7 +91,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const uploadFile = async (file: File): Promise<boolean> => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('allow_duplicate', 'false');
+    formData.append('allow_duplicate', duplicateCheckEnabled ? 'false' : 'true');
 
     try {
       const token = localStorage.getItem('refine-auth');
@@ -105,17 +106,20 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         messageApi.success(`${file.name} uploaded successfully`);
         onUploadSuccess?.([response.data.files[0]]);
         return true;
-      } else if (response.data.exists) {
+      } else if (response.data.exists && duplicateCheckEnabled) {
         setDuplicateFile({
           file,
           existingFile: response.data.existing_file,
         });
         return false;
       }
+      if (response.data.success && !duplicateCheckEnabled) {
+        return true;
+      }
       return false;
     } catch (error) {
       const axiosError = error as { response?: { status?: number; data?: { exists?: boolean; existing_file?: UploadedFile } }; message?: string };
-      if (axiosError.response?.status === 409 || axiosError.response?.data?.exists) {
+      if ((axiosError.response?.status === 409 || axiosError.response?.data?.exists) && duplicateCheckEnabled) {
         setDuplicateFile({
           file,
           existingFile: axiosError.response?.data?.existing_file as UploadedFile,
@@ -184,6 +188,19 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
   return (
     <>
+      <div className="flex justify-end mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-900/60">
+          <Switch
+            checked={duplicateCheckEnabled}
+            onChange={setDuplicateCheckEnabled}
+            size="small"
+          />
+          <span className="text-sm text-slate-700 dark:text-slate-200">
+            {duplicateCheckEnabled ? 'Duplicate check enabled' : 'Duplicate check disabled'}
+          </span>
+        </div>
+      </div>
+
       <Dragger {...uploadProps} style={{ padding: '2rem', background: 'transparent', border: 'none' }}>
         <div className="flex flex-col items-center gap-6">
           {/* Header Status */}
