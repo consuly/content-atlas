@@ -108,6 +108,46 @@ def test_filter_rows_with_include_and_exclude_patterns():
     assert emails == {"good@example.com", "other@example.com"}
 
 
+def test_filter_rows_skips_when_columns_missing():
+    records = [
+        {"Email 1": "one@example.com"},
+        {"Email 1": "two@example.com"},
+    ]
+
+    rules = {
+        "row_transformations": [
+            {
+                "type": "filter_rows",
+                "include_regex": "@example\\.com",
+                "columns": ["email"],  # not present in records
+            }
+        ]
+    }
+    config = _config_with_rules(rules)
+
+    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    assert transformed == records  # no rows dropped
+    assert any("none of the requested columns exist" in err["message"] for err in errors)
+
+
+def test_explode_columns_skips_when_all_sources_missing():
+    records = [{"name": "Alice"}, {"name": "Bob"}]
+    rules = {
+        "row_transformations": [
+            {
+                "type": "explode_columns",
+                "source_columns": ["email"],  # missing in records
+                "target_column": "email",
+            }
+        ]
+    }
+    config = _config_with_rules(rules)
+
+    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    assert transformed == records  # passthrough when nothing to explode
+    assert any("none of the requested source columns exist" in err["message"] for err in errors)
+
+
 def test_regex_replace_cleans_phone_numbers():
     records = [
         {"phone_raw": "(555) 123-4567", "name": "A"},

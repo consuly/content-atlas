@@ -1063,9 +1063,21 @@ def _synthesize_multi_value_rules(
         mapped_sources = set(targets_to_sources.get(target, []))
         if mapped_sources:
             sources |= mapped_sources
-            rt["source_columns"] = sorted(sources, key=lambda c: str(c).lower())
+        # If no mapped sources are known, try to pull siblings that look like this target.
+        if not sources and target:
+            sources = set(
+                col
+                for col in available_columns
+                if target.lower() in str(col).lower()
+            )
+        # Keep only existing columns as explode sources; drop unknowns to avoid empty results.
+        existing_sources = [col for col in sorted(sources, key=lambda c: str(c).lower()) if col in available_columns]
+        if existing_sources:
+            rt["source_columns"] = existing_sources
+        else:
+            rt["source_columns"] = []
         for mapped_source, mapped_target in list(updated_mapping.items()):
-            if mapped_target == target or mapped_source in sources:
+            if mapped_target == target or mapped_source in rt["source_columns"]:
                 updated_mapping.pop(mapped_source, None)
         updated_mapping[target] = target
         exploded_targets.add(target)
@@ -1168,6 +1180,7 @@ def _synthesize_multi_value_rules(
                     or str(mapped_target).startswith(f"{explode_target}_")
                 ):
                     updated_mapping.pop(mapped_source, None)
+            # Preserve the exploded target but do not overwrite the source list; mapping should point to the target.
             updated_mapping[explode_target] = explode_target
             exploded_targets.add(explode_target)
 
@@ -1232,7 +1245,10 @@ def _synthesize_multi_value_rules(
                 if target not in exploded_targets:
                     continue
                 sources = rt.get("source_columns") or []
-                merged = sorted(set(sources) | set(email_candidates), key=lambda c: str(c).lower())
+                merged = sorted(
+                    {src for src in sources if src in available_columns} | set(email_candidates),
+                    key=lambda c: str(c).lower(),
+                )
                 rt["source_columns"] = merged
 
     return updated_mapping, updated_col_xforms, updated_row_xforms
