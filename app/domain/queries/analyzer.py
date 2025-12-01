@@ -1471,6 +1471,7 @@ def make_import_decision(
     schema_migrations: Optional[List[Dict[str, Any]]] = None,
     column_transformations: Optional[List[Dict[str, Any]]] = None,
     row_transformations: Optional[List[Dict[str, Any]]] = None,
+    allow_unique_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Make final import decision with strategy and target table.
@@ -1613,6 +1614,7 @@ def make_import_decision(
         "schema_migrations": migrations,
         "column_transformations": normalized_transformations,
         "row_transformations": context.file_metadata["llm_decision"]["row_transformations"],
+        "allow_unique_override": allow_unique_override or False,
     }
 
 
@@ -1764,6 +1766,8 @@ You MUST call the make_import_decision tool before providing your final response
    - Example: ["email", "first_name", "last_name"]
    - These should be the TARGET column names (after mapping)
    - Choose columns that uniquely identify a record
+   - If the target table already exists and the schema context shows a prior dedupe key (e.g., “Dedupe key (latest import): …”), REUSE that key unless it is incompatible. Only propose a new key if reuse is impossible, and set allow_unique_override=true when doing so.
+   - If the caller provided `target_table_name`/`target_table_mode`, honor that target table instead of inventing a new one. Prefer MERGE/ADAPT/EXTEND into that table when purpose matches; only NEW_TABLE if forced and mode=new.
 
 3. **has_header** (CSV files only): True if file has headers, False if headerless
    - This tells the system how to parse the CSV file

@@ -531,6 +531,10 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
                 
                 if count > 0:
                     duplicate_indices.append(global_idx)
+                
+                # DIAGNOSTIC: Log first few checks to see what's being queried
+                if global_idx < 3:
+                    logger.info(f"DIAGNOSTIC: Record {global_idx} duplicate check - count: {count}, params: {params}")
                     
             except Exception as e:
                 print(f"DEBUG: _check_for_duplicates_db_side: Error checking record {global_idx}: {e}")
@@ -688,6 +692,8 @@ def insert_records(
     file_content: bytes = None,
     file_name: str = None,
     pre_mapped: bool = False,
+    import_id: Optional[str] = None,
+    has_active_import: Optional[bool] = None,
 ) -> Tuple[int, int]:
     """
     Insert records into the table with enhanced duplicate checking.
@@ -720,7 +726,11 @@ def insert_records(
         print("DEBUG: no config provided")
 
     # Determine import context upfront so we can attach metadata consistently
-    import_id, has_active_import = _get_active_import_id(engine, table_name)
+    if import_id is not None:
+        active_import_id = import_id
+        active_import_tracking = has_active_import if has_active_import is not None else True
+    else:
+        active_import_id, active_import_tracking = _get_active_import_id(engine, table_name)
 
     # Determine if we should use chunked processing
     CHUNK_SIZE = 20000
@@ -736,8 +746,8 @@ def insert_records(
             file_content,
             file_name,
             CHUNK_SIZE,
-            import_id,
-            has_active_import,
+            active_import_id,
+            active_import_tracking,
             pre_mapped=pre_mapped
         )
         return inserted, duplicates
@@ -775,9 +785,9 @@ def insert_records(
                         }
                         for idx in duplicate_indices
                     ]
-                    if duplicate_entries and has_active_import:
+                    if duplicate_entries and active_import_tracking:
                         try:
-                            record_duplicate_rows(import_id, duplicate_entries)
+                            record_duplicate_rows(active_import_id, duplicate_entries)
                         except Exception as e:
                             logger.error("Failed to persist duplicate audit rows: %s", str(e))
                     elif duplicate_entries:
@@ -835,7 +845,7 @@ def insert_records(
                                 print(f"DEBUG: Coerced column '{col_name}' from {repr(original_value)} ({type(original_value).__name__}) to {repr(coerced_value)} ({type(coerced_value).__name__}) for type {sql_type}")
 
                 # Add metadata
-                coerced_record['_import_id'] = import_id
+                coerced_record['_import_id'] = active_import_id
                 coerced_record['_source_row_number'] = row_num
                 coerced_record['_corrections_applied'] = json.dumps(corrections) if corrections else None
 
@@ -1074,6 +1084,20 @@ def _check_chunks_parallel(
     if not uniqueness_columns:
         logger.warning("No uniqueness columns specified, skipping duplicate check")
         return 0, []
+    
+    # DIAGNOSTIC: Log what columns are actually in the records vs what we're checking
+    if chunks and chunks[0] and chunks[0][1]:
+        sample_record = chunks[0][1][0]
+        sample_keys = list(sample_record.keys())
+        logger.info(f"DIAGNOSTIC: Uniqueness columns requested: {uniqueness_columns}")
+        logger.info(f"DIAGNOSTIC: Sample record keys (first 10): {sample_keys[:10]}")
+        logger.info(f"DIAGNOSTIC: Sample record (first 3 items): {dict(list(sample_record.items())[:3])}")
+        
+        # Check if uniqueness columns exist in records
+        missing_in_records = [col for col in uniqueness_columns if col not in sample_keys]
+        if missing_in_records:
+            logger.warning(f"DIAGNOSTIC: Uniqueness columns NOT found in records: {missing_in_records}")
+            logger.warning(f"DIAGNOSTIC: This will cause duplicate check to fail - all values will be None")
 
     def _resolve_cast_type(col_name: str, table_column_types: Dict[str, str]) -> Optional[str]:
         """Determine the safest cast type for a column based on table schema or mapping config."""
@@ -1220,21 +1244,25 @@ def _check_chunks_parallel(
                     raise
         
             if chunk_duplicates > 0:
-                duplicate_indices, _ = _check_for_duplicates_db_side(conn, table_name, chunk_records, config)
+                # If duplicates are found in the batch check, re-run with _check_for_duplicates_db_side
+                # to get individual record indices for detailed audit logging.
+                # This is less efficient but necessary for granular duplicate tracking.
+                duplicate_indices_in_chunk, _ = _check_for_duplicates_db_side(conn, table_name, chunk_records, config)
                 chunk_duplicate_entries = [
                     {
                         "record_number": chunk_start + idx + 1,
                         "record": chunk_records[idx].copy()
                     }
-                    for idx in duplicate_indices
+                    for idx in duplicate_indices_in_chunk
                 ]
         
         if chunk_duplicates > 0:
             logger.warning(
-                "Chunk %d: Found %d total duplicates across %d batches",
+                "Chunk %d: Found %d total duplicates across %d batches. Detailed audit for %d records.",
                 chunk_num,
                 chunk_duplicates,
                 duplicate_batches,
+                len(chunk_duplicate_entries)
             )
         else:
             logger.info(f"Chunk {chunk_num}: No duplicates found")

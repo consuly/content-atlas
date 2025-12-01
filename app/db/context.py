@@ -1,4 +1,5 @@
 from typing import Dict, List, Any, Optional
+import json
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from .session import get_engine
@@ -33,16 +34,42 @@ def get_database_schema() -> Dict[str, Any]:
         # Fetch latest import metadata (type mismatch summaries, etc.) for each table
         import_metadata: Dict[str, Any] = {}
         import_meta_sql = """
-            SELECT DISTINCT ON (table_name) table_name, metadata
+            SELECT DISTINCT ON (table_name) table_name, metadata, mapping_config
             FROM import_history
-            WHERE metadata IS NOT NULL
+            WHERE status = 'success'
             ORDER BY table_name, updated_at DESC
         """
         import_meta_result = conn.execute(text(import_meta_sql))
         for row in import_meta_result:
             metadata_payload = row[1]
-            if metadata_payload:
-                import_metadata[row[0]] = metadata_payload
+            mapping_cfg = row[2]
+            latest_meta: Dict[str, Any] = {}
+
+            if isinstance(metadata_payload, dict):
+                latest_meta.update(metadata_payload)
+            elif metadata_payload:
+                latest_meta["raw_metadata"] = metadata_payload
+
+            # Extract latest dedupe key from mapping_config if available
+            try:
+                if isinstance(mapping_cfg, str):
+                    mapping_cfg = json.loads(mapping_cfg)
+                if isinstance(mapping_cfg, dict):
+                    uniq = mapping_cfg.get("unique_columns")
+                    if not uniq:
+                        dc = mapping_cfg.get("duplicate_check") or {}
+                        uniq = (
+                            dc.get("uniqueness_columns")
+                            or dc.get("unique_columns")
+                            or mapping_cfg.get("uniqueness_columns")
+                        )
+                    if uniq:
+                        latest_meta["dedupe_unique_columns"] = uniq
+            except Exception:
+                pass
+
+            if latest_meta:
+                import_metadata[row[0]] = latest_meta
 
         for table_name in tables:
             # Get column information
@@ -166,6 +193,10 @@ def format_schema_for_prompt(schema_info: Dict[str, Any]) -> str:
                         if occurrences:
                             summary_line += f" (occurrences: {occurrences})"
                         lines.append(summary_line)
+                dedupe = latest_import.get("dedupe_unique_columns")
+                if dedupe:
+                    dedupe_str = ", ".join(dedupe)
+                    lines.append(f"- Dedupe key (latest import): {dedupe_str}")
         
         lines.append("- Columns:")
 
