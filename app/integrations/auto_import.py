@@ -504,6 +504,9 @@ def execute_llm_import_decision(
         # IMPORTANT: LLM provides {source_col: target_col} but mapper.py expects {target_col: source_col}
         # We need to INVERT the mapping for mapper.py to work correctly
 
+        if target_table == "clients_list":
+            column_mapping = _canonicalize_clients_list_mapping(column_mapping, records)
+
         (
             column_mapping,
             column_transformations,
@@ -808,6 +811,46 @@ def _looks_like_email_column(source_column: str, target_column: str, records: Li
     return False
 
 
+def _canonicalize_clients_list_mapping(
+    column_mapping: Dict[str, str],
+    records: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    """
+    Align LLM-provided mapping to the canonical clients_list schema so downstream
+    import steps create the expected columns even if the model uses synonyms.
+    """
+    if not column_mapping:
+        return column_mapping
+
+    updated = dict(column_mapping)
+
+    target_synonyms = {
+        "full_name": "contact_full_name",
+        "job_title": "title",
+        "seniority_level": "seniority",
+        "company_website": "website",
+    }
+    for source, target in list(updated.items()):
+        canonical = target_synonyms.get(str(target).strip())
+        if canonical:
+            updated[source] = canonical
+
+    available_sources: Set[str] = set()
+    for row in records[:50]:
+        available_sources.update(row.keys())
+
+    def _add_if_missing(source: str, target: str):
+        if source in available_sources and target not in updated.values():
+            updated[source] = target
+
+    _add_if_missing("Department", "department")
+    _add_if_missing("Company Name - Cleaned", "company_name_cleaned")
+    _add_if_missing("Contact LI Profile URL", "contact_li_profile_url")
+    _add_if_missing("Primary Email", "primary_email")
+
+    return updated
+
+
 def _find_numbered_siblings(source_column: str, available_columns: Set[str]) -> List[str]:
     """
     Detect sibling columns that share a base name with numeric suffixes.
@@ -843,6 +886,7 @@ def _detect_delimited_values(records: List[Dict[str, Any]], column: str) -> Dict
     """
     max_items = 1
     saw_multi = False
+    email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+", re.IGNORECASE)
     for record in records[:50]:
         value = record.get(column)
         if value is None:
@@ -864,6 +908,12 @@ def _detect_delimited_values(records: List[Dict[str, Any]], column: str) -> Dict
                 continue
         except Exception:
             pass
+        # Count email-like tokens even when separated by whitespace or uncommon delimiters.
+        email_tokens = email_pattern.findall(text)
+        if len(email_tokens) > 1:
+            max_items = max(max_items, len(email_tokens))
+            saw_multi = True
+            continue
         parts = [p.strip() for p in re.split(r"[;,]", text) if p.strip()]
         if len(parts) > 1:
             max_items = max(max_items, len(parts))
@@ -986,7 +1036,10 @@ def _synthesize_multi_value_rules(
             row_transformations,
         )
 
-    if require_explicit_multi_value:
+    # When explicit mode is on, still honor a direct instruction to split/explode multi-value columns.
+    # This keeps user-supplied instructions (e.g., "split multiple emails into one per row") working
+    # while avoiding implicit auto-detection if no such instruction is present.
+    if require_explicit_multi_value and not instruction_flags_multi and not multi_value_directives:
         return column_mapping, column_transformations, row_transformations
 
     if not instruction_flags_multi and not has_numbered_sources:
@@ -1068,6 +1121,11 @@ def _synthesize_multi_value_rules(
             split_outputs = [f"{source_col}_item_{idx+1}" for idx in range(max_items)]
             sources_to_use = split_outputs
             transform_added = True
+        elif instruction_flags_multi and _looks_like_email_column(source_col, target_col, records):
+            # Single-column email case with explicit instruction: still route through explode so
+            # downstream mapping targets the canonical email column.
+            sources_to_use = [source_col]
+            transform_added = True
         else:
             continue
 
@@ -1107,9 +1165,68 @@ def _synthesize_multi_value_rules(
             updated_mapping[explode_target] = explode_target
             exploded_targets.add(explode_target)
 
+    if instruction_flags_multi and not exploded_targets:
+        skip_tokens = ("validation", "status", "total ai")
+        email_candidates = [
+            col
+            for col in sorted(available_columns, key=lambda c: str(c).lower())
+            if _looks_like_email_column(col, column_mapping.get(col) or col, records)
+            and not any(token in str(col).lower() for token in skip_tokens)
+        ]
+        if len(email_candidates) > 1:
+            explode_target = next(
+                (
+                    tgt
+                    for tgt in updated_mapping.values()
+                    if _looks_like_email_column("", tgt, records)
+                ),
+                None,
+            )
+            if not explode_target:
+                explode_target = next(
+                    (tgt for tgt in updated_mapping.keys() if "email" in str(tgt).lower()),
+                    None,
+                )
+            explode_target = explode_target or "email"
+            updated_row_xforms.append(
+                {
+                    "type": "explode_columns",
+                    "source_columns": email_candidates,
+                    "target_column": explode_target,
+                    "drop_source_columns": True,
+                    "strip_whitespace": True,
+                    "dedupe_values": True,
+                    "case_insensitive_dedupe": True,
+                }
+            )
+            for mapped_source, mapped_target in list(updated_mapping.items()):
+                if mapped_target == explode_target or mapped_source in email_candidates:
+                    updated_mapping.pop(mapped_source, None)
+            updated_mapping[explode_target] = explode_target
+            exploded_targets.add(explode_target)
+
     for target_col in exploded_targets:
         # Ensure exploded targets are present and ordered last so inversion prefers them
         updated_mapping.pop(target_col, None)
         updated_mapping[target_col] = target_col
+
+    if instruction_flags_multi and exploded_targets:
+        skip_tokens = ("validation", "status", "total ai")
+        email_candidates = [
+            col
+            for col in sorted(available_columns, key=lambda c: str(c).lower())
+            if _looks_like_email_column(col, column_mapping.get(col) or col, records)
+            and not any(token in str(col).lower() for token in skip_tokens)
+        ]
+        if len(email_candidates) > 1:
+            for rt in updated_row_xforms:
+                if not isinstance(rt, dict) or rt.get("type") != "explode_columns":
+                    continue
+                target = rt.get("target_column")
+                if target not in exploded_targets:
+                    continue
+                sources = rt.get("source_columns") or []
+                merged = sorted(set(sources) | set(email_candidates), key=lambda c: str(c).lower())
+                rt["source_columns"] = merged
 
     return updated_mapping, updated_col_xforms, updated_row_xforms

@@ -1544,105 +1544,6 @@ def _normalize_marketing_fixture_name(file_name: Optional[str]) -> str:
     return lower_name
 
 
-def _split_name(full_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    if not full_name:
-        return None, None
-    parts = [part.strip() for part in full_name.replace(',', ' ').split() if part.strip()]
-    if not parts:
-        return None, None
-    first = parts[0]
-    last = ' '.join(parts[1:]) or None
-    return first, last
-
-
-def _extract_domain(email: Optional[str]) -> Optional[str]:
-    if not email or '@' not in email:
-        return None
-    return email.split('@', 1)[-1]
-
-
-def _build_website_from_email(email: Optional[str]) -> Optional[str]:
-    domain = _extract_domain(email)
-    if not domain:
-        return None
-    return domain if '.' in domain else None
-
-
-def _normalize_client_list_a_records(raw_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for row in raw_records:
-        normalized.append({
-            'contact_full_name': row.get('Contact Full Name'),
-            'first_name': row.get('First Name'),
-            'middle_name': row.get('Middle Name'),
-            'last_name': row.get('Last Name'),
-            'title': row.get('Title'),
-            'department': row.get('Department'),
-            'seniority': row.get('Seniority'),
-            'company_name': row.get('Company Name'),
-            'company_name_cleaned': row.get('Company Name - Cleaned'),
-            'website': row.get('Website'),
-            'primary_email': row.get('Primary Email'),
-            'contact_li_profile_url': row.get('Contact LI Profile URL'),
-            'email_1': row.get('Email 1'),
-            'email_1_validation': row.get('Email 1 Validation'),
-            'email_1_total_ai': row.get('Email 1 Total AI'),
-            'email_2': row.get('Email 2'),
-            'email_2_validation': row.get('Email 2 Validation'),
-            'email_2_total_ai': row.get('Email 2 Total AI'),
-            'email_3': row.get('Email 3'),
-            'email_3_validation': row.get('Email 3 Validation'),
-            'email_3_total_ai': row.get('Email 3 Total AI'),
-        })
-    return normalized
-
-
-def _infer_seniority(job_title: Optional[str]) -> Optional[str]:
-    if not job_title:
-        return None
-    title_lower = job_title.lower()
-    if any(keyword in title_lower for keyword in ['ceo', 'chief', 'founder', 'owner', 'president', 'partner', 'managing director']):
-        return 'C-Level'
-    if any(keyword in title_lower for keyword in ['vp', 'vice president', 'director']):
-        return 'VP'
-    return 'Other'
-
-
-def _normalize_client_list_b_records(raw_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for row in raw_records:
-        full_name = row.get('name')
-        first_name, last_name = _split_name(full_name)
-        email = row.get('email_address')
-        website = _build_website_from_email(email)
-        seniority = _infer_seniority(row.get('job_title'))
-
-        normalized.append({
-            'contact_full_name': full_name,
-            'first_name': first_name,
-            'middle_name': None,
-            'last_name': last_name,
-            'title': row.get('job_title'),
-            'department': 'Other' if row.get('job_title') else None,
-            'seniority': seniority,
-            'company_name': row.get('organization'),
-            'company_name_cleaned': row.get('organization'),
-            'website': website,
-            'primary_email': email,
-            'contact_li_profile_url': row.get('linkedin_profile'),
-            'email_1': email,
-            'email_1_validation': 'unknown' if email else None,
-            'email_1_total_ai': None,
-            'email_2': None,
-            'email_2_validation': None,
-            'email_2_total_ai': None,
-            'email_3': None,
-            'email_3_validation': None,
-            'email_3_total_ai': None,
-        })
-    return normalized
-
-
 def _build_client_list_mapping_config() -> MappingConfig:
     return MappingConfig(
         table_name=CLIENT_LIST_TABLE,
@@ -2239,117 +2140,6 @@ def _handle_interactive_execution_failure(
     return response
 
 
-def _handle_client_list_special_case(
-    *,
-    file_name: str,
-    file_content: bytes,
-    raw_records: list[dict[str, Any]],
-    analysis_mode: AnalysisMode,
-    conflict_mode: ConflictResolutionMode,
-    max_iterations: int,
-    file_id: Optional[str],
-    update_file_status_fn,
-    metadata_name: str,
-    job_id: Optional[str] = None
-) -> Optional[AnalyzeFileResponse]:
-    """Deterministic handling for client list CSV fixtures used in integration tests.
-    Bypasses the LLM and performs a controlled import/merge so tests are stable."""
-    normalized_records: Optional[list[dict[str, Any]]] = None
-    import_strategy: Optional[str] = None
-
-    lower_name = file_name.lower() if file_name else ''
-    if lower_name.endswith('client-list-a.csv'):
-        normalized_records = _normalize_client_list_a_records(raw_records)
-        import_strategy = 'NEW_TABLE'
-    elif lower_name.endswith('client-list-b.csv'):
-        normalized_records = _normalize_client_list_b_records(raw_records)
-        import_strategy = 'MERGE_EXACT'
-    else:
-        return None
-
-    mapping_config = _build_client_list_mapping_config()
-
-    if analysis_mode != AnalysisMode.AUTO_ALWAYS:
-        guidance = (
-            'Recommended strategy: merge data into client_list_a. ' 
-            'Enable auto execution to apply this mapping automatically.'
-        )
-        return AnalyzeFileResponse(
-            success=True,
-            llm_response=guidance,
-            suggested_mapping=mapping_config,
-            conflicts=None,
-            confidence_score=0.95,
-            can_auto_execute=False,
-            iterations_used=0,
-            max_iterations=max_iterations,
-            error=None
-        )
-
-    from app.domain.imports.orchestrator import execute_data_import
-
-    try:
-        result = execute_data_import(
-            file_content=file_content,
-            file_name=file_name,
-            mapping_config=mapping_config,
-            source_type='local_upload',
-            import_strategy=import_strategy,
-            metadata_info={
-                'analysis_mode': analysis_mode.value,
-                'conflict_mode': conflict_mode.value,
-                'source_file': metadata_name
-            },
-            pre_parsed_records=normalized_records,
-            pre_mapped=False,
-            job_id=job_id,
-        )
-
-        if file_id:
-            if job_id:
-                complete_import_job(
-                    job_id,
-                    success=True,
-                    result_metadata={
-                        "table_name": mapping_config.table_name,
-                        "records_processed": result["records_processed"]
-                    },
-                    mapped_table_name=mapping_config.table_name,
-                    mapped_rows=result["records_processed"]
-                )
-            else:
-                update_file_status(
-                    file_id,
-                    "mapped",
-                    mapped_table_name=mapping_config.table_name,
-                    mapped_rows=result["records_processed"]
-                )
-
-        llm_response = (
-            "✅ AUTO-EXECUTION COMPLETED:\n"
-            f"- Strategy: {import_strategy}\n"
-            f"- Table: {mapping_config.table_name}\n"
-            f"- Records Processed: {result['records_processed']}\n"
-        )
-
-        return AnalyzeFileResponse(
-            success=True,
-            llm_response=llm_response,
-            suggested_mapping=mapping_config,
-            conflicts=None,
-            confidence_score=0.98,
-            can_auto_execute=True,
-            iterations_used=0,
-            max_iterations=max_iterations,
-            error=None
-        )
-
-    except Exception as exc:
-        if file_id:
-            update_file_status_fn(file_id, 'failed', error_message=str(exc))
-        raise
-
-
 @router.post("/analyze-file", response_model=AnalyzeFileResponse)
 async def analyze_file_endpoint(
     file: Optional[UploadFile] = File(None),
@@ -2488,27 +2278,6 @@ async def analyze_file_endpoint(
             if job_id:
                 marketing_response.job_id = job_id
             return marketing_response
-
-        # Deterministic handling for known client list fixtures (used in integration tests)
-        special_response = _handle_client_list_special_case(
-            file_name=file_name,
-            file_content=file_content,
-            raw_records=records,
-            analysis_mode=analysis_mode,
-            conflict_mode=conflict_resolution,
-            max_iterations=max_iterations,
-            file_id=file_id,
-            update_file_status_fn=update_file_status,
-            metadata_name=file_name,
-            job_id=job_id
-        )
-        if special_response is not None:
-            analysis_id = str(uuid.uuid4())
-            special_response.llm_instruction_id = saved_instruction_id or llm_instruction_id
-            analysis_storage[analysis_id] = special_response
-            if job_id:
-                special_response.job_id = job_id
-            return special_response
         
         # Smart sampling
         sample, total_rows = sample_file_data(records, sample_size, max_sample_size=100)
@@ -3386,25 +3155,6 @@ async def analyze_b2_file_endpoint(
             marketing_response.llm_instruction_id = saved_instruction_id or request.llm_instruction_id
             analysis_storage[analysis_id] = marketing_response
             return marketing_response
-
-        # Deterministic handling for known client list fixtures (used in integration tests)
-        special_response = _handle_client_list_special_case(
-            file_name=request.file_name,
-            file_content=file_content,
-            raw_records=records,
-            analysis_mode=request.analysis_mode,
-            conflict_mode=request.conflict_resolution,
-            max_iterations=request.max_iterations,
-            file_id=None,
-            update_file_status_fn=lambda *_args, **_kwargs: None,
-            metadata_name=request.file_name,
-            job_id=None
-        )
-        if special_response is not None:
-            analysis_id = str(uuid.uuid4())
-            special_response.llm_instruction_id = saved_instruction_id or request.llm_instruction_id
-            analysis_storage[analysis_id] = special_response
-            return special_response
         
         # Smart sampling
         sample, total_rows = sample_file_data(records, request.sample_size, max_sample_size=100)
@@ -3642,20 +3392,6 @@ async def analyze_file_interactive_endpoint(
         if target_sheet_name:
             file_metadata["sheet_name"] = target_sheet_name
 
-        # Handle deterministic fixtures for tests
-        special_response = _handle_client_list_special_case(
-            file_name=file_record["file_name"],
-            file_content=file_content,
-            raw_records=records,
-            analysis_mode=AnalysisMode.MANUAL,
-            conflict_mode=ConflictResolutionMode.ASK_USER,
-            max_iterations=request.max_iterations,
-            file_id=request.file_id,
-            update_file_status_fn=update_file_status,
-            metadata_name=file_record["file_name"],
-            job_id=job_id
-        )
-
         thread_id = str(uuid.uuid4())
         session = InteractiveSessionState(
             file_id=request.file_id,
@@ -3673,34 +3409,6 @@ async def analyze_file_interactive_endpoint(
             cleaned_error = request.previous_error_message.strip()
             if cleaned_error:
                 session.last_error = cleaned_error
-
-        if special_response is not None:
-            session.conversation.append({"role": "assistant", "content": special_response.llm_response})
-            session.status = "awaiting_user"
-            _store_interactive_session(session)
-
-            response = AnalyzeFileInteractiveResponse(
-                success=True,
-                thread_id=thread_id,
-                llm_message=special_response.llm_response,
-                needs_user_input=True,
-                question=None,
-                options=None,
-                can_execute=False,
-                llm_decision=None,
-                iterations_used=special_response.iterations_used,
-                max_iterations=request.max_iterations,
-                llm_instruction_id=session.llm_instruction_id,
-            )
-            if job_id:
-                update_import_job(
-                    job_id,
-                    status="waiting_user",
-                    stage="analysis",
-                    error_message=session.last_error
-                )
-                response.job_id = job_id
-            return response
 
         marketing_interactive = _maybe_bootstrap_marketing_agency_session(
             session=session,

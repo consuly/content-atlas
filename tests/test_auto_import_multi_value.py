@@ -1,4 +1,6 @@
 from app.integrations.auto_import import _synthesize_multi_value_rules
+from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
+from app.domain.imports.preprocessor import apply_row_transformations
 
 
 def test_synthesizes_explode_for_numbered_columns_when_instruction_requests_split():
@@ -180,3 +182,107 @@ def test_directives_enable_explicit_splitting_when_auto_is_disabled():
     explode = next(rt for rt in new_row_xforms if rt.get("type") == "explode_columns")
     assert explode["target_column"] == "email"
     assert set(explode["source_columns"]) == set(outputs)
+
+
+def test_row_transformations_can_use_split_outputs_before_mapping():
+    records = [
+        {"emails": "one@example.com; two@example.com", "name": "Alice"},
+    ]
+    column_mapping = {"emails": "email", "name": "name"}
+
+    cm, col_xforms, row_xforms = _synthesize_multi_value_rules(
+        column_mapping,
+        [],
+        [],
+        records,
+        "split multiple emails into one per row",
+    )
+
+    mapping_config = MappingConfig(
+        table_name="tmp",
+        db_schema={"email": "TEXT", "name": "TEXT"},
+        mappings={v: k for k, v in cm.items()},
+        rules={
+            "column_transformations": col_xforms,
+            "row_transformations": row_xforms,
+        },
+        duplicate_check=DuplicateCheckConfig(
+            enabled=False,
+            check_file_level=False,
+            allow_duplicates=True,
+            uniqueness_columns=[],
+        ),
+    )
+
+    transformed, errors = apply_row_transformations(records, mapping_config)
+    assert errors == []
+    emails = sorted([row["email"] for row in transformed])
+    assert emails == ["one@example.com", "two@example.com"]
+
+
+def test_splits_multiple_emails_when_detected_in_single_cell():
+    records = [
+        {"email_address": "alpha@example.com beta@example.com", "name": "Alpha"},
+        {"email_address": "gamma@example.com;delta@example.com", "name": "Gamma"},
+    ]
+    column_mapping = {"email_address": "email", "name": "name"}
+
+    cm, col_xforms, row_xforms = _synthesize_multi_value_rules(
+        column_mapping,
+        [],
+        [],
+        records,
+        "explode multiple emails into one row each",
+    )
+
+    mapping_config = MappingConfig(
+        table_name="tmp",
+        db_schema={"email": "TEXT", "name": "TEXT"},
+        mappings={v: k for k, v in cm.items()},
+        rules={
+            "column_transformations": col_xforms,
+            "row_transformations": row_xforms,
+        },
+        duplicate_check=DuplicateCheckConfig(
+            enabled=False,
+            check_file_level=False,
+            allow_duplicates=True,
+            uniqueness_columns=[],
+        ),
+    )
+
+    transformed, errors = apply_row_transformations(records, mapping_config)
+    assert errors == []
+    emails = sorted([row["email"] for row in transformed])
+    assert emails == [
+        "alpha@example.com",
+        "beta@example.com",
+        "delta@example.com",
+        "gamma@example.com",
+    ]
+
+
+def test_fallback_includes_unmapped_email_columns_when_instruction_requests_split():
+    column_mapping = {"Primary Email": "email", "First Name": "first_name"}
+    records = [
+        {
+            "Primary Email": "prime@example.com",
+            "Email 1": "extra@example.com",
+            "Email 2": None,
+            "First Name": "Alex",
+        }
+    ]
+
+    cm, col_xforms, row_xforms = _synthesize_multi_value_rules(
+        column_mapping,
+        [],
+        [],
+        records,
+        "one email per row",
+    )
+
+    assert col_xforms == []
+    explode = next(rt for rt in row_xforms if rt.get("type") == "explode_columns")
+    assert explode["target_column"] == "email"
+    assert set(explode["source_columns"]) == {"Primary Email", "Email 1"}
+    assert cm["email"] == "email"

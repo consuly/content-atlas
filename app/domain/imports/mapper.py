@@ -369,6 +369,10 @@ def _apply_column_transformations(
             _apply_split_international_phone(updated_record, record, transformation)
         elif t_type == "regex_replace":
             _apply_regex_replace(updated_record, record, transformation)
+        elif t_type == "merge_columns":
+            _apply_merge_columns(updated_record, record, transformation)
+        elif t_type == "explode_list_column":
+            _apply_explode_list_column(updated_record, record, transformation)
         else:
             logger.debug("Unknown column transformation type '%s' skipped", t_type)
 
@@ -453,6 +457,8 @@ def _apply_split_multi_value(
 ) -> None:
     source_column = transformation.get("source_column") or transformation.get("column")
     outputs = transformation.get("outputs") or transformation.get("targets") or []
+    delimiter = transformation.get("delimiter")
+    strip_whitespace = transformation.get("strip_whitespace", True)
 
     if not source_column or not outputs:
         return
@@ -465,7 +471,7 @@ def _apply_split_multi_value(
                 destination[name] = None
         return
 
-    values = _parse_multi_value_list(raw_value)
+    values = _parse_multi_value_list(raw_value, delimiter=delimiter, strip_whitespace=strip_whitespace)
     for output in outputs:
         if not isinstance(output, dict):
             continue
@@ -477,29 +483,48 @@ def _apply_split_multi_value(
         destination[name] = value
 
 
-def _parse_multi_value_list(raw_value: Any) -> List[Any]:
+def _parse_multi_value_list(raw_value: Any, *, delimiter: Optional[str] = None, strip_whitespace: bool = True) -> List[Any]:
+    """Normalize a multi-value cell into a list using JSON, delimiter, or comma/semicolon fallback."""
     if isinstance(raw_value, list):
-        return raw_value
-
-    if isinstance(raw_value, str):
-        trimmed = raw_value.strip()
+        values = raw_value
+    elif isinstance(raw_value, str):
+        trimmed = raw_value.strip() if strip_whitespace else raw_value
         if not trimmed:
             return []
         # Try JSON first
         try:
             parsed = json.loads(trimmed)
             if isinstance(parsed, list):
-                return parsed
+                values = parsed
+            else:
+                values = [parsed]
         except (json.JSONDecodeError, TypeError, ValueError):
-            pass
+            values = None
 
-        # Fallback to CSV-like splitting
-        parts = [part.strip() for part in re.split(r"[;,]", trimmed) if part.strip()]
-        if parts:
-            return parts
-        return [trimmed]
+        if values is None:
+            if delimiter:
+                regex = re.escape(delimiter)
+                parts = re.split(regex, trimmed)
+            else:
+                email_tokens = re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+", trimmed, flags=re.IGNORECASE)
+                if len(email_tokens) > 1:
+                    parts = email_tokens
+                else:
+                    parts = re.split(r"[;,]", trimmed)
+            values = [part.strip() if strip_whitespace else part for part in parts if part.strip() or not strip_whitespace]
+            if not values:
+                values = [trimmed]
+    else:
+        values = [raw_value]
 
-    return [raw_value]
+    normalized: List[Any] = []
+    for val in values:
+        if isinstance(val, str) and strip_whitespace:
+            val = val.strip()
+        if val in ("", None):
+            continue
+        normalized.append(val)
+    return normalized
 
 
 def _apply_compose_international_phone(
@@ -567,6 +592,82 @@ def _apply_split_international_phone(
 
     if transformation.get("preserve_original") is False and split:
         destination[source_column] = None
+
+
+def _apply_merge_columns(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    """Concatenate multiple source columns into a single target column."""
+    sources = transformation.get("sources") or transformation.get("columns") or []
+    target_column = transformation.get("target_column") or transformation.get("target_field") or transformation.get("column")
+    separator = transformation.get("separator", " ")
+    strip_whitespace = transformation.get("strip_whitespace", True)
+    skip_nulls = transformation.get("skip_nulls", True)
+    null_replacement = transformation.get("null_replacement", "")
+
+    if not sources or not target_column:
+        return
+
+    pieces: List[str] = []
+    for src in sources:
+        value = source_record.get(src)
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            if skip_nulls:
+                continue
+            value = null_replacement
+        text = str(value)
+        if strip_whitespace:
+            text = text.strip()
+        if skip_nulls and not text:
+            continue
+        pieces.append(text)
+
+    destination[target_column] = separator.join(pieces) if pieces else None
+
+
+def _apply_explode_list_column(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    """
+    Split a list-like cell into fixed output columns without duplicating rows.
+    """
+    source_column = transformation.get("source_column") or transformation.get("column")
+    outputs = transformation.get("outputs") or transformation.get("targets") or []
+    delimiter = transformation.get("delimiter")
+    strip_whitespace = transformation.get("strip_whitespace", True)
+    dedupe_values = transformation.get("dedupe_values", True)
+    case_insensitive_dedupe = transformation.get("case_insensitive_dedupe", True)
+
+    if not source_column or not outputs:
+        return
+
+    raw_value = source_record.get(source_column)
+    values = _parse_multi_value_list(raw_value, delimiter=delimiter, strip_whitespace=strip_whitespace)
+
+    if dedupe_values and values:
+        seen = set()
+        normalized_values: List[Any] = []
+        for val in values:
+            key = val.lower() if case_insensitive_dedupe and isinstance(val, str) else val
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_values.append(val)
+        values = normalized_values
+
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        index = output.get("index", 0)
+        name = output.get("name") or output.get("field") or output.get("column")
+        if name is None:
+            continue
+        value = values[index] if index < len(values) else output.get("default")
+        destination[name] = value
 
 
 def _compose_e164_phone(

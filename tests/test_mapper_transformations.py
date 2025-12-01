@@ -196,3 +196,65 @@ def test_column_regex_replace_outputs_groups():
     assert mapped[0]["user"] == "alpha"
     assert mapped[0]["domain"] == "example.com"
     assert mapped[1]["domain"] == "test.org"
+
+
+def test_merge_columns_combines_sources_with_defaults():
+    records = [
+        {"first": "Alice", "last": "Smith"},
+        {"first": "Bob", "last": None},
+    ]
+
+    rules = {
+        "column_transformations": [
+            {
+                "type": "merge_columns",
+                "sources": ["first", "last"],
+                "target_column": "full_name",
+                "separator": " ",
+            }
+        ]
+    }
+
+    config = _base_config(
+        mappings={"name": "full_name"},
+        rules=rules,
+    )
+
+    mapped, errors = map_data(records, config)
+    assert not errors
+    assert mapped[0]["name"] == "Alice Smith"
+    assert mapped[1]["name"] == "Bob"
+
+
+def test_explode_list_column_splits_into_outputs_without_row_duplication():
+    records = [
+        {"tags": "red, blue"},
+        {"tags": ["green", "green", "yellow"]},
+    ]
+
+    rules = {
+        "column_transformations": [
+            {
+                "type": "explode_list_column",
+                "source_column": "tags",
+                "outputs": [
+                    {"name": "tag_primary", "index": 0},
+                    {"name": "tag_secondary", "index": 1},
+                ],
+                "delimiter": ",",
+                "dedupe_values": True,
+            }
+        ]
+    }
+
+    config = _base_config(
+        mappings={"tag_primary": "tag_primary", "tag_secondary": "tag_secondary"},
+        rules=rules,
+    )
+
+    mapped, errors = map_data(records, config)
+    assert not errors
+    assert mapped[0]["tag_primary"] == "red"
+    assert mapped[0]["tag_secondary"] == "blue"
+    assert mapped[1]["tag_primary"] == "green"
+    assert mapped[1]["tag_secondary"] == "yellow"

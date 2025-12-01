@@ -1071,6 +1071,18 @@ def _normalize_column_transformations_for_decision(
                 entry["source_column"] = entry["column"]
             if "target_column" not in entry:
                 entry["target_column"] = entry.get("target_field") or entry.get("source_column")
+        elif t_type in {"merge_columns", "concat_columns"}:
+            if "sources" not in entry and entry.get("columns"):
+                entry["sources"] = entry["columns"]
+            if "target_column" not in entry:
+                entry["target_column"] = entry.get("target_field") or entry.get("column")
+            entry["type"] = "merge_columns"  # normalize alias
+        elif t_type in {"explode_list_column", "explode_list_values"}:
+            if "source_column" not in entry and "column" in entry:
+                entry["source_column"] = entry["column"]
+            if "outputs" not in entry and entry.get("targets"):
+                entry["outputs"] = entry["targets"]
+            entry["type"] = "explode_list_column"
 
         normalized.append(entry)
 
@@ -1115,6 +1127,27 @@ def _normalize_row_transformations_for_decision(
                 }
             )
             continue
+        if t_type in {"explode_list_rows", "explode_list"}:
+            source_col = entry.get("source_column") or entry.get("column")
+            target = entry.get("target_column") or entry.get("target_field") or source_col
+            if not source_col or not target:
+                logger.debug("Skipping explode_list_rows without source/target: %s", raw)
+                continue
+            normalized.append(
+                {
+                    "type": "explode_list_rows",
+                    "source_column": source_col,
+                    "target_column": target,
+                    "delimiter": entry.get("delimiter"),
+                    "drop_source_column": entry.get("drop_source_column", True),
+                    "include_original_row": entry.get("include_original_row", False),
+                    "keep_empty_rows": entry.get("keep_empty_rows", False),
+                    "dedupe_values": entry.get("dedupe_values", True),
+                    "case_insensitive_dedupe": entry.get("case_insensitive_dedupe", True),
+                    "strip_whitespace": entry.get("strip_whitespace", True),
+                }
+            )
+            continue
         if t_type == "filter_rows":
             normalized.append(
                 {
@@ -1148,6 +1181,24 @@ def _normalize_row_transformations_for_decision(
                     "exclude_regex": entry.get("exclude_regex"),
                     "columns": entry.get("columns") or entry.get("source_columns"),
                     "actions": _normalize_row_transformations_for_decision(entry.get("actions") or entry.get("transformations")),
+                }
+            )
+            continue
+        if t_type in {"concat_columns", "merge_columns"}:
+            sources = entry.get("sources") or entry.get("columns") or []
+            target = entry.get("target_column") or entry.get("target_field") or entry.get("column")
+            if not sources or not target:
+                logger.debug("Skipping concat_columns without sources/target: %s", raw)
+                continue
+            normalized.append(
+                {
+                    "type": "concat_columns",
+                    "sources": sources,
+                    "target_column": target,
+                    "separator": entry.get("separator", " "),
+                    "strip_whitespace": entry.get("strip_whitespace", True),
+                    "skip_nulls": entry.get("skip_nulls", True),
+                    "null_replacement": entry.get("null_replacement", ""),
                 }
             )
             continue

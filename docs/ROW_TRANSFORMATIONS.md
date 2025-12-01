@@ -20,6 +20,15 @@ Pre-processing rules that reshape rows before column mapping. These run in panda
   - `conditional_transform`: Gate nested row actions by regex.
     - `include_regex`/`exclude_regex`, `columns`
     - `actions`: list of other row transforms (e.g., `explode_columns`, `filter_rows`, `regex_replace`)
+  - `explode_list_rows`: Explode a list-like column into multiple rows (pandas `explode` style).
+    - `source_column` (required), `target_column` (defaults to source)
+    - `delimiter` (optional; defaults to comma/semicolon split), `strip_whitespace` (default: true)
+    - `dedupe_values` (default: true), `case_insensitive_dedupe` (default: true)
+    - `drop_source_column` (default: true), `include_original_row` (default: false), `keep_empty_rows` (default: false)
+  - `concat_columns`: Merge multiple columns into a single string on the row.
+    - `sources` (required), `target_column` (required)
+    - `separator` (default: `" "`), `strip_whitespace` (default: true)
+    - `skip_nulls` (default: true; when false, `null_replacement` is used), `null_replacement` (default: `""`)
 
 ## Column-level regex (mapping stage)
 
@@ -29,6 +38,13 @@ Pre-processing rules that reshape rows before column mapping. These run in panda
 - `replacement` (default `""`)
 - `outputs` (optional) to map capture groups into multiple columns
 - `skip_on_no_match` (optional) to leave values untouched on miss
+
+Additional column-level helpers:
+- `merge_columns`: Concatenate multiple sources into one column (same options as `concat_columns` above).
+- `explode_list_column`: Split a list-like value into fixed output columns without duplicating rows.
+  - `source_column` (required), `outputs` (required, each with `name` and optional `index`/`default`)
+  - `delimiter` (optional), `strip_whitespace` (default: true)
+  - `dedupe_values` (default: true), `case_insensitive_dedupe` (default: true)
 
 ## Notes
 
