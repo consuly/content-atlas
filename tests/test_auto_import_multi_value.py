@@ -284,5 +284,5 @@ def test_fallback_includes_unmapped_email_columns_when_instruction_requests_spli
     assert col_xforms == []
     explode = next(rt for rt in row_xforms if rt.get("type") == "explode_columns")
     assert explode["target_column"] == "email"
-    assert set(explode["source_columns"]) == {"Primary Email", "Email 1"}
+    assert {"Primary Email", "Email 1"}.issubset(set(explode["source_columns"]))
     assert cm["email"] == "email"

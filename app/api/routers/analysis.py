@@ -2155,6 +2155,7 @@ async def analyze_file_endpoint(
     llm_instruction_id: Optional[str] = Form(None),
     save_llm_instruction: bool = Form(False),
     llm_instruction_title: Optional[str] = Form(None),
+    require_explicit_multi_value: bool = Form(False),
     db: Session = Depends(get_db)
 ):
     """
@@ -2193,6 +2194,7 @@ async def analyze_file_endpoint(
         if forced_table_name and forced_table_mode is None:
             # Default to existing to avoid unintended new table creation when a name is forced
             forced_table_mode = "existing"
+        require_explicit_multi_value = bool(require_explicit_multi_value)
         # Validate input: must provide either file or file_id
         if not file and not file_id:
             raise HTTPException(status_code=400, detail="Must provide either 'file' or 'file_id'")
@@ -2325,6 +2327,11 @@ async def analyze_file_endpoint(
                 forced_table_name,
                 forced_table_mode,
             )
+        if llm_decision is not None:
+            llm_decision = dict(llm_decision)
+            if normalized_instruction:
+                llm_decision.setdefault("llm_instruction", normalized_instruction)
+            llm_decision["require_explicit_multi_value"] = require_explicit_multi_value
         
         # Parse LLM response to extract structured data
         response = AnalyzeFileResponse(
@@ -3137,6 +3144,7 @@ async def analyze_b2_file_endpoint(
             save_llm_instruction=request.save_llm_instruction,
             llm_instruction_title=request.llm_instruction_title,
         )
+        require_explicit_multi_value = bool(request.require_explicit_multi_value)
         
         marketing_response = _handle_marketing_agency_special_case(
             file_name=request.file_name,
@@ -3192,6 +3200,13 @@ async def analyze_b2_file_endpoint(
             ,
             llm_instruction_id=saved_instruction_id or request.llm_instruction_id
         )
+        llm_decision = analysis_result.get("llm_decision")
+        if llm_decision is not None:
+            llm_decision = dict(llm_decision)
+            if normalized_instruction:
+                llm_decision.setdefault("llm_instruction", normalized_instruction)
+            llm_decision["require_explicit_multi_value"] = require_explicit_multi_value
+            response.llm_decision = llm_decision
         
         # Determine can_auto_execute based on analysis_mode
         if request.analysis_mode == AnalysisMode.AUTO_ALWAYS:

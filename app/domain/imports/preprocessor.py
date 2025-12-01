@@ -96,6 +96,13 @@ def apply_row_transformations(
                 row_offset=row_offset,
             )
             all_errors.extend(errors)
+        elif t_type == "drop_columns":
+            transformed, errors = _apply_drop_columns(
+                transformed,
+                transformation,
+                row_offset=row_offset,
+            )
+            all_errors.extend(errors)
         else:
             all_errors.append(
                 {
@@ -149,15 +156,18 @@ def _apply_explode_columns(
         df["_source_record_number"] = [row_offset + idx + 1 for idx in range(len(df))]
 
     missing_sources = [col for col in source_columns if col not in df.columns]
-    for col in missing_sources:
-        df[col] = None
-        errors.append(
-            {
-                "type": "row_transformation",
-                "message": f"Source column '{col}' missing for explode_columns",
-                "column": col,
-            }
-        )
+    if missing_sources:
+        for col in missing_sources:
+            df[col] = None
+        if not transformation.get("ignore_missing_sources", True):
+            for col in missing_sources:
+                errors.append(
+                    {
+                        "type": "row_transformation",
+                        "message": f"Source column '{col}' missing for explode_columns",
+                        "column": col,
+                    }
+                )
 
     value_df = df[source_columns].copy()
     value_df = value_df.map(lambda v: _normalize_value(v, strip_whitespace))
@@ -276,6 +286,25 @@ def _apply_explode_list_rows(
         exploded_records = empty_rows + exploded_records
 
     return exploded_records, errors
+
+
+def _apply_drop_columns(
+    records: List[Dict[str, Any]],
+    transformation: Dict[str, Any],
+    *,
+    row_offset: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Drop one or more columns from each record. Missing columns are ignored.
+    """
+    errors: List[Dict[str, Any]] = []
+    columns = transformation.get("columns") or transformation.get("source_columns") or []
+    if not columns:
+        return records, errors
+
+    df = pd.DataFrame.from_records(records)
+    df = df.drop(columns=columns, errors="ignore")
+    return df.to_dict("records"), errors
 
 
 def _apply_filter_rows(

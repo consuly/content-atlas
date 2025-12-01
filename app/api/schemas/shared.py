@@ -402,6 +402,7 @@ class AnalyzeB2FileRequest(BaseModel):
     llm_instruction_id: Optional[str] = None
     save_llm_instruction: bool = False
     llm_instruction_title: Optional[str] = None
+    require_explicit_multi_value: bool = False
 
 
 class ExecuteRecommendedImportRequest(BaseModel):
@@ -695,6 +696,7 @@ class AnalyzeFileInteractiveRequest(BaseModel):
     llm_instruction_id: Optional[str] = None
     save_llm_instruction: bool = False
     llm_instruction_title: Optional[str] = None
+    require_explicit_multi_value: bool = False
 
 
 class AnalyzeFileInteractiveResponse(BaseModel):

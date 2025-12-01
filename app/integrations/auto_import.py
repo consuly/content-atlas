@@ -1031,15 +1031,30 @@ def _synthesize_multi_value_rules(
         column_mapping, column_transformations, row_transformations = _apply_multi_value_directives(
             multi_value_directives,
             available_columns,
-            column_mapping,
-            column_transformations,
-            row_transformations,
-        )
+        column_mapping,
+        column_transformations,
+        row_transformations,
+    )
 
-    # When explicit mode is on, still honor a direct instruction to split/explode multi-value columns.
+    # Group sources by target to detect fan-in mappings (multiple sources -> same target).
+    targets_to_sources: Dict[str, List[str]] = {}
+    for src, tgt in column_mapping.items():
+        if not tgt:
+            continue
+        targets_to_sources.setdefault(tgt, []).append(src)
+
+    fan_in_present = any(len(sources) > 1 for sources in targets_to_sources.values())
+    numbered_sources_present = any(_find_numbered_siblings(src, available_columns) for src in column_mapping.keys())
+    # When explicit mode is on, still honor a direct instruction OR obvious multiple-source mapping (fan-in or numbered siblings).
     # This keeps user-supplied instructions (e.g., "split multiple emails into one per row") working
     # while avoiding implicit auto-detection if no such instruction is present.
-    if require_explicit_multi_value and not instruction_flags_multi and not multi_value_directives:
+    if (
+        require_explicit_multi_value
+        and not instruction_flags_multi
+        and not multi_value_directives
+        and not fan_in_present
+        and not numbered_sources_present
+    ):
         return column_mapping, column_transformations, row_transformations
 
     if not instruction_flags_multi and not has_numbered_sources:
@@ -1064,8 +1079,29 @@ def _synthesize_multi_value_rules(
             continue
         targets_to_sources.setdefault(tgt, []).append(src)
 
+    # If the LLM already supplied an explode, ensure mapping points to that target and merge sources.
+    for rt in updated_row_xforms:
+        if not isinstance(rt, dict) or rt.get("type") != "explode_columns":
+            continue
+        target = rt.get("target_column") or rt.get("target_field") or rt.get("column")
+        if not target:
+            continue
+        sources = set(rt.get("source_columns") or rt.get("columns") or [])
+        mapped_sources = set(targets_to_sources.get(target, []))
+        if mapped_sources:
+            sources |= mapped_sources
+            rt["source_columns"] = sorted(sources, key=lambda c: str(c).lower())
+        for mapped_source, mapped_target in list(updated_mapping.items()):
+            if mapped_target == target or mapped_source in sources:
+                updated_mapping.pop(mapped_source, None)
+        updated_mapping[target] = target
+        exploded_targets.add(target)
+
     for source_col, target_col in list(column_mapping.items()):
         if not target_col:
+            continue
+        if target_col == "primary_email" and existing_explodes:
+            # Avoid a second explode that would drop source columns already consumed by the email explode.
             continue
         if target_col in existing_explodes:
             continue
