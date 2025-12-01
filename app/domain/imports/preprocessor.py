@@ -50,17 +50,49 @@ def apply_row_transformations(
             for record in transformed
         ]
 
-    for transformation in transformations:
+    priority_order = ("explode_columns", "explode_list_rows")
+    ordered = [
+        t for t in transformations if isinstance(t, dict) and t.get("type") in priority_order
+    ] + [
+        t for t in transformations if not isinstance(t, dict) or t.get("type") not in priority_order
+    ]
+
+    exploded_targets = set()
+    consumed_sources: set[str] = set()
+
+    for transformation in ordered:
         if not isinstance(transformation, dict):
             continue
         t_type = transformation.get("type")
         if t_type == "explode_columns":
+            target = (
+                transformation.get("target_column")
+                or transformation.get("target_field")
+                or transformation.get("column")
+            )
+            sources_declared = transformation.get("source_columns") or transformation.get("columns") or []
+            drop_source = transformation.get("drop_source_columns", True)
+            if drop_source and sources_declared and all(src in consumed_sources for src in sources_declared):
+                # Sources already consumed by a previous explode; skip without error to avoid false mapping errors.
+                continue
+            if target and target in exploded_targets:
+                all_errors.append(
+                    {
+                        "type": "row_transformation",
+                        "message": f"explode_columns skipped for '{target}': target already exploded earlier in pipeline",
+                    }
+                )
+                continue
             transformed, errors = _apply_explode_columns(
                 transformed,
                 transformation,
                 row_offset=row_offset,
             )
             all_errors.extend(errors)
+            if target:
+                exploded_targets.add(target)
+            if drop_source and sources_declared:
+                consumed_sources.update(sources_declared)
         elif t_type == "filter_rows":
             transformed, errors = _apply_filter_rows(
                 transformed,
@@ -156,6 +188,15 @@ def _apply_explode_columns(
         df["_source_record_number"] = [row_offset + idx + 1 for idx in range(len(df))]
 
     missing_sources = [col for col in source_columns if col not in df.columns]
+    present_sources = [col for col in source_columns if col in df.columns]
+    if not present_sources:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": f"explode_columns skipped: none of the requested source columns exist ({source_columns})",
+            }
+        )
+        return records, errors
     if missing_sources:
         for col in missing_sources:
             df[col] = None
@@ -169,7 +210,7 @@ def _apply_explode_columns(
                     }
                 )
 
-    value_df = df[source_columns].copy()
+    value_df = df[present_sources].copy()
     value_df = value_df.map(lambda v: _normalize_value(v, strip_whitespace))
     # future_stack enables the upcoming stack behavior and silences pandas deprecation warnings.
     # Drop NA values manually because dropna cannot be combined with future_stack=True.
@@ -339,10 +380,25 @@ def _apply_filter_rows(
 
     if not columns:
         columns = [col for col in df.columns if not str(col).startswith("_")]
-
-    for col in columns:
-        if col not in df.columns:
-            df[col] = None
+    else:
+        existing_cols = [col for col in columns if col in df.columns]
+        missing_cols = [col for col in columns if col not in df.columns]
+        if not existing_cols:
+            errors.append(
+                {
+                    "type": "row_transformation",
+                    "message": f"filter_rows skipped: none of the requested columns exist ({columns})",
+                }
+            )
+            return records, errors
+        if missing_cols:
+            errors.append(
+                {
+                    "type": "row_transformation",
+                    "message": f"filter_rows ignored missing columns: {missing_cols}",
+                }
+            )
+        columns = existing_cols
 
     try:
         include_regex = re.compile(include_pattern) if include_pattern else None
