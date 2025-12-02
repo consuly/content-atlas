@@ -402,6 +402,7 @@ def _process_entry_bytes(
     llm_instruction: Optional[str],
     db_session,
     sheet_name: Optional[str] = None,
+    parent_file_id: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
     """Shared worker logic for archive entries and workbook sheets."""
     analysis_response: Optional[AnalyzeFileResponse] = None
@@ -421,6 +422,7 @@ def _process_entry_bytes(
             file_size=len(entry_bytes),
             content_type=_guess_content_type(entry_name),
             user_id=None,
+            parent_file_id=parent_file_id,
         )
         uploaded_file_id = uploaded_file["id"]
     except Exception as exc:
@@ -599,6 +601,7 @@ def _process_archive_entry(
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
     llm_instruction: Optional[str],
+    parent_file_id: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
     """Process a single archive entry in a thread."""
     # Create a new database session for this thread
@@ -634,6 +637,7 @@ def _process_archive_entry(
             forced_table_mode=forced_table_mode,
             llm_instruction=llm_instruction,
             db_session=db_session,
+            parent_file_id=parent_file_id,
         )
 
     finally:
@@ -656,6 +660,7 @@ def _process_workbook_sheet_entry(
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
     llm_instruction: Optional[str],
+    parent_file_id: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
     """Process a single Excel sheet as an independent import."""
     SessionLocal = get_session_local()
@@ -678,6 +683,7 @@ def _process_workbook_sheet_entry(
             llm_instruction=llm_instruction,
             db_session=db_session,
             sheet_name=sheet_name,
+            parent_file_id=parent_file_id,
         )
     finally:
         db_session.close()
@@ -834,6 +840,7 @@ def _run_archive_auto_process_job(
                         forced_table_name=forced_table_name,
                         forced_table_mode=forced_table_mode,
                         llm_instruction=llm_instruction,
+                        parent_file_id=file_id,
                     )
                     futures[future] = archive_path
 
@@ -1119,6 +1126,7 @@ def _run_workbook_auto_process_job(
                     forced_table_name=forced_table_name,
                     forced_table_mode=forced_table_mode,
                     llm_instruction=llm_instruction,
+                    parent_file_id=file_id,
                 )
                 futures[future] = sheet_name
 
