@@ -208,7 +208,6 @@ export const ImportMappingPage: React.FC = () => {
   const [canExecute, setCanExecute] = useState(false);
   const [needsUserInput, setNeedsUserInput] = useState(true);
   const [showInteractiveRetry, setShowInteractiveRetry] = useState(false);
-  const [retryModalVisible, setRetryModalVisible] = useState(false);
   const quickActions = [
     { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
     {
@@ -671,7 +670,9 @@ export const ImportMappingPage: React.FC = () => {
   }, [messageApi]);
 
   const ensureJobIsAvailable = () => {
-    if ((mappingJobActive || file?.status === 'mapping') && !processing) {
+    // Only block if there's an active job AND the file isn't in a failed state
+    // This allows retries after failures even if file.status is stuck at 'mapping'
+    if (mappingJobActive && !processing && file?.status !== 'failed') {
       showActiveJobWarning();
       return false;
     }
@@ -1313,7 +1314,6 @@ export const ImportMappingPage: React.FC = () => {
   useEffect(() => {
     if (file && file.status !== 'failed' && showInteractiveRetry) {
       setShowInteractiveRetry(false);
-      setRetryModalVisible(false);
     }
   }, [file, showInteractiveRetry]);
 
@@ -1788,9 +1788,9 @@ export const ImportMappingPage: React.FC = () => {
   const handleRetryInteractive = async () => {
     if (!id || processing) return;
 
-    setShowInteractiveRetry(true);
-    setRetryModalVisible(true);
+    // Switch to interactive tab instead of opening a modal
     setActiveTab('interactive');
+    setShowInteractiveRetry(true);
 
     const cleanedError = file?.error_message?.trim();
     await handleInteractiveStart({
@@ -3359,20 +3359,6 @@ export const ImportMappingPage: React.FC = () => {
                 {isArchiveFile && archiveResultsPanel}
               </Collapse.Panel>
             </Collapse>
-
-            <Modal
-              open={retryModalVisible}
-              onCancel={() => {
-                setRetryModalVisible(false);
-                setShowInteractiveRetry(false);
-              }}
-              footer={null}
-              width={920}
-              destroyOnClose
-              title="Retry with AI Assistant"
-            >
-              {interactiveTabContent}
-            </Modal>
           </Space>
         </Card>
       ) : file.status === 'mapped' ? (

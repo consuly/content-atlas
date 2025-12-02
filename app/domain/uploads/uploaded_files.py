@@ -121,6 +121,15 @@ def create_uploaded_files_table():
             CREATE INDEX IF NOT EXISTS idx_uploaded_files_active_job
             ON uploaded_files(active_job_id);
         """))
+        # Add parent_file_id column for grouping Excel tabs and ZIP contents
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS parent_file_id UUID REFERENCES uploaded_files(id) ON DELETE CASCADE;
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_uploaded_files_parent
+            ON uploaded_files(parent_file_id);
+        """))
 
     global _table_initialized
     _table_initialized = True
@@ -134,7 +143,8 @@ def insert_uploaded_file(
     file_size: int,
     content_type: str = None,
     user_id: str = None,
-    file_hash: str = None
+    file_hash: str = None,
+    parent_file_id: Optional[str] = None
 ) -> Dict:
     """Insert a new uploaded file record."""
     ensure_uploaded_files_table()
@@ -144,14 +154,14 @@ def insert_uploaded_file(
     insert_sql = """
     INSERT INTO uploaded_files (
         id, file_name, b2_file_id, b2_file_path, file_size, 
-        file_hash, content_type, user_id, status
+        file_hash, content_type, user_id, status, parent_file_id
     )
     VALUES (
         :id, :file_name, :b2_file_id, :b2_file_path, :file_size,
-        :file_hash, :content_type, :user_id, 'uploaded'
+        :file_hash, :content_type, :user_id, 'uploaded', :parent_file_id
     )
     RETURNING id, file_name, b2_file_id, b2_file_path, file_size, 
-              content_type, upload_date, status
+              content_type, upload_date, status, parent_file_id
     """
     params = {
         "id": file_id,
@@ -161,7 +171,8 @@ def insert_uploaded_file(
         "file_size": file_size,
         "file_hash": file_hash,
         "content_type": content_type,
-        "user_id": user_id
+        "user_id": user_id,
+        "parent_file_id": parent_file_id
     }
 
     def _insert() -> Dict:
@@ -179,6 +190,7 @@ def insert_uploaded_file(
                 "content_type": row[5],
                 "upload_date": row[6].isoformat() if row[6] else None,
                 "status": row[7],
+                "parent_file_id": str(row[8]) if row[8] else None,
                 "mapped_table_name": None,
                 "mapped_date": None,
                 "mapped_rows": None,
@@ -222,7 +234,7 @@ def get_uploaded_files(
         file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
-        active_job_progress, active_job_started_at
+        active_job_progress, active_job_started_at, parent_file_id
     FROM uploaded_files
     WHERE {where_sql}
     ORDER BY upload_date DESC
@@ -254,6 +266,7 @@ def get_uploaded_files(
                     "active_job_stage": row[15],
                     "active_job_progress": row[16],
                     "active_job_started_at": row[17].isoformat() if row[17] else None,
+                    "parent_file_id": str(row[18]) if row[18] else None,
                 })
 
             return files
@@ -272,7 +285,7 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
         file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
-        active_job_progress, active_job_started_at
+        active_job_progress, active_job_started_at, parent_file_id
     FROM uploaded_files
     WHERE id = :file_id
     """
@@ -304,6 +317,7 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
                 "active_job_stage": row[15],
                 "active_job_progress": row[16],
                 "active_job_started_at": row[17].isoformat() if row[17] else None,
+                "parent_file_id": str(row[18]) if row[18] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -320,7 +334,7 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
         file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
-        active_job_progress, active_job_started_at
+        active_job_progress, active_job_started_at, parent_file_id
     FROM uploaded_files
     WHERE file_name = :file_name
     ORDER BY upload_date DESC
@@ -354,6 +368,7 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
                 "active_job_stage": row[15],
                 "active_job_progress": row[16],
                 "active_job_started_at": row[17].isoformat() if row[17] else None,
+                "parent_file_id": str(row[18]) if row[18] else None,
             }
 
     return _run_with_table_retry(_fetch)
@@ -370,7 +385,7 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
         file_hash, content_type, upload_date, status, mapped_table_name,
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
-        active_job_progress, active_job_started_at
+        active_job_progress, active_job_started_at, parent_file_id
     FROM uploaded_files
     WHERE file_hash = :file_hash
     ORDER BY upload_date DESC
@@ -404,6 +419,7 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
                 "active_job_stage": row[15],
                 "active_job_progress": row[16],
                 "active_job_started_at": row[17].isoformat() if row[17] else None,
+                "parent_file_id": str(row[18]) if row[18] else None,
             }
 
     return _run_with_table_retry(_fetch)
