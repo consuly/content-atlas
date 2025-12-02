@@ -13,10 +13,13 @@ What gets reset:
     - All tables, including users and API keys
     - Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
     - All files in B2 storage under "uploads/" folder
+    - All log files in the logs/ directory
 """
 
 import sys
+import os
 import argparse
+from pathlib import Path
 from app.db.seeds.reset import reset_database_data, is_production_environment, ProductionEnvironmentError
 from app.core.config import settings
 
@@ -35,7 +38,37 @@ def print_warning():
     print("   • Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)")
     print("     - Tables will be dropped and need to be recreated via migrations/app startup")
     print("   • All files in B2 storage (uploads folder)")
+    print("   • All log files in the logs/ directory")
     print()
+
+
+def clean_log_files() -> dict:
+    """
+    Remove all log files from the logs/ directory.
+    
+    Returns:
+        Dictionary with cleanup results
+    """
+    logs_dir = Path("logs")
+    results = {
+        'files_deleted': 0,
+        'errors': []
+    }
+    
+    if not logs_dir.exists():
+        return results
+    
+    try:
+        for log_file in logs_dir.glob("*.log"):
+            try:
+                log_file.unlink()
+                results['files_deleted'] += 1
+            except Exception as e:
+                results['errors'].append(f"Failed to delete {log_file.name}: {e}")
+    except Exception as e:
+        results['errors'].append(f"Failed to access logs directory: {e}")
+    
+    return results
 
 
 def confirm_reset() -> bool:
@@ -117,6 +150,10 @@ Examples:
     print("-" * 80)
     
     try:
+        # Clean log files first
+        log_results = clean_log_files()
+        
+        # Reset database
         results = reset_database_data(force_production=args.force_production)
         
         # Print results
@@ -140,9 +177,16 @@ Examples:
         else:
             print("\n☁️  No B2 files to delete (or B2 not configured)")
         
-        if results['errors']:
-            print(f"\n⚠️  Warnings/Errors ({len(results['errors'])}):")
-            for error in results['errors']:
+        if log_results['files_deleted'] > 0:
+            print(f"\n📝 Deleted {log_results['files_deleted']} log files")
+        else:
+            print("\n📝 No log files to delete")
+        
+        # Combine errors from both operations
+        all_errors = results['errors'] + log_results['errors']
+        if all_errors:
+            print(f"\n⚠️  Warnings/Errors ({len(all_errors)}):")
+            for error in all_errors:
                 print(f"   • {error}")
         
         print("\n" + "=" * 80)
