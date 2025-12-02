@@ -230,12 +230,57 @@ def _extract_columns_from_migrations(migrations: List[Dict[str, Any]]) -> Set[st
     return targeted
 
 
+def _is_type_compatible(existing_type: str, desired_type: str) -> bool:
+    """
+    Check if existing column type can accommodate the desired type without migration.
+    
+    Returns True if the existing type can hold the desired data (no migration needed).
+    This prevents incompatible type changes like NUMERIC -> BOOLEAN which fail in PostgreSQL.
+    
+    Compatibility rules:
+    - NUMERIC/INTEGER/DECIMAL can hold BOOLEAN data as 0/1
+    - TEXT can hold any type (widest type)
+    - Same types are always compatible
+    """
+    if existing_type == desired_type:
+        return True
+    
+    existing_upper = existing_type.upper()
+    desired_upper = desired_type.upper()
+    
+    # NUMERIC types can hold BOOLEAN data as 0/1
+    if desired_upper == "BOOLEAN" and any(
+        token in existing_upper for token in ("NUMERIC", "DECIMAL", "INT", "BIGINT", "SMALLINT")
+    ):
+        logger.info(
+            "Type compatibility: Existing %s can hold BOOLEAN data as 0/1, skipping migration",
+            existing_type
+        )
+        return True
+    
+    # TEXT can hold any type (widest type)
+    if existing_upper == "TEXT":
+        logger.info(
+            "Type compatibility: Existing TEXT can hold %s data, skipping migration",
+            desired_type
+        )
+        return True
+    
+    # Different types require migration
+    return False
+
+
 def _build_alignment_migrations(
     existing_schema: Dict[str, str],
     desired_schema: Dict[str, str],
     already_targeted: Set[str],
 ) -> List[Dict[str, Any]]:
-    """Generate replace_column migrations for columns whose types need to change."""
+    """
+    Generate replace_column migrations for columns whose types need to change.
+    
+    Only generates migrations when types are incompatible. Compatible types
+    (e.g., NUMERIC can hold BOOLEAN as 0/1) skip migration to avoid casting errors.
+    """
     migrations: List[Dict[str, Any]] = []
     for column, desired_type in (desired_schema or {}).items():
         if not desired_type:
@@ -247,6 +292,17 @@ def _build_alignment_migrations(
             continue
         if column in already_targeted:
             continue
+        
+        # Check type compatibility before generating migration
+        if _is_type_compatible(existing_type, desired_type):
+            logger.info(
+                "AUTO-IMPORT: Skipping migration for column '%s': existing type %s is compatible with desired type %s",
+                column,
+                existing_type,
+                desired_type
+            )
+            continue
+        
         migrations.append(
             {
                 "action": "replace_column",
@@ -336,10 +392,16 @@ def _coerce_boolean_series(series: pd.Series) -> tuple[pd.Series, int]:
 
 def coerce_records_to_expected_types(
     records: List[Dict[str, Any]],
-    expected_types: Dict[str, str]
+    expected_types: Dict[str, str],
+    existing_schema: Optional[Dict[str, str]] = None
 ) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
     Use pandas to coerce the incoming records to the types the LLM determined.
+    
+    When existing_schema is provided, respects existing column types and converts
+    data accordingly. For example, if existing column is NUMERIC and incoming data
+    is BOOLEAN, converts true/false to 1/0 instead of trying to change the column type.
+    
     Returns converted records and a summary of conversions applied.
     """
     if not records or not expected_types:
@@ -359,6 +421,33 @@ def coerce_records_to_expected_types(
             continue
 
         series = df[source_col]
+        
+        # Check if we need to adapt to existing schema type
+        existing_type = None
+        if existing_schema and source_col in existing_schema:
+            existing_type = existing_schema[source_col]
+            
+            # If existing column is NUMERIC and desired is BOOLEAN, convert to 0/1
+            if normalized_type == "BOOLEAN" and any(
+                token in existing_type.upper() for token in ("NUMERIC", "DECIMAL", "INT", "BIGINT", "SMALLINT")
+            ):
+                logger.info(
+                    "AUTO-IMPORT: Converting BOOLEAN data to 0/1 for existing %s column '%s'",
+                    existing_type,
+                    source_col
+                )
+                # Convert boolean-like values to 0/1
+                converted, coerced_count = _coerce_boolean_series(series)
+                # Now convert True/False to 1/0
+                numeric_series = converted.apply(lambda x: 1 if x is True else (0 if x is False else None))
+                df[source_col] = numeric_series
+                column_summary["status"] = "converted_boolean_to_numeric"
+                column_summary["note"] = f"Converted to 0/1 to match existing {existing_type} column"
+                if coerced_count:
+                    column_summary["coerced_values"] = coerced_count
+                conversion_summary[source_col] = column_summary
+                continue
+        
         try:
             if normalized_type in {"DECIMAL", "INTEGER", "BIGINT"}:
                 converted = pd.to_numeric(series, errors="coerce")
@@ -490,11 +579,30 @@ def execute_llm_import_decision(
         instruction_text = llm_decision.get("llm_instruction") or ""
         multi_value_directives = llm_decision.get("multi_value_directives") or []
         require_explicit_multi_value = bool(llm_decision.get("require_explicit_multi_value"))
+        # Load existing table schema early if table exists, so we can pass it to coercion
+        engine = get_engine()
+        table_exists = False
+        existing_table_schema: Dict[str, str] = {}
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = :table_name
+                )
+            """), {"table_name": target_table})
+            table_exists = result.scalar()
+
+        if table_exists:
+            existing_table_schema = _load_existing_table_schema(engine, target_table)
+        
         column_type_enforcement_log: Dict[str, Dict[str, Any]] = {}
         if expected_column_types:
+            # Pass existing schema to enable smart type coercion (e.g., boolean -> 0/1 for numeric columns)
             records, column_type_enforcement_log = coerce_records_to_expected_types(
                 records,
-                expected_column_types
+                expected_column_types,
+                existing_schema=existing_table_schema if table_exists else None
             )
             logger.info("AUTO-IMPORT: Applied expected column types via pandas: %s", column_type_enforcement_log)
         else:
@@ -589,24 +697,9 @@ def execute_llm_import_decision(
         
         logger.info(f"AUTO-IMPORT: Resolved schema types: {db_schema}")
         
-        # IMPORTANT: For merging into existing tables, we need to check if table exists
-        # and use its schema instead of creating a new one
-        engine = get_engine()
-        table_exists = False
-        existing_table_schema: Dict[str, str] = {}
+        # Use the schema we already loaded earlier
         final_table_schema: Dict[str, str] = {}
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = :table_name
-                )
-            """), {"table_name": target_table})
-            table_exists = result.scalar()
-
         if table_exists:
-            existing_table_schema = _load_existing_table_schema(engine, target_table)
             final_table_schema = dict(existing_table_schema)
         else:
             final_table_schema = dict(db_schema)
