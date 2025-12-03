@@ -187,8 +187,10 @@ export const ImportMappingPage: React.FC = () => {
   const [archiveJobDetails, setArchiveJobDetails] = useState<ImportJobInfo | null>(null);
   const [useSharedTable, setUseSharedTable] = useState(false);
   const [sharedTableName, setSharedTableName] = useState('');
-  const [sharedTableMode, setSharedTableMode] = useState<'existing' | 'new'>('existing');
+  const [sharedTableMode, setSharedTableMode] = useState<'existing' | 'new'>('new');
   const [skipFileDuplicateCheck, setSkipFileDuplicateCheck] = useState(false);
+  const [existingTables, setExistingTables] = useState<Array<{ table_name: string; row_count: number }>>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
   const [interactiveSheet, setInteractiveSheet] = useState<string | undefined>(undefined);
@@ -1091,6 +1093,32 @@ export const ImportMappingPage: React.FC = () => {
   useEffect(() => {
     void fetchInstructions();
   }, [fetchInstructions]);
+
+  const fetchExistingTables = useCallback(async () => {
+    setLoadingTables(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.get<{ success: boolean; tables: Array<{ table_name: string; row_count: number }> }>(
+        `${API_URL}/tables`,
+        {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+      if (response.data?.success && Array.isArray(response.data.tables)) {
+        setExistingTables(response.data.tables);
+      }
+    } catch (error) {
+      console.error('Failed to load existing tables', error);
+    } finally {
+      setLoadingTables(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchExistingTables();
+  }, [fetchExistingTables]);
 
   useEffect(() => {
     const loadSheets = async () => {
@@ -2885,25 +2913,46 @@ export const ImportMappingPage: React.FC = () => {
               <div>
                 <Text strong>Use a single table for this import</Text>
                 <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                  Map {isArchive ? 'every file in this archive' : 'this file'} into one table. Enter an existing table name to merge into it or a new name to create it during mapping.
+                  Map {isArchive ? 'every file in this archive' : 'this file'} into one table.
                 </Paragraph>
                 {useSharedTable && (
-                  <Space wrap>
-                    <Input
-                      value={sharedTableName}
-                      placeholder="Target table name"
-                      onChange={(e) => setSharedTableName(e.target.value)}
-                      style={{ minWidth: 240 }}
-                    />
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                     <Select
                       value={sharedTableMode}
-                      style={{ minWidth: 180 }}
-                      onChange={(value) => setSharedTableMode(value as 'existing' | 'new')}
+                      style={{ width: 240 }}
+                      onChange={(value) => {
+                        setSharedTableMode(value as 'existing' | 'new');
+                        setSharedTableName('');
+                      }}
                       options={[
-                        { value: 'existing', label: 'Existing table' },
                         { value: 'new', label: 'Create new table' },
+                        { value: 'existing', label: 'Use existing table' },
                       ]}
                     />
+                    {sharedTableMode === 'new' ? (
+                      <Input
+                        value={sharedTableName}
+                        placeholder="Enter new table name"
+                        onChange={(e) => setSharedTableName(e.target.value)}
+                        style={{ width: 360 }}
+                      />
+                    ) : (
+                      <Select
+                        showSearch
+                        value={sharedTableName || undefined}
+                        placeholder="Select an existing table"
+                        onChange={(value) => setSharedTableName(value)}
+                        loading={loadingTables}
+                        style={{ width: 360 }}
+                        options={existingTables.map((table) => ({
+                          value: table.table_name,
+                          label: `${table.table_name} (${table.row_count.toLocaleString()} rows)`,
+                        }))}
+                        filterOption={(input, option) =>
+                          (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                      />
+                    )}
                   </Space>
                 )}
               </div>
