@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from .session import get_engine
 from .metadata import get_all_table_metadata
+from .models import SYSTEM_COLUMNS
 
 
 def get_database_schema() -> Dict[str, Any]:
@@ -73,7 +74,7 @@ def get_database_schema() -> Dict[str, Any]:
                 import_metadata[row[0]] = latest_meta
 
         for table_name in tables:
-            # Get column information
+            # Get column information (excluding system columns)
             columns_result = conn.execute(text("""
                 SELECT column_name, data_type, is_nullable, column_default
                 FROM information_schema.columns
@@ -84,19 +85,28 @@ def get_database_schema() -> Dict[str, Any]:
 
             columns = []
             for row in columns_result:
-                columns.append({
-                    "name": row[0],
-                    "type": row[1],
-                    "nullable": row[2].upper() == 'YES',
-                    "default": row[3]
-                })
+                col_name = row[0]
+                # Exclude system columns from schema exposed to LLM
+                if col_name not in SYSTEM_COLUMNS:
+                    columns.append({
+                        "name": col_name,
+                        "type": row[1],
+                        "nullable": row[2].upper() == 'YES',
+                        "default": row[3]
+                    })
 
-            # Get sample data (first 3 rows for context)
+            # Get sample data (first 3 rows for context, excluding system columns)
             try:
-                sample_result = conn.execute(text(f"""
-                    SELECT * FROM "{table_name}" LIMIT 3
-                """))
-                sample_data = [dict(zip(sample_result.keys(), row)) for row in sample_result]
+                # Build column list excluding system columns
+                user_columns = [col['name'] for col in columns]
+                if user_columns:
+                    columns_sql = ', '.join([f'"{col}"' for col in user_columns])
+                    sample_result = conn.execute(text(f"""
+                        SELECT {columns_sql} FROM "{table_name}" LIMIT 3
+                    """))
+                    sample_data = [dict(zip(sample_result.keys(), row)) for row in sample_result]
+                else:
+                    sample_data = []
             except Exception:
                 sample_data = []
 
@@ -114,7 +124,7 @@ def get_database_schema() -> Dict[str, Any]:
             if table_name in import_metadata:
                 schema_info["tables"][table_name]["latest_import_metadata"] = import_metadata[table_name]
 
-        # Get foreign key relationships
+        # Get foreign key relationships (excluding system columns)
         fk_result = conn.execute(text("""
             SELECT
                 tc.table_name,
@@ -133,12 +143,15 @@ def get_database_schema() -> Dict[str, Any]:
         """))
 
         for row in fk_result:
-            schema_info["relationships"].append({
-                "table": row[0],
-                "column": row[1],
-                "references_table": row[2],
-                "references_column": row[3]
-            })
+            column_name = row[1]
+            # Exclude relationships involving system columns
+            if column_name not in SYSTEM_COLUMNS:
+                schema_info["relationships"].append({
+                    "table": row[0],
+                    "column": column_name,
+                    "references_table": row[2],
+                    "references_column": row[3]
+                })
     
     # Get table metadata (purposes, domains, etc.)
     try:
