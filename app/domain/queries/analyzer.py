@@ -1791,6 +1791,12 @@ You MUST call the make_import_decision tool before providing your final response
    - Create separate rows for each value (one row per email, one row per phone, etc.)
    - Ensure the target table has only ONE column for that field type
    
+   **IMPORTANT - Column Selection Rules:**
+   1. **Use ONLY the columns the user explicitly mentions** - Do NOT auto-expand to numbered siblings
+   2. If user says "Primary Email and Personal Email", use EXACTLY those two columns
+   3. Do NOT include "Email 1", "Email 2", etc. unless the user specifically mentions them
+   4. The `source_columns` list in `explode_columns` must match the user's instruction EXACTLY
+   
    **Example - Consolidating Multiple Email Columns:**
    User says: "Keep only primary and personal email. If row has two emails, create new entry with second email. Create only one email column."
    
@@ -1799,7 +1805,7 @@ You MUST call the make_import_decision tool before providing your final response
    row_transformations: [
      {
        "type": "explode_columns",
-       "source_columns": ["Primary Email", "Personal Email"],
+       "source_columns": ["Primary Email", "Personal Email"],  // ONLY these two - no auto-expansion!
        "target_column": "email",
        "drop_source_columns": true,
        "dedupe_values": true,
@@ -1810,8 +1816,9 @@ You MUST call the make_import_decision tool before providing your final response
      "Primary Email": "email",
      "Personal Email": "email"
    }
-   db_schema: {
-     "email": "TEXT"
+   expected_column_types: {
+     "Primary Email": "TEXT",
+     "Personal Email": "TEXT"
    }
    ```
    
@@ -1820,19 +1827,46 @@ You MUST call the make_import_decision tool before providing your final response
    - For rows with both Primary and Personal email, create TWO separate rows
    - Each row will have only ONE email value
    - Duplicate email values will be removed
+   - Other email columns (Email 1, Email 2, etc.) will be IGNORED as the user didn't mention them
    
    **More Examples:**
-   • Multiple email columns → single email column with row duplication:
-     `{"type": "explode_columns", "source_columns": ["email_1", "email_2", "email_3"], "target_column": "email", "drop_source_columns": true}`
    
-   • Multiple phone columns → single phone column with row duplication:
-     `{"type": "explode_columns", "source_columns": ["Primary Phone", "Personal Phone", "Work Phone"], "target_column": "phone", "drop_source_columns": true}`
+   • User says "Keep email_1 and email_2 only":
+     ```
+     row_transformations: [
+       {
+         "type": "explode_columns",
+         "source_columns": ["email_1", "email_2"],  // ONLY these two
+         "target_column": "email",
+         "drop_source_columns": true,
+         "dedupe_values": true
+       }
+     ]
+     ```
+   
+   • User says "Consolidate all phone columns":
+     ```
+     row_transformations: [
+       {
+         "type": "explode_columns",
+         "source_columns": ["Primary Phone", "Personal Phone", "Work Phone", "Mobile Phone"],  // All phone columns
+         "target_column": "phone",
+         "drop_source_columns": true,
+         "dedupe_values": true
+       }
+     ]
+     ```
    
    • Filter rows to keep only those with valid emails:
      `{"type": "filter_rows", "include_regex": ".+@.+", "columns": ["email"]}`
    
    • Clean phone numbers with regex:
      `{"type": "regex_replace", "pattern": "[^0-9]", "replacement": "", "columns": ["phone_raw"]}`
+   
+   **CRITICAL REMINDER:**
+   - The system will NOT auto-expand your column selections
+   - If you specify ["Primary Email", "Personal Email"], it will use ONLY those two columns
+   - This ensures user intent is respected and prevents unwanted record multiplication
 
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:

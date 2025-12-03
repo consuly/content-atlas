@@ -519,3 +519,89 @@ async def get_table_lineage(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve table lineage: {str(e)}")
+
+
+@router.delete("/{table_name}")
+async def delete_table(
+    table_name: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a user-created table and clean up all related records.
+    
+    This endpoint:
+    1. Drops the table from the database
+    2. Cleans up import_history records
+    3. Cleans up file_imports records
+    4. Resets uploaded_files status to 'uploaded' (unmapped)
+    
+    Parameters:
+    - table_name: Name of the table to delete
+    
+    Returns:
+    - Success status and cleanup summary
+    """
+    try:
+        # Validate table name and prevent deletion of system tables
+        if is_reserved_system_table(table_name):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot delete system table '{table_name}'. This table is protected."
+            )
+        
+        engine = get_engine()
+        
+        with engine.begin() as conn:
+            # Check if table exists
+            table_check = conn.execute(text("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = :table_name
+            """), {"table_name": table_name})
+            
+            if not table_check.fetchone():
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+            
+            # Drop the table (CASCADE will handle foreign key constraints)
+            conn.execute(text(f'DROP TABLE "{table_name}" CASCADE'))
+            
+            # Clean up import_history records
+            import_history_result = conn.execute(text("""
+                DELETE FROM import_history
+                WHERE table_name = :table_name
+            """), {"table_name": table_name})
+            import_history_deleted = import_history_result.rowcount
+            
+            # Clean up file_imports records
+            file_imports_result = conn.execute(text("""
+                DELETE FROM file_imports
+                WHERE table_name = :table_name
+            """), {"table_name": table_name})
+            file_imports_deleted = file_imports_result.rowcount
+            
+            # Reset uploaded_files status to 'uploaded' (unmapped state)
+            uploaded_files_result = conn.execute(text("""
+                UPDATE uploaded_files
+                SET status = 'uploaded',
+                    mapped_table_name = NULL,
+                    mapped_date = NULL,
+                    mapped_rows = NULL,
+                    updated_at = NOW()
+                WHERE mapped_table_name = :table_name
+            """), {"table_name": table_name})
+            uploaded_files_reset = uploaded_files_result.rowcount
+        
+        return {
+            "success": True,
+            "table_name": table_name,
+            "message": f"Table '{table_name}' deleted successfully",
+            "cleanup_summary": {
+                "import_history_deleted": import_history_deleted,
+                "file_imports_deleted": file_imports_deleted,
+                "uploaded_files_reset": uploaded_files_reset
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete table: {str(e)}")
