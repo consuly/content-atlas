@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
+from dataclasses import dataclass, field
 import logging
 import re
 import json
@@ -9,22 +10,53 @@ from app.api.schemas.shared import MappingConfig
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class TransformationStats:
+    """Statistics about row-level transformations."""
+    input_rows: int = 0
+    output_rows: int = 0
+    rows_with_no_expansion: int = 0
+    rows_dropped_by_filters: int = 0
+    source_rows_with_no_output: List[int] = field(default_factory=list)
+    
+    @property
+    def expansion_ratio(self) -> float:
+        """Calculate the expansion ratio (output/input)."""
+        return self.output_rows / self.input_rows if self.input_rows > 0 else 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert stats to dictionary for serialization."""
+        return {
+            "input_rows": self.input_rows,
+            "output_rows": self.output_rows,
+            "rows_with_no_expansion": self.rows_with_no_expansion,
+            "rows_dropped_by_filters": self.rows_dropped_by_filters,
+            "expansion_ratio": self.expansion_ratio,
+            "source_rows_with_no_output": self.source_rows_with_no_output[:100],  # Limit to first 100
+        }
+
+
 def apply_row_transformations(
     records: List[Dict[str, Any]],
     mapping_config: MappingConfig,
     *,
     row_offset: int = 0,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], TransformationStats]:
     """
     Apply row-level transformations (pandas-backed) before column mapping.
 
-    Returns the transformed records and any structured errors encountered while
-    preparing the rows.
+    Returns the transformed records, any structured errors encountered while
+    preparing the rows, and statistics about the transformations.
     """
     rules = mapping_config.rules or {}
     transformations = rules.get("row_transformations") or []
+    
+    # Initialize stats
+    stats = TransformationStats(input_rows=len(records))
+    
     if not transformations or not records:
-        return records, []
+        stats.output_rows = len(records)
+        return records, [], stats
 
     transformed = records
     all_errors: List[Dict[str, Any]] = []
@@ -83,12 +115,17 @@ def apply_row_transformations(
                     }
                 )
                 continue
-            transformed, errors = _apply_explode_columns(
+            transformed, errors, explode_stats = _apply_explode_columns(
                 transformed,
                 transformation,
                 row_offset=row_offset,
             )
             all_errors.extend(errors)
+            
+            # Accumulate expansion stats from explode_columns
+            if explode_stats.get("rows_with_no_expansion", 0) > 0:
+                stats.rows_with_no_expansion += explode_stats["rows_with_no_expansion"]
+                stats.source_rows_with_no_output.extend(explode_stats.get("source_rows_with_no_output", []))
             if target:
                 exploded_targets.add(target)
             if drop_source and sources_declared:
@@ -144,7 +181,10 @@ def apply_row_transformations(
                 }
             )
 
-    return transformed, all_errors
+    # Update final stats
+    stats.output_rows = len(transformed)
+    
+    return transformed, all_errors, stats
 
 
 def _apply_explode_columns(
@@ -152,12 +192,20 @@ def _apply_explode_columns(
     transformation: Dict[str, Any],
     *,
     row_offset: int,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     """
     Duplicate each row once per populated source column and place the value
     into a single target column.
+    
+    Returns transformed records, errors, and expansion stats.
     """
     errors: List[Dict[str, Any]] = []
+    expansion_stats = {
+        "input_rows": len(records),
+        "output_rows": 0,
+        "rows_with_no_expansion": 0,
+        "source_rows_with_no_output": []
+    }
     source_columns = transformation.get("source_columns") or transformation.get("columns") or []
     target_column = (
         transformation.get("target_column")
@@ -178,11 +226,11 @@ def _apply_explode_columns(
                 "message": "explode_columns requires source_columns and target_column",
             }
         )
-        return records, errors
+        return records, errors, expansion_stats
 
     df = pd.DataFrame.from_records(records)
     if df.empty:
-        return [], errors
+        return [], errors, expansion_stats
 
     if "_source_record_number" not in df.columns:
         df["_source_record_number"] = [row_offset + idx + 1 for idx in range(len(df))]
@@ -216,8 +264,31 @@ def _apply_explode_columns(
     # Drop NA values manually because dropna cannot be combined with future_stack=True.
     stacked = value_df.stack(future_stack=True).reset_index()
     stacked = stacked.dropna(subset=[0])
+    
+    # Track which source rows produced output
+    rows_with_output = set(stacked["level_0"].tolist()) if not stacked.empty else set()
+    all_row_indices = set(range(len(df)))
+    rows_with_no_output = all_row_indices - rows_with_output
+    
+    # Update expansion stats
+    expansion_stats["rows_with_no_expansion"] = len(rows_with_no_output)
+    expansion_stats["source_rows_with_no_output"] = [
+        row_offset + idx + 1 for idx in sorted(rows_with_no_output)
+    ]
+    
+    if rows_with_no_output:
+        logger.warning(
+            f"explode_columns: {len(rows_with_no_output)} source rows produced no output "
+            f"(all source columns empty or null). Rows: {expansion_stats['source_rows_with_no_output'][:10]}"
+        )
+    
     if stacked.empty:
-        return (df.drop(columns=source_columns, errors="ignore").to_dict("records") if include_original or keep_empty_rows else []), errors
+        expansion_stats["output_rows"] = len(df) if (include_original or keep_empty_rows) else 0
+        return (
+            df.drop(columns=source_columns, errors="ignore").to_dict("records") if include_original or keep_empty_rows else [],
+            errors,
+            expansion_stats
+        )
 
     stacked.rename(columns={"level_0": "_row_index", "level_1": "source_column", 0: target_column}, inplace=True)
     if strip_whitespace:
@@ -250,7 +321,9 @@ def _apply_explode_columns(
         empty_rows = [row for idx, row in enumerate(original_records) if idx not in source_row_indices]
         exploded_records = empty_rows + exploded_records
 
-    return exploded_records, errors
+    expansion_stats["output_rows"] = len(exploded_records)
+    
+    return exploded_records, errors, expansion_stats
 
 
 def _apply_explode_list_rows(
@@ -675,7 +748,7 @@ def _apply_conditional_transform(
             continue
         a_type = action.get("type")
         if a_type == "explode_columns":
-            transformed_matches, new_errors = _apply_explode_columns(
+            transformed_matches, new_errors, _ = _apply_explode_columns(
                 transformed_matches,
                 action,
                 row_offset=row_offset,

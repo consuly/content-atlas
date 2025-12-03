@@ -897,11 +897,18 @@ def _execute_streaming_csv_import(
 
             preprocess_errors: List[Dict[str, Any]] = []
             # Apply pandas-backed row transforms before dedupe/mapping (e.g., explode email columns)
-            chunk_records, preprocess_errors = apply_row_transformations(
+            chunk_records, preprocess_errors, chunk_transformation_stats = apply_row_transformations(
                 chunk_records,
                 mapping_config,
                 row_offset=chunk_start_row - 1,
             )
+            
+            # Log transformation warnings if rows produced no output
+            if chunk_transformation_stats and chunk_transformation_stats.rows_with_no_expansion > 0:
+                logger.warning(
+                    f"Chunk {chunk_num}: {chunk_transformation_stats.rows_with_no_expansion} source rows "
+                    f"produced no output during transformation (expansion ratio: {chunk_transformation_stats.expansion_ratio:.2f})"
+                )
 
             # Optional in-file dedupe across the entire stream (after preprocessing)
             chunk_records, intra_chunk_skipped = _dedupe_records_streaming_chunk(
@@ -1806,12 +1813,21 @@ def execute_data_import(
             logger.warning("Row count check warning: %s", row_count_warning)
 
         preprocess_errors: List[Dict[str, Any]] = []
+        transformation_stats = None
         if not pre_mapped:
-            records, preprocess_errors = apply_row_transformations(
+            records, preprocess_errors, transformation_stats = apply_row_transformations(
                 records,
                 mapping_config,
                 row_offset=0,
             )
+            
+            # Log transformation warnings if rows produced no output
+            if transformation_stats and transformation_stats.rows_with_no_expansion > 0:
+                logger.warning(
+                    f"Row transformations: {transformation_stats.rows_with_no_expansion} source rows "
+                    f"produced no output (expansion ratio: {transformation_stats.expansion_ratio:.2f}). "
+                    f"Affected rows: {transformation_stats.source_rows_with_no_output[:10]}"
+                )
 
         # Optional quick in-file dedupe before mapping
         records, intra_file_duplicates_skipped = _dedupe_records_in_memory(
@@ -2233,6 +2249,8 @@ def execute_data_import(
             metadata_payload["row_count_warning"] = row_count_warning
         if uniqueness_adjustments:
             metadata_payload["uniqueness_column_adjustments"] = uniqueness_adjustments
+        if transformation_stats:
+            metadata_payload["transformation_stats"] = transformation_stats.to_dict()
 
         duplicate_rows: List[Dict[str, Any]] = []
         duplicate_total = duplicates_skipped
