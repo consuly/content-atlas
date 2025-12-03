@@ -419,10 +419,19 @@ def _apply_regex_replace(
     if outputs:
         if not match:
             if skip_on_no_match:
+                # Preserve original value when skip_on_no_match is True
+                destination[target_column] = value
                 return
+            # When no match and skip_on_no_match is False, preserve original value instead of setting to None
+            # This prevents data loss when regex patterns don't match
+            logger.debug(
+                "regex_replace: Pattern '%s' did not match value '%s' in column '%s'. Preserving original value.",
+                pattern, text[:50], source_column
+            )
+            destination[target_column] = value
             for output in outputs:
                 name = output.get("name") or output.get("field") or output.get("column")
-                if name:
+                if name and name != target_column:
                     destination[name] = None
             return
 
@@ -444,7 +453,13 @@ def _apply_regex_replace(
                 destination[name] = output.get("default")
         return
 
-    if not match and skip_on_no_match:
+    if not match:
+        if skip_on_no_match:
+            # Preserve original value
+            destination[target_column] = value
+        else:
+            # Still apply replacement even if no match (will return original text)
+            destination[target_column] = compiled.sub(replacement, text)
         return
 
     destination[target_column] = compiled.sub(replacement, text)

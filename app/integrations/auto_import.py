@@ -831,6 +831,12 @@ def execute_llm_import_decision(
         logger.info(f"  Mappings: {mapping_config.mappings}")
         logger.info(f"  Unique Columns: {mapping_config.unique_columns}")
         
+        # Log transformation details for debugging
+        if column_transformations:
+            logger.info(f"  Column Transformations: {json.dumps(column_transformations, indent=2)}")
+        if row_transformations:
+            logger.info(f"  Row Transformations: {json.dumps(row_transformations, indent=2)}")
+        
         # Prepare metadata info
         metadata_info = {
             "purpose_short": llm_decision.get("purpose_short", "Data imported from file"),
