@@ -172,6 +172,13 @@ def apply_row_transformations(
                 row_offset=row_offset,
             )
             all_errors.extend(errors)
+        elif t_type == "require_any_of":
+            transformed, errors = _apply_require_any_of(
+                transformed,
+                transformation,
+                row_offset=row_offset,
+            )
+            all_errors.extend(errors)
         else:
             all_errors.append(
                 {
@@ -419,6 +426,88 @@ def _apply_drop_columns(
     df = pd.DataFrame.from_records(records)
     df = df.drop(columns=columns, errors="ignore")
     return df.to_dict("records"), errors
+
+
+def _apply_require_any_of(
+    records: List[Dict[str, Any]],
+    transformation: Dict[str, Any],
+    *,
+    row_offset: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Keep only rows where at least one of the specified columns has a non-empty value.
+    
+    This is useful for OR-based row retention logic, such as:
+    "Keep rows that have either an email OR a phone number"
+    
+    Args:
+        records: Input records
+        transformation: Must contain "columns" - list of column names to check
+        row_offset: Starting row number for error reporting
+        
+    Returns:
+        Filtered records and any errors
+    """
+    errors: List[Dict[str, Any]] = []
+    columns = transformation.get("columns") or transformation.get("source_columns") or []
+    
+    if not columns:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": "require_any_of requires columns parameter",
+            }
+        )
+        return records, errors
+    
+    df = pd.DataFrame.from_records(records)
+    if df.empty:
+        return [], errors
+    
+    if "_source_record_number" not in df.columns:
+        df["_source_record_number"] = [row_offset + idx + 1 for idx in range(len(df))]
+    
+    # Check which columns actually exist
+    existing_cols = [col for col in columns if col in df.columns]
+    missing_cols = [col for col in columns if col not in df.columns]
+    
+    if not existing_cols:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": f"require_any_of: none of the specified columns exist ({columns})",
+            }
+        )
+        return records, errors
+    
+    if missing_cols:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": f"require_any_of: ignoring missing columns: {missing_cols}",
+            }
+        )
+    
+    # Create a mask: True if ANY of the columns has a non-empty value
+    def _has_value(series: pd.Series) -> pd.Series:
+        """Check if series has non-null, non-empty values"""
+        return series.notna() & (series.astype(str).str.strip() != "")
+    
+    # Check each column and combine with OR logic
+    has_any_value = pd.Series([False] * len(df))
+    for col in existing_cols:
+        has_any_value = has_any_value | _has_value(df[col])
+    
+    # Filter to keep only rows with at least one value
+    filtered = df.loc[has_any_value].copy()
+    
+    rows_dropped = len(df) - len(filtered)
+    if rows_dropped > 0:
+        logger.info(
+            f"require_any_of: Dropped {rows_dropped} rows where all columns {existing_cols} were empty"
+        )
+    
+    return _df_to_records(filtered), errors
 
 
 def _apply_filter_rows(

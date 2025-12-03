@@ -1094,7 +1094,7 @@ def _normalize_row_transformations_for_decision(
 ) -> List[Dict[str, Any]]:
     """
     Sanitize row-level transformations before storing on the LLM decision.
-    Supports explode_columns, filter_rows, regex_replace, and conditional_transform.
+    Supports explode_columns, filter_rows, regex_replace, conditional_transform, and require_any_of.
     """
     if not transformations:
         return []
@@ -1223,6 +1223,18 @@ def _normalize_row_transformations_for_decision(
                     "strip_whitespace": entry.get("strip_whitespace", True),
                     "skip_nulls": entry.get("skip_nulls", True),
                     "null_replacement": entry.get("null_replacement", ""),
+                }
+            )
+            continue
+        if t_type == "require_any_of":
+            columns = entry.get("columns") or entry.get("source_columns") or []
+            if not columns:
+                logger.debug("Skipping require_any_of without columns: %s", raw)
+                continue
+            normalized.append(
+                {
+                    "type": "require_any_of",
+                    "columns": columns,
                 }
             )
             continue
