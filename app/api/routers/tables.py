@@ -327,9 +327,10 @@ async def export_table(
                         if not rows:
                             break
                         for row in rows:
+                            # Convert row to list using integer indices
                             writer.writerow([
-                                "" if row[col] is None else row[col]
-                                for col in user_columns
+                                "" if row[i] is None else row[i]
+                                for i in range(len(user_columns))
                             ])
                         yield buffer.getvalue()
                         buffer.seek(0)
