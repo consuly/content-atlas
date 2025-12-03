@@ -720,6 +720,10 @@ def _apply_regex_replace(
         if isinstance(value, float) and pd.isna(value):
             return None
         text = str(value)
+        match = compiled.search(text)
+        if not match:
+            # Preserve original value when no match
+            return value
         return compiled.sub(replacement, text)
 
     if outputs:
@@ -727,7 +731,18 @@ def _apply_regex_replace(
         for col in columns:
             if col not in df.columns:
                 df[col] = None
+        
+        # Track match statistics for logging
+        match_counts = {col: 0 for col in columns}
+        total_values = {col: 0 for col in columns}
+        
         matches = df[columns].map(lambda v: compiled.search(str(v)) if v is not None else None)
+        
+        # Count matches for logging
+        for col in columns:
+            if col in df.columns:
+                total_values[col] = df[col].notna().sum()
+                match_counts[col] = matches[col].notna().sum()
 
         for output in outputs:
             if not isinstance(output, dict):
@@ -746,11 +761,36 @@ def _apply_regex_replace(
                             return m.group(group_id) if group_id is not None else m.group(0)
                         except Exception:
                             return default
-                return None if not skip_on_no_match else row.get(name)
+                # No match found - preserve original value from first column if skip_on_no_match
+                if skip_on_no_match and columns:
+                    return row.get(columns[0])
+                return None
             df[name] = df.apply(_extract_match, axis=1)
+        
+        # Log match statistics
+        for col in columns:
+            if match_counts[col] == 0 and total_values[col] > 0:
+                sample_value = df[col].dropna().iloc[0] if not df[col].dropna().empty else "N/A"
+                logger.warning(
+                    f"regex_replace: Pattern '{pattern}' matched 0/{total_values[col]} values in column '{col}'. "
+                    f"Sample value: '{str(sample_value)[:50]}'. Original values preserved."
+                )
+            elif match_counts[col] < total_values[col]:
+                logger.info(
+                    f"regex_replace: Pattern '{pattern}' matched {match_counts[col]}/{total_values[col]} values in column '{col}'"
+                )
     else:
         for col in columns:
+            original_values = df[col].copy()
             df[col] = df[col].map(_replace_value)
+            
+            # Log if no values were changed (indicating no matches)
+            if not df[col].isna().all() and (df[col] == original_values).all():
+                sample_value = original_values.dropna().iloc[0] if not original_values.dropna().empty else "N/A"
+                logger.warning(
+                    f"regex_replace: Pattern '{pattern}' matched 0 values in column '{col}'. "
+                    f"Sample value: '{str(sample_value)[:50]}'. Original values preserved."
+                )
 
     return _df_to_records(df), errors
 
