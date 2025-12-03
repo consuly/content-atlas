@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router';
-import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Modal, Checkbox, Tag } from 'antd';
+import { App as AntdApp, Card, Table, Tabs, Badge, Button, Space, Checkbox, Tag } from 'antd';
 import { ReloadOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { FileUpload } from '../../components/file-upload';
@@ -56,7 +56,7 @@ export const ImportPage: React.FC = () => {
     needs_mapping: 0,
   });
   const [importSummaryCache, setImportSummaryCache] = useState<Record<string, ImportSummary>>({});
-  const { message: messageApi } = AntdApp.useApp();
+  const { message: messageApi, modal } = AntdApp.useApp();
 
   const normalizeJobStatus = useCallback(
     (status?: string | null) => (status || '').toLowerCase().trim(),
@@ -464,7 +464,7 @@ export const ImportPage: React.FC = () => {
 
   const confirmSingleDelete = (file: UploadedFile) => {
     let deleteTableData = false;
-    Modal.confirm({
+    modal.confirm({
       title: 'Delete file',
       content: (
         <div>
@@ -502,7 +502,7 @@ export const ImportPage: React.FC = () => {
     );
 
     let deleteTableData = false;
-    Modal.confirm({
+    modal.confirm({
       title: `Delete ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}`,
       content: (
         <div>

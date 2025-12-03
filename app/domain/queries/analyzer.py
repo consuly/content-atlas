@@ -1783,10 +1783,56 @@ You MUST call the make_import_decision tool before providing your final response
      • `{"type": "compose_international_phone", "target_column": "phone_e164", "components": [{"role": "country_code", "column": "country_code"}, {"role": "area_code", "column": "area_code"}, {"role": "subscriber_number", "column": "phone_number"}]}`
      • `{"type": "split_international_phone", "source_column": "intl_phone", "outputs": [{"name": "country_code", "role": "country_code"}, {"name": "subscriber_number", "role": "subscriber_number"}]}`
    - If no preprocessing is needed, pass an empty list (`[]`). Do **not** omit the argument.
-6. **row_transformations**: When rows must be duplicated/filtered/cleaned before mapping (e.g., split multiple email columns into entries, drop rows missing valid emails, regex-clean phone numbers), provide explicit instructions. Examples:
-   • `{"type": "explode_columns", "source_columns": ["email_1", "email_2", "email_3"], "target_column": "email", "drop_source_columns": true}`
-   • `{"type": "filter_rows", "include_regex": ".+@.+", "columns": ["email"]}`
-   • `{"type": "regex_replace", "pattern": "[^0-9]", "replacement": "", "columns": ["phone_raw"]}`
+6. **row_transformations**: When rows must be duplicated/filtered/cleaned before mapping (e.g., split multiple email columns into entries, drop rows missing valid emails, regex-clean phone numbers), provide explicit instructions.
+   
+   **CRITICAL - Multi-Column Consolidation Pattern:**
+   When the user instruction asks to "create new entries/rows" or "keep only one [field] per row" or "create a single column" from multiple source columns, you MUST use the `explode_columns` transformation. This is the ONLY way to:
+   - Consolidate multiple columns (e.g., "Primary Email", "Personal Email") into a single target column
+   - Create separate rows for each value (one row per email, one row per phone, etc.)
+   - Ensure the target table has only ONE column for that field type
+   
+   **Example - Consolidating Multiple Email Columns:**
+   User says: "Keep only primary and personal email. If row has two emails, create new entry with second email. Create only one email column."
+   
+   You MUST generate:
+   ```
+   row_transformations: [
+     {
+       "type": "explode_columns",
+       "source_columns": ["Primary Email", "Personal Email"],
+       "target_column": "email",
+       "drop_source_columns": true,
+       "dedupe_values": true,
+       "case_insensitive_dedupe": true
+     }
+   ]
+   column_mapping: {
+     "Primary Email": "email",
+     "Personal Email": "email"
+   }
+   db_schema: {
+     "email": "TEXT"
+   }
+   ```
+   
+   This will:
+   - Create ONE "email" column in the target table (not two)
+   - For rows with both Primary and Personal email, create TWO separate rows
+   - Each row will have only ONE email value
+   - Duplicate email values will be removed
+   
+   **More Examples:**
+   • Multiple email columns → single email column with row duplication:
+     `{"type": "explode_columns", "source_columns": ["email_1", "email_2", "email_3"], "target_column": "email", "drop_source_columns": true}`
+   
+   • Multiple phone columns → single phone column with row duplication:
+     `{"type": "explode_columns", "source_columns": ["Primary Phone", "Personal Phone", "Work Phone"], "target_column": "phone", "drop_source_columns": true}`
+   
+   • Filter rows to keep only those with valid emails:
+     `{"type": "filter_rows", "include_regex": ".+@.+", "columns": ["email"]}`
+   
+   • Clean phone numbers with regex:
+     `{"type": "regex_replace", "pattern": "[^0-9]", "replacement": "", "columns": ["phone_raw"]}`
 
 Output Format:
 After calling make_import_decision, provide a structured recommendation including:
