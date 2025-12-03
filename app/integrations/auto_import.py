@@ -644,6 +644,10 @@ def execute_llm_import_decision(
         if row_transformations:
             rules_payload["row_transformations"] = row_transformations
         
+        # Extract skip_duplicate_check flag from LLM decision
+        # This controls row-level duplicate detection, not file-level
+        skip_duplicate_check = bool(llm_decision.get("skip_file_duplicate_check", False))
+        
         # Build db_schema prioritizing LLM expectations and falling back to heuristics where absent
         import re
         db_schema: Dict[str, str] = {}
@@ -797,9 +801,10 @@ def execute_llm_import_decision(
                 rules=rules_payload,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
-                    enabled=True,
-                    check_file_level=True,
-                    allow_duplicates=False,
+                    enabled=not skip_duplicate_check,  # Disable duplicate checking entirely if flag is set
+                    check_file_level=True,  # Always check file-level duplicates
+                    allow_file_level_retry=False,
+                    allow_duplicates=skip_duplicate_check,  # Allow row duplicates if flag is set
                     uniqueness_columns=effective_unique_columns  # This is what duplicate checking actually uses
                 )
             )
@@ -813,9 +818,10 @@ def execute_llm_import_decision(
                 rules=rules_payload,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
-                    enabled=True,
-                    check_file_level=True,
-                    allow_duplicates=False,
+                    enabled=not skip_duplicate_check,  # Disable duplicate checking entirely if flag is set
+                    check_file_level=True,  # Always check file-level duplicates
+                    allow_file_level_retry=False,
+                    allow_duplicates=skip_duplicate_check,  # Allow row duplicates if flag is set
                     uniqueness_columns=effective_unique_columns  # This is what duplicate checking actually uses
                 )
             )

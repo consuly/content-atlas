@@ -188,6 +188,7 @@ export const ImportMappingPage: React.FC = () => {
   const [useSharedTable, setUseSharedTable] = useState(false);
   const [sharedTableName, setSharedTableName] = useState('');
   const [sharedTableMode, setSharedTableMode] = useState<'existing' | 'new'>('existing');
+  const [skipFileDuplicateCheck, setSkipFileDuplicateCheck] = useState(false);
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
   const [interactiveSheet, setInteractiveSheet] = useState<string | undefined>(undefined);
@@ -1351,6 +1352,9 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('target_table_name', sharedTableName.trim());
       formData.append('target_table_mode', sharedTableMode);
     }
+    if (skipFileDuplicateCheck) {
+      formData.append('skip_file_duplicate_check', 'true');
+    }
   };
 
   const appendInstructionFormData = (formData: FormData) => {
@@ -1550,6 +1554,9 @@ export const ImportMappingPage: React.FC = () => {
       formData.append('analysis_mode', 'auto_always');
       formData.append('conflict_resolution', 'llm_decide');
       formData.append('max_iterations', '5');
+      if (skipFileDuplicateCheck) {
+        formData.append('skip_file_duplicate_check', 'true');
+      }
       appendSharedTableFormData(formData);
       appendInstructionFormData(formData);
 
@@ -2861,6 +2868,17 @@ export const ImportMappingPage: React.FC = () => {
               />
             </div>
           )}
+            <div>
+            <Space align="start">
+              <Switch checked={skipFileDuplicateCheck} onChange={(checked) => setSkipFileDuplicateCheck(checked)} />
+              <div>
+                <Text strong>Skip duplicate row detection</Text>
+                <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                  By default, duplicate rows are detected and skipped based on unique columns. Enable this to import all rows without checking for duplicates.
+                </Paragraph>
+              </div>
+            </Space>
+          </div>
           <div>
             <Space align="start">
               <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
