@@ -356,6 +356,7 @@ class AnalysisMode(str, Enum):
     MANUAL = "manual"
     AUTO_HIGH_CONFIDENCE = "auto_high"
     AUTO_ALWAYS = "auto_always"
+    INTERACTIVE = "interactive"
 
 
 class ConflictResolutionMode(str, Enum):
