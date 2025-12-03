@@ -935,74 +935,8 @@ def _canonicalize_clients_list_mapping(
     return dict(column_mapping)
 
 
-def _find_numbered_siblings(source_column: str, available_columns: Set[str]) -> List[str]:
-    """
-    Detect sibling columns that share a base name with numeric suffixes.
-    Example: Email 1, Email 2, Email_3.
-    """
-    def _base(name: str) -> str:
-        return re.sub(r"[\s_-]*\d+$", "", name).strip().lower()
-
-    base = _base(source_column)
-    if not base:
-        return []
-
-    def _suffix_int(name: str) -> int:
-        m = re.search(r"(\\d+)$", name)
-        try:
-            return int(m.group(1)) if m else 0
-        except Exception:
-            return 0
-
-    candidates: List[tuple[int, str]] = []
-    for col in available_columns:
-        if _base(col) != base:
-            continue
-        candidates.append((_suffix_int(col), col))
-
-    candidates.sort(key=lambda pair: pair[0])
-    return [col for _, col in candidates]
 
 
-def _detect_delimited_values(records: List[Dict[str, Any]], column: str) -> Dict[str, Any]:
-    """
-    Look for comma/semicolon-delimited or JSON-array values to infer multi-value columns.
-    """
-    max_items = 1
-    saw_multi = False
-    email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+", re.IGNORECASE)
-    for record in records[:50]:
-        value = record.get(column)
-        if value is None:
-            continue
-        if isinstance(value, list):
-            max_items = max(max_items, len(value))
-            saw_multi = saw_multi or len(value) > 1
-            continue
-        if not isinstance(value, str):
-            continue
-        text = value.strip()
-        if not text:
-            continue
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                max_items = max(max_items, len(parsed))
-                saw_multi = saw_multi or len(parsed) > 1
-                continue
-        except Exception:
-            pass
-        # Count email-like tokens even when separated by whitespace or uncommon delimiters.
-        email_tokens = email_pattern.findall(text)
-        if len(email_tokens) > 1:
-            max_items = max(max_items, len(email_tokens))
-            saw_multi = True
-            continue
-        parts = [p.strip() for p in re.split(r"[;,]", text) if p.strip()]
-        if len(parts) > 1:
-            max_items = max(max_items, len(parts))
-            saw_multi = True
-    return {"max_items": max_items, "saw_multi": saw_multi}
 
 
 def _resolve_delimiter(delimiter: Optional[str]) -> str:
@@ -1096,285 +1030,96 @@ def _synthesize_multi_value_rules(
     require_explicit_multi_value: bool = True,
 ) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    If the user instruction asks for multi-value rows to be split/one-per-row (or we
-    detect obvious numbered sources), synthesize column/row transforms and rewrite the
-    mapping to point to the exploded column so mapper.py sees the right source.
+    Process multi-value transformation rules by trusting the LLM's explicit directives.
     
-    NOTE: As of the fix for record multiplication issues, this function now defaults to
-    require_explicit_multi_value=True to prevent automatic explosion of numbered columns
-    (like Email 1, Email 2, etc.) which was causing massive record multiplication.
+    This function has been simplified to ONLY apply explicit directives provided by the LLM.
+    It no longer performs automatic sibling detection or pattern-based explosion, which was
+    causing incorrect record multiplication.
+    
+    The LLM has full context of:
+    - User instructions
+    - Available columns
+    - Data samples
+    
+    Therefore, we trust the LLM's decision and execute it as-is without "smart" modifications.
+    
     Multi-value explosion will only occur when:
     1. Explicit multi_value_directives are provided by the LLM
-    2. The instruction text explicitly mentions multi-value handling
+    2. Explicit row_transformations with explode_columns are provided by the LLM
     """
     if not records or not column_mapping:
         return column_mapping, column_transformations, row_transformations
-
-    instruction_flags_multi = _mentions_multi_value_instruction(instruction_text)
 
     available_columns: Set[str] = set()
     for record in records[:50]:
         available_columns.update(record.keys())
 
-    # Honor explicit directives first
+    # Apply explicit directives from the LLM
     if multi_value_directives:
+        logger.info(
+            "AUTO-IMPORT: Applying %d explicit multi-value directive(s) from LLM",
+            len(multi_value_directives)
+        )
         column_mapping, column_transformations, row_transformations = _apply_multi_value_directives(
             multi_value_directives,
             available_columns,
-        column_mapping,
-        column_transformations,
-        row_transformations,
-    )
-
-    # Group sources by target to detect fan-in mappings (multiple sources -> same target).
-    targets_to_sources: Dict[str, List[str]] = {}
-    for src, tgt in column_mapping.items():
-        if not tgt:
-            continue
-        targets_to_sources.setdefault(tgt, []).append(src)
-
-    fan_in_present = any(len(sources) > 1 for sources in targets_to_sources.values())
-    
-    # IMPORTANT: Only proceed with automatic multi-value explosion if explicitly requested
-    # This prevents the massive record multiplication that was occurring with numbered columns
-    if (
-        require_explicit_multi_value
-        and not instruction_flags_multi
-        and not multi_value_directives
-        and not fan_in_present
-    ):
-        logger.info(
-            "AUTO-IMPORT: Skipping automatic multi-value explosion (require_explicit_multi_value=True, "
-            "no explicit instruction or directives, no fan-in mapping detected)"
+            column_mapping,
+            column_transformations,
+            row_transformations,
         )
-        return column_mapping, column_transformations, row_transformations
 
-    if not instruction_flags_multi and not fan_in_present:
-        logger.info(
-            "AUTO-IMPORT: Skipping multi-value explosion (no explicit instruction and no fan-in mapping)"
-        )
-        return column_mapping, column_transformations, row_transformations
-
+    # Process any explode_columns transformations already in row_transformations
+    # These come from the LLM and should be respected as-is
     updated_mapping = dict(column_mapping)
-    updated_col_xforms = list(column_transformations)
-    updated_row_xforms = list(row_transformations)
-
-    existing_explodes = {
-        rt.get("target_column") or rt.get("target_field") or rt.get("column")
-        for rt in row_transformations
-        if isinstance(rt, dict) and rt.get("type") == "explode_columns"
-    }
-
     exploded_targets: Set[str] = set()
-
-    # Group sources by target to detect fan-in mappings (multiple sources -> same target).
-    targets_to_sources: Dict[str, List[str]] = {}
-    for src, tgt in column_mapping.items():
-        if not tgt:
-            continue
-        targets_to_sources.setdefault(tgt, []).append(src)
-
-    # If the LLM already supplied an explode, ensure mapping points to that target and merge sources.
-    for rt in updated_row_xforms:
+    
+    for rt in row_transformations:
         if not isinstance(rt, dict) or rt.get("type") != "explode_columns":
             continue
+        
         target = rt.get("target_column") or rt.get("target_field") or rt.get("column")
         if not target:
             continue
+            
         raw_sources = list(rt.get("source_columns") or rt.get("columns") or [])
-        sources = set(raw_sources)
-        mapped_sources = set(targets_to_sources.get(target, []))
-        if mapped_sources:
-            sources |= mapped_sources
-        # If no mapped sources are known, try to pull siblings that look like this target.
-        if not sources and target:
-            sources = set(
-                col
-                for col in available_columns
-                if target.lower() in str(col).lower()
+        
+        # Validate that source columns exist
+        existing_sources = [col for col in raw_sources if col in available_columns]
+        
+        if not existing_sources:
+            logger.warning(
+                "AUTO-IMPORT: explode_columns for target '%s' has no valid source columns. "
+                "Requested: %s, Available: %s",
+                target,
+                raw_sources,
+                list(available_columns)[:10]
             )
-        # Keep only existing columns as explode sources; drop unknowns to avoid empty results.
-        existing_sources = [col for col in sorted(sources, key=lambda c: str(c).lower()) if col in available_columns]
-        if existing_sources:
-            rt["source_columns"] = existing_sources
-        elif raw_sources:
-            # Keep synthetic split outputs (e.g., *_item_1) even though they aren't in the raw CSV.
-            rt["source_columns"] = sorted(set(raw_sources), key=lambda c: str(c).lower())
-        else:
-            rt["source_columns"] = []
-        for mapped_source, mapped_target in list(updated_mapping.items()):
-            if mapped_target == target or mapped_source in rt["source_columns"]:
-                updated_mapping.pop(mapped_source, None)
+            continue
+        
+        # Use exactly the columns the LLM specified (no expansion, no modification)
+        rt["source_columns"] = existing_sources
+        
+        logger.info(
+            "AUTO-IMPORT: Respecting LLM explode_columns decision: %s -> %s",
+            existing_sources,
+            target
+        )
+        
+        # Update mapping to point to the exploded target
+        for mapped_source in existing_sources:
+            if mapped_source in updated_mapping:
+                updated_mapping.pop(mapped_source)
+        
         updated_mapping[target] = target
         exploded_targets.add(target)
-
-    for source_col, target_col in list(column_mapping.items()):
-        if not target_col:
-            continue
-        if target_col in existing_explodes:
-            continue
-
-        sibling_sources = _find_numbered_siblings(source_col, available_columns)
-        delimited = _detect_delimited_values(records, source_col)
-
-        sources_to_use: List[str] = []
-        need_split = False
-        split_outputs: List[str] = []
-        transform_added = False
-
-        explode_target = target_col
-        # If the target looks like a numbered field (email_1, phone_2), collapse to base.
-        m_target_num = re.match(r"^(.*?)[\s_-]?(\d+)$", target_col)
-        if m_target_num:
-            explode_target = m_target_num.group(1) or target_col
-            explode_target = explode_target.strip("_ ").lower()
-            if not explode_target:
-                explode_target = target_col
-
-        fan_in_sources = targets_to_sources.get(target_col, [])
-
-        if sibling_sources and len(sibling_sources) > 1:
-            # Always include the mapped source column first for stability
-            sources_to_use = sorted({source_col, *sibling_sources}, key=lambda c: c.lower())
-            # Also pull in non-numbered columns that clearly belong to the same base (e.g., "Primary Email")
-            if explode_target:
-                related = {
-                    col
-                    for col in available_columns
-                    if explode_target in str(col).lower()
-                }
-                sources_to_use = sorted(set(sources_to_use) | related, key=lambda c: c.lower())
-            transform_added = True
-        elif fan_in_sources and len(fan_in_sources) > 1:
-            # Multiple sources mapped to the same target; explode them.
-            sources_to_use = sorted(
-                {
-                    src
-                    for src in fan_in_sources
-                    if "validation" not in src.lower() and "total ai" not in src.lower()
-                },
-                key=lambda c: c.lower(),
-            )
-            transform_added = True
-        elif delimited.get("saw_multi"):
-            if not _looks_like_email_column(source_col, target_col, records):
-                # Avoid synthesizing split/explode for non-email fields (e.g., location strings with commas).
-                continue
-            need_split = True
-            max_items = max(2, min(delimited.get("max_items", 1), 10))
-            split_outputs = [f"{source_col}_item_{idx+1}" for idx in range(max_items)]
-            sources_to_use = split_outputs
-            transform_added = True
-        elif instruction_flags_multi and _looks_like_email_column(source_col, target_col, records):
-            # Single-column email case with explicit instruction: still route through explode so
-            # downstream mapping targets the canonical email column.
-            sources_to_use = [source_col]
-            transform_added = True
-        else:
-            continue
-
-        if need_split:
-            updated_col_xforms.append(
-                {
-                    "type": "split_multi_value_column",
-                    "source_column": source_col,
-                    "outputs": [
-                        {"name": name, "index": idx}
-                        for idx, name in enumerate(split_outputs)
-                    ],
-                }
-            )
-
-        updated_row_xforms.append(
-            {
-                "type": "explode_columns",
-                "source_columns": sources_to_use,
-                "target_column": explode_target,
-                "drop_source_columns": True,
-                "strip_whitespace": True,
-                "dedupe_values": True,
-                "case_insensitive_dedupe": True,
-            }
-        )
-
-        # Rewrite mapping so mapper.py reads from the exploded column name.
-        if transform_added:
-            for mapped_source, mapped_target in list(updated_mapping.items()):
-                if (
-                    mapped_target == target_col
-                    or mapped_target == explode_target
-                    or str(mapped_target).startswith(f"{explode_target}_")
-                ):
-                    updated_mapping.pop(mapped_source, None)
-            # Preserve the exploded target but do not overwrite the source list; mapping should point to the target.
-            updated_mapping[explode_target] = explode_target
-            exploded_targets.add(explode_target)
-
-    if instruction_flags_multi and not exploded_targets:
-        skip_tokens = ("validation", "status", "total ai")
-        email_candidates = [
-            col
-            for col in sorted(available_columns, key=lambda c: str(c).lower())
-            if _looks_like_email_column(col, column_mapping.get(col) or col, records)
-            and not any(token in str(col).lower() for token in skip_tokens)
-        ]
-        if len(email_candidates) > 1:
-            explode_target = next(
-                (
-                    tgt
-                    for tgt in updated_mapping.values()
-                    if _looks_like_email_column("", tgt, records)
-                ),
-                None,
-            )
-            if not explode_target:
-                explode_target = next(
-                    (tgt for tgt in updated_mapping.keys() if "email" in str(tgt).lower()),
-                    None,
-                )
-            explode_target = explode_target or "email"
-            updated_row_xforms.append(
-                {
-                    "type": "explode_columns",
-                    "source_columns": email_candidates,
-                    "target_column": explode_target,
-                    "drop_source_columns": True,
-                    "strip_whitespace": True,
-                    "dedupe_values": True,
-                    "case_insensitive_dedupe": True,
-                }
-            )
-            for mapped_source, mapped_target in list(updated_mapping.items()):
-                if mapped_target == explode_target or mapped_source in email_candidates:
-                    updated_mapping.pop(mapped_source, None)
-            updated_mapping[explode_target] = explode_target
-            exploded_targets.add(explode_target)
-
+    
+    # Ensure exploded targets are present in mapping
     for target_col in exploded_targets:
-        # Ensure exploded targets are present and ordered last so inversion prefers them
-        updated_mapping.pop(target_col, None)
         updated_mapping[target_col] = target_col
-
-    if instruction_flags_multi and exploded_targets:
-        skip_tokens = ("validation", "status", "total ai")
-        email_candidates = [
-            col
-            for col in sorted(available_columns, key=lambda c: str(c).lower())
-            if _looks_like_email_column(col, column_mapping.get(col) or col, records)
-            and not any(token in str(col).lower() for token in skip_tokens)
-        ]
-        if len(email_candidates) > 1:
-            for rt in updated_row_xforms:
-                if not isinstance(rt, dict) or rt.get("type") != "explode_columns":
-                    continue
-                target = rt.get("target_column")
-                if target not in exploded_targets:
-                    continue
-                sources = rt.get("source_columns") or []
-                merged = sorted(
-                    {src for src in sources if src in available_columns} | set(email_candidates),
-                    key=lambda c: str(c).lower(),
-                )
-                rt["source_columns"] = merged
-
-    return updated_mapping, updated_col_xforms, updated_row_xforms
+    
+    logger.info(
+        "AUTO-IMPORT: Multi-value synthesis complete. Exploded targets: %s",
+        list(exploded_targets) if exploded_targets else "none"
+    )
+    
+    return updated_mapping, column_transformations, row_transformations

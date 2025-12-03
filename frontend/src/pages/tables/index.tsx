@@ -25,7 +25,7 @@ import type {
   SorterResult,
   TablePaginationConfig,
 } from 'antd/es/table/interface';
-import { ArrowRightOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, DeleteOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
 
 const { Title, Text, Link } = Typography;
 const { Search } = Input;
@@ -50,7 +50,7 @@ const rowStateOptions = [
 
 export const TablesListPage: React.FC = () => {
   const navigate = useNavigate();
-  const { message } = AntdApp.useApp();
+  const { message, modal } = AntdApp.useApp();
   const messageRef = useRef(message);
   messageRef.current = message;
 
@@ -66,6 +66,26 @@ export const TablesListPage: React.FC = () => {
     const token = localStorage.getItem('refine-auth');
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
+
+  const fetchTables = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API_URL}/tables`, {
+        headers: authHeaders(),
+      });
+
+      if (response.data?.success) {
+        setTables(response.data.tables || []);
+      } else {
+        messageRef.current.error('Failed to load tables.');
+      }
+    } catch (err) {
+      console.error('Failed to load tables', err);
+      messageRef.current.error('Failed to load tables.');
+    } finally {
+      setLoading(false);
+    }
+  }, [authHeaders]);
 
   const downloadTable = useCallback(
     async (tableName: string) => {
@@ -97,25 +117,49 @@ export const TablesListPage: React.FC = () => {
     [authHeaders],
   );
 
-  const fetchTables = useCallback(async () => {
-    setLoading(true);
-    try {
-      const response = await axios.get(`${API_URL}/tables`, {
-        headers: authHeaders(),
-      });
+  const deleteTable = useCallback(
+    (tableName: string, rowCount: number) => {
+      modal.confirm({
+        title: 'Delete Table',
+        content: (
+          <div>
+            <p>
+              Are you sure you want to delete table <strong>{tableName}</strong>?
+            </p>
+            <p>
+              This will permanently delete <strong>{rowCount.toLocaleString()}</strong> row{rowCount !== 1 ? 's' : ''} and all related import history.
+            </p>
+            <p style={{ color: '#ff4d4f', marginTop: 16 }}>
+              <strong>This action cannot be undone.</strong>
+            </p>
+          </div>
+        ),
+        okText: 'Delete',
+        okType: 'danger',
+        cancelText: 'Cancel',
+        onOk: async () => {
+          try {
+            const response = await axios.delete(`${API_URL}/tables/${encodeURIComponent(tableName)}`, {
+              headers: authHeaders(),
+            });
 
-      if (response.data?.success) {
-        setTables(response.data.tables || []);
-      } else {
-        messageRef.current.error('Failed to load tables.');
-      }
-    } catch (err) {
-      console.error('Failed to load tables', err);
-      messageRef.current.error('Failed to load tables.');
-    } finally {
-      setLoading(false);
-    }
-  }, [authHeaders]);
+            if (response.data?.success) {
+              messageRef.current.success(`Table '${tableName}' deleted successfully`);
+              // Refresh the table list
+              fetchTables();
+            } else {
+              messageRef.current.error('Failed to delete table');
+            }
+          } catch (err) {
+            console.error(`Failed to delete table ${tableName}`, err);
+            const errorMessage = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail || 'Failed to delete table';
+            messageRef.current.error(errorMessage);
+          }
+        },
+      });
+    },
+    [authHeaders, fetchTables, modal],
+  );
 
   useEffect(() => {
     fetchTables();
@@ -199,7 +243,7 @@ export const TablesListPage: React.FC = () => {
     {
       title: '',
       key: 'actions',
-      width: 220,
+      width: 280,
       render: (_: unknown, record: TableInfo) => (
         <Space>
           <Button
@@ -217,6 +261,16 @@ export const TablesListPage: React.FC = () => {
               onClick={() => downloadTable(record.table_name)}
             >
               CSV
+            </Button>
+          </Tooltip>
+          <Tooltip title="Delete table">
+            <Button
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => deleteTable(record.table_name, record.row_count)}
+            >
+              Delete
             </Button>
           </Tooltip>
         </Space>
