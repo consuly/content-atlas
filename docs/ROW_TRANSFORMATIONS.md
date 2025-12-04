@@ -29,22 +29,38 @@ Pre-processing rules that reshape rows before column mapping. These run in panda
     - `sources` (required), `target_column` (required)
     - `separator` (default: `" "`), `strip_whitespace` (default: true)
     - `skip_nulls` (default: true; when false, `null_replacement` is used), `null_replacement` (default: `""`)
+  - `standardize_phone`: Standardize phone numbers to various output formats.
+    - `source_column` (required), `target_column` (optional; defaults to source for in-place transformation)
+    - `default_country_code` (optional; e.g., `"1"` for US, `"44"` for UK)
+    - `output_format` (optional; `"e164"`, `"international"`, `"national"`, `"digits_only"`; default: `"e164"`)
+    - `preserve_extension` (optional; default: false), `strip_leading_zeros` (optional; default: true)
+    - `min_digits` (optional; default: 7), `max_digits` (optional; default: 15)
+    - **Note**: For in-place transformation (recommended), omit `target_column` or set it equal to `source_column`. Each phone column gets its own separate transformation.
 
-## Column-level regex (mapping stage)
+## Column-level transformations (mapping stage)
 
-`column_transformations` also supports `regex_replace`:
-- `source_column` (required), `pattern` (required)
-- `target_column` (optional; defaults to source)
-- `replacement` (default `""`)
-- `outputs` (optional) to map capture groups into multiple columns
-- `skip_on_no_match` (optional) to leave values untouched on miss
+`column_transformations` supports these types:
 
-Additional column-level helpers:
+- `regex_replace`: Regex substitution with optional capture groups.
+  - `source_column` (required), `pattern` (required)
+  - `target_column` (optional; defaults to source)
+  - `replacement` (default `""`)
+  - `outputs` (optional) to map capture groups into multiple columns
+  - `skip_on_no_match` (optional) to leave values untouched on miss
+
 - `merge_columns`: Concatenate multiple sources into one column (same options as `concat_columns` above).
+
 - `explode_list_column`: Split a list-like value into fixed output columns without duplicating rows.
   - `source_column` (required), `outputs` (required, each with `name` and optional `index`/`default`)
   - `delimiter` (optional), `strip_whitespace` (default: true)
   - `dedupe_values` (default: true), `case_insensitive_dedupe` (default: true)
+
+- `standardize_phone`: Standardize phone numbers to various output formats (same parameters as row-level version).
+  - `source_column` (required), `target_column` (optional; defaults to source)
+  - `default_country_code` (optional; e.g., `"1"` for US, `"44"` for UK)
+  - `output_format` (optional; `"e164"`, `"international"`, `"national"`, `"digits_only"`; default: `"e164"`)
+  - `preserve_extension` (optional; default: false), `strip_leading_zeros` (optional; default: true)
+  - `min_digits` (optional; default: 7), `max_digits` (optional; default: 15)
 
 ## Notes
 

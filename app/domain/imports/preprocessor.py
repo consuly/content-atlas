@@ -6,6 +6,7 @@ import json
 import pandas as pd
 
 from app.api.schemas.shared import MappingConfig
+from app.utils.phone import standardize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,13 @@ def apply_row_transformations(
             all_errors.extend(errors)
         elif t_type == "require_any_of":
             transformed, errors = _apply_require_any_of(
+                transformed,
+                transformation,
+                row_offset=row_offset,
+            )
+            all_errors.extend(errors)
+        elif t_type == "standardize_phone":
+            transformed, errors = _apply_standardize_phone(
                 transformed,
                 transformation,
                 row_offset=row_offset,
@@ -993,3 +1001,80 @@ def _dedupe_preserve_order(values: List[Any], case_insensitive: bool) -> List[An
         seen.add(key)
         deduped.append(v)
     return deduped
+
+
+def _apply_standardize_phone(
+    records: List[Dict[str, Any]],
+    transformation: Dict[str, Any],
+    *,
+    row_offset: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Standardize phone numbers in a column across all records.
+    
+    Transformation parameters:
+        - source_column (required): Input column name
+        - target_column (optional): Output column name (defaults to source_column)
+        - default_country_code (optional): Country code to add if missing (e.g., "1", "44")
+        - output_format (optional): "e164", "international", "national", "digits_only" (default: "e164")
+        - preserve_extension (optional): Keep extension like "x123" (default: False)
+        - strip_leading_zeros (optional): Remove leading zeros (default: True)
+        - min_digits (optional): Minimum valid digits (default: 7)
+        - max_digits (optional): Maximum valid digits (default: 15)
+    """
+    errors: List[Dict[str, Any]] = []
+    source_column = transformation.get("source_column") or transformation.get("column")
+    target_column = (
+        transformation.get("target_column")
+        or transformation.get("target_field")
+        or source_column
+    )
+    
+    if not source_column or not target_column:
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": "standardize_phone requires source_column",
+            }
+        )
+        return records, errors
+    
+    # Extract parameters with defaults
+    default_country_code = transformation.get("default_country_code")
+    output_format = transformation.get("output_format", "e164")
+    preserve_extension = transformation.get("preserve_extension", False)
+    strip_leading_zeros = transformation.get("strip_leading_zeros", True)
+    min_digits = transformation.get("min_digits", 7)
+    max_digits = transformation.get("max_digits", 15)
+    
+    df = pd.DataFrame.from_records(records)
+    if df.empty:
+        return [], errors
+    
+    if "_source_record_number" not in df.columns:
+        df["_source_record_number"] = [row_offset + idx + 1 for idx in range(len(df))]
+    
+    if source_column not in df.columns:
+        df[source_column] = None
+        errors.append(
+            {
+                "type": "row_transformation",
+                "message": f"Source column '{source_column}' missing for standardize_phone",
+                "column": source_column,
+            }
+        )
+    
+    # Apply standardization to each value
+    df[target_column] = df[source_column].apply(
+        lambda value: standardize_phone(
+            value,
+            default_country_code=default_country_code,
+            output_format=output_format,
+            preserve_extension=preserve_extension,
+            strip_leading_zeros=strip_leading_zeros,
+            min_digits=min_digits,
+            max_digits=max_digits,
+        )
+    )
+    
+    return _df_to_records(df), errors

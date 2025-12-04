@@ -631,7 +631,28 @@ def execute_llm_import_decision(
         
         # Invert the column_mapping: {source: target} -> {target: source}
         inverted_mapping = {target_col: source_col for source_col, target_col in column_mapping.items()}
-        
+
+        # CRITICAL FIX: Update inverted mapping for transformations that create new target columns
+        # This ensures transformations like standardize_phone aren't overwritten by the original source values
+        for transformation in column_transformations:
+            if not isinstance(transformation, dict):
+                continue
+
+            t_type = transformation.get("type")
+            if t_type == "standardize_phone":
+                source_col = transformation.get("source_column") or transformation.get("column")
+                target_col = transformation.get("target_column") or transformation.get("target_field") or source_col
+
+                # If this transformation creates a new target column, update the mapping to read from it
+                if target_col in inverted_mapping and inverted_mapping[target_col] == source_col:
+                    # Change mapping from {target_col: source_col} to {target_col: target_col}
+                    # This tells the mapper to read from the transformed column, not the original
+                    inverted_mapping[target_col] = target_col
+                    logger.info(
+                        "AUTO-IMPORT: Updated mapping for transformed column '%s' to read from transformed value instead of original",
+                        target_col
+                    )
+
         logger.info(f"AUTO-IMPORT: LLM column_mapping (source->target): {column_mapping}")
         logger.info(f"AUTO-IMPORT: Inverted mapping (target->source): {inverted_mapping}")
         
