@@ -4,10 +4,31 @@ from typing import Dict, Any
 
 from b2sdk.exception import B2Error
 from b2sdk.v2 import B2Api, B2Http, B2Session, InMemoryAccountInfo
+from urllib3.exceptions import MaxRetryError, NewConnectionError
+from urllib3.connection import HTTPConnection
+import socket
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class B2NetworkError(Exception):
+    """Raised when B2 operations fail due to network connectivity issues."""
+
+    def __init__(self, message: str, original_error: Exception = None):
+        super().__init__(message)
+        self.original_error = original_error
+
+
+class B2ConnectionError(B2NetworkError):
+    """Raised when B2 connection fails due to DNS, connectivity, or network issues."""
+    pass
+
+
+class B2TimeoutError(B2NetworkError):
+    """Raised when B2 operations timeout."""
+    pass
 
 
 class FastFailB2Http(B2Http):
@@ -47,6 +68,38 @@ def get_b2_api():
     return b2_api
 
 
+def _is_network_error(exc: Exception) -> bool:
+    """Check if an exception is related to network connectivity issues."""
+    # Check for DNS resolution errors
+    if isinstance(exc, socket.gaierror):
+        return True
+
+    # Check for connection errors in urllib3
+    if isinstance(exc, (NewConnectionError, MaxRetryError)):
+        return True
+
+    # Check for connection errors in urllib3 connection
+    if hasattr(exc, '__cause__') and exc.__cause__:
+        cause = exc.__cause__
+        if isinstance(cause, (socket.gaierror, NewConnectionError, MaxRetryError)):
+            return True
+
+    # Check error message for common network indicators
+    error_msg = str(exc).lower()
+    network_indicators = [
+        'getaddrinfo failed',
+        'name resolution',
+        'connection refused',
+        'connection reset',
+        'network is unreachable',
+        'no route to host',
+        'timeout',
+        'connection timed out'
+    ]
+
+    return any(indicator in error_msg for indicator in network_indicators)
+
+
 def download_file_from_b2(file_name: str) -> bytes:
     """
     Download a file from Backblaze B2 bucket.
@@ -56,14 +109,42 @@ def download_file_from_b2(file_name: str) -> bytes:
 
     Returns:
         File content as bytes
-    """
-    b2_api = get_b2_api()
-    bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
 
-    # Download file - bucket.download_file_by_name returns a DownloadedFile object
+    Raises:
+        B2ConnectionError: When network connectivity issues prevent download
+        B2Error: For other B2-related errors
+    """
     try:
+        b2_api = get_b2_api()
+        bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
+
+        # Download file - bucket.download_file_by_name returns a DownloadedFile object
         downloaded_file = bucket.download_file_by_name(file_name)
+
+        # Get the content from the response
+        return downloaded_file.response.content
+
     except B2Error as exc:
+        # Check if this is a network-related error
+        if _is_network_error(exc):
+            error_msg = (
+                f"Unable to connect to Backblaze B2. This may be due to:\n"
+                f"• Network connectivity issues\n"
+                f"• DNS resolution problems\n"
+                f"• Firewall/antivirus blocking the connection\n"
+                f"• VPN or proxy configuration issues\n\n"
+                f"Please check your internet connection and try again. "
+                f"If the problem persists, contact support."
+            )
+            logger.error(
+                "Network error downloading B2 file '%s' after %d attempts: %s",
+                file_name,
+                settings.b2_max_retries,
+                exc,
+            )
+            raise B2ConnectionError(error_msg, exc) from exc
+
+        # Re-raise other B2 errors as-is
         logger.error(
             "Failed to download B2 file '%s' after %d attempts: %s",
             file_name,
@@ -71,9 +152,6 @@ def download_file_from_b2(file_name: str) -> bytes:
             exc,
         )
         raise
-
-    # Get the content from the response
-    return downloaded_file.response.content
 
 
 def upload_file_to_b2(file_content: bytes, file_name: str, folder: str = "uploads") -> dict:

@@ -1794,6 +1794,20 @@ You MUST call the make_import_decision tool before providing your final response
      • `{"type": "split_multi_value_column", "source_column": "emails", "outputs": [{"name": "email_one", "index": 0}, {"name": "email_two", "index": 1, "default": null}]}`  
      • `{"type": "compose_international_phone", "target_column": "phone_e164", "components": [{"role": "country_code", "column": "country_code"}, {"role": "area_code", "column": "area_code"}, {"role": "subscriber_number", "column": "phone_number"}]}`
      • `{"type": "split_international_phone", "source_column": "intl_phone", "outputs": [{"name": "country_code", "role": "country_code"}, {"name": "subscriber_number", "role": "subscriber_number"}]}`
+     • `{"type": "standardize_phone", "source_column": "<actual_column_name>", "target_column": "<same_as_source_for_in_place>", "default_country_code": "1", "output_format": "e164"}`
+       - CRITICAL: Use the ACTUAL column name from the source data (e.g., "Phone Number", "Contact Phone", "Mobile", "Telephone", etc.)
+       - For IN-PLACE transformation: Set target_column to the SAME name as source_column, or omit target_column entirely
+       - For MULTIPLE phone columns: Create separate transformations for each column
+       - Example (single column, in-place):
+         {"type": "standardize_phone", "source_column": "Phone Number", "target_column": "Phone Number", "default_country_code": "1"}
+       - Example (multiple columns, in-place):
+         [
+           {"type": "standardize_phone", "source_column": "Primary Phone", "target_column": "Primary Phone", "default_country_code": "1"},
+           {"type": "standardize_phone", "source_column": "Mobile Phone", "target_column": "Mobile Phone", "default_country_code": "1"}
+         ]
+       - DO NOT use the literal string "phone" unless that is the actual column name in the data
+       - Detect phone columns by analyzing data patterns (formats like (123) 456-7890, 123-456-7890, etc.), not just by column name
+       - The target_column should be a meaningful name for the standardized output (e.g., "phone_standardized", "contact_phone_e164", etc.)
    - If no preprocessing is needed, pass an empty list (`[]`). Do **not** omit the argument.
 6. **row_transformations**: When rows must be duplicated/filtered/cleaned before mapping (e.g., split multiple email columns into entries, drop rows missing valid emails, regex-clean phone numbers), provide explicit instructions.
    

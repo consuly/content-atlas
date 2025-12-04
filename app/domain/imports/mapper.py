@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 import numbers
 from app.api.schemas.shared import MappingConfig
 from app.utils.date import parse_flexible_date, detect_date_column
+from app.utils.phone import standardize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +374,8 @@ def _apply_column_transformations(
             _apply_merge_columns(updated_record, record, transformation)
         elif t_type == "explode_list_column":
             _apply_explode_list_column(updated_record, record, transformation)
+        elif t_type == "standardize_phone":
+            _apply_standardize_phone(updated_record, record, transformation)
         else:
             logger.debug("Unknown column transformation type '%s' skipped", t_type)
 
@@ -683,6 +686,58 @@ def _apply_explode_list_column(
             continue
         value = values[index] if index < len(values) else output.get("default")
         destination[name] = value
+
+
+def _apply_standardize_phone(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    """
+    Standardize phone numbers to various output formats.
+    
+    Transformation parameters:
+        - source_column (required): Input column name
+        - target_column (optional): Output column name (defaults to source_column)
+        - default_country_code (optional): Country code to add if missing (e.g., "1", "44")
+        - output_format (optional): "e164", "international", "national", "digits_only" (default: "e164")
+        - preserve_extension (optional): Keep extension like "x123" (default: False)
+        - strip_leading_zeros (optional): Remove leading zeros (default: True)
+        - min_digits (optional): Minimum valid digits (default: 7)
+        - max_digits (optional): Maximum valid digits (default: 15)
+    """
+    source_column = transformation.get("source_column") or transformation.get("column")
+    target_column = (
+        transformation.get("target_column")
+        or transformation.get("target_field")
+        or source_column
+    )
+    
+    if not source_column or not target_column:
+        return
+    
+    value = source_record.get(source_column)
+    
+    # Extract parameters with defaults
+    default_country_code = transformation.get("default_country_code")
+    output_format = transformation.get("output_format", "e164")
+    preserve_extension = transformation.get("preserve_extension", False)
+    strip_leading_zeros = transformation.get("strip_leading_zeros", True)
+    min_digits = transformation.get("min_digits", 7)
+    max_digits = transformation.get("max_digits", 15)
+    
+    # Standardize the phone number
+    standardized = standardize_phone(
+        value,
+        default_country_code=default_country_code,
+        output_format=output_format,
+        preserve_extension=preserve_extension,
+        strip_leading_zeros=strip_leading_zeros,
+        min_digits=min_digits,
+        max_digits=max_digits,
+    )
+    
+    destination[target_column] = standardized
 
 
 def _compose_e164_phone(

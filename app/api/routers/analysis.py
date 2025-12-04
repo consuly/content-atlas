@@ -34,6 +34,7 @@ from app.api.dependencies import detect_file_type, analysis_storage, interactive
 from app.integrations.b2 import (
     download_file_from_b2 as _download_file_from_b2,
     upload_file_to_b2,
+    B2ConnectionError,
 )
 from app.domain.imports.processors.csv_processor import (
     process_csv,
@@ -1695,7 +1696,7 @@ async def analyze_file_endpoint(
                     job_id = job["id"]
                 except Exception as job_exc:
                     logger.warning("Unable to create import job for file %s: %s", file_id, job_exc)
-            
+
             # Update status to 'mapping'
             update_file_status(
                 file_id,
@@ -1707,7 +1708,22 @@ async def analyze_file_endpoint(
             if preloaded is not None:
                 file_content = preloaded
             else:
-                file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+                try:
+                    file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+                except B2ConnectionError as b2_exc:
+                    # Handle network connectivity errors specifically
+                    error_msg = str(b2_exc)
+                    logger.error("B2 network error for file %s: %s", file_id, error_msg)
+
+                    # Update file status to failed
+                    update_file_status(file_id, "failed", error_message=error_msg)
+
+                    # Fail the job if it was created
+                    if job_id:
+                        update_import_job(job_id, status="failed", error_message=error_msg)
+
+                    # Return 503 Service Unavailable for network errors
+                    raise HTTPException(status_code=503, detail=error_msg)
             file_name = file_record["file_name"]
         else:
             # Read uploaded file
@@ -2138,7 +2154,19 @@ async def auto_process_archive_endpoint(
     if not archive_name.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="File is not a ZIP archive")
 
-    archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    try:
+        archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    except B2ConnectionError as b2_exc:
+        # Handle network connectivity errors specifically
+        error_msg = str(b2_exc)
+        logger.error("B2 network error downloading archive %s: %s", file_id, error_msg)
+
+        # Update file status to failed
+        update_file_status(file_id, "failed", error_message=error_msg)
+
+        # Return 503 Service Unavailable for network errors
+        raise HTTPException(status_code=503, detail=error_msg)
+
     try:
         supported_entries, skipped_results = _extract_supported_archive_entries(archive_bytes)
     except zipfile.BadZipFile as exc:
@@ -2443,7 +2471,19 @@ async def auto_process_workbook_endpoint(
     if not workbook_name.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="File is not an Excel workbook")
 
-    workbook_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    try:
+        workbook_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    except B2ConnectionError as b2_exc:
+        # Handle network connectivity errors specifically
+        error_msg = str(b2_exc)
+        logger.error("B2 network error downloading workbook %s: %s", file_id, error_msg)
+
+        # Update file status to failed
+        update_file_status(file_id, "failed", error_message=error_msg)
+
+        # Return 503 Service Unavailable for network errors
+        raise HTTPException(status_code=503, detail=error_msg)
+
     try:
         available_sheets = list_excel_sheets(workbook_bytes)
     except Exception as exc:
@@ -2792,7 +2832,23 @@ async def analyze_file_interactive_endpoint(
             except Exception as job_exc:
                 logger.warning("Unable to create interactive import job for %s: %s", request.file_id, job_exc)
 
-        file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+        try:
+            file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+        except B2ConnectionError as b2_exc:
+            # Handle network connectivity errors specifically
+            error_msg = str(b2_exc)
+            logger.error("B2 network error for interactive file %s: %s", request.file_id, error_msg)
+
+            # Update file status to failed
+            update_file_status(request.file_id, "failed", error_message=error_msg)
+
+            # Fail the job if it was created
+            if job_id:
+                update_import_job(job_id, status="failed", error_message=error_msg)
+
+            # Return 503 Service Unavailable for network errors
+            raise HTTPException(status_code=503, detail=error_msg)
+
         file_type = detect_file_type(file_record["file_name"])
         target_sheet_name: Optional[str] = None
         if file_type == "excel":
