@@ -704,6 +704,7 @@ export const ImportPage: React.FC = () => {
     {
       title: 'Actions',
       key: 'actions',
+      fixed: 'right',
       width: 220,
       render: (_: unknown, record: UploadedFile & ImportSummary) => (
         <Space size="small">
@@ -718,13 +719,15 @@ export const ImportPage: React.FC = () => {
               Map Now
             </Button>
           )}
-          <Button
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => handleView(record)}
-          >
-            View
-          </Button>
+          {record.status !== 'uploaded' && (
+            <Button
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => handleView(record)}
+            >
+              View
+            </Button>
+          )}
           <Button
             size="small"
             danger

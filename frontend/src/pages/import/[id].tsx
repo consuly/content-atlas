@@ -2701,15 +2701,34 @@ export const ImportMappingPage: React.FC = () => {
 
   const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
     {
+      title: 'Actions',
+      key: 'actions',
+      fixed: 'left',
+      width: 60,
+      render: (_: unknown, record) =>
+        record.uploaded_file_id ? (
+          <Button
+            type="link"
+            size="small"
+            onClick={() => navigate(`/import/${record.uploaded_file_id}`)}
+          >
+            View
+          </Button>
+        ) : null,
+    },
+    {
       title: 'Archive Path',
       dataIndex: 'archive_path',
       key: 'archive_path',
+      width: 250,
+      ellipsis: true,
       render: (text: string) => <Text code>{text}</Text>,
     },
     {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
+      width: 100,
       render: (value: ArchiveFileStatus) => {
         const color =
           value === 'processed' ? 'green' : value === 'failed' ? 'red' : 'default';
@@ -2720,12 +2739,15 @@ export const ImportMappingPage: React.FC = () => {
       title: 'Table',
       dataIndex: 'table_name',
       key: 'table_name',
+      width: 180,
+      ellipsis: true,
       render: (value?: string | null) => value || '-',
     },
     {
       title: 'Records',
       dataIndex: 'records_processed',
       key: 'records_processed',
+      width: 120,
       render: (value?: number | null) =>
         typeof value === 'number' ? value.toLocaleString() : '-',
     },
@@ -2733,22 +2755,9 @@ export const ImportMappingPage: React.FC = () => {
       title: 'Duplicates',
       dataIndex: 'duplicates_skipped',
       key: 'duplicates_skipped',
+      width: 120,
       render: (value?: number | null) =>
         typeof value === 'number' ? value.toLocaleString() : '-',
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_: unknown, record) =>
-        record.uploaded_file_id ? (
-          <Button
-            type="link"
-            size="small"
-            onClick={() => navigate(`/import/${record.uploaded_file_id}`)}
-          >
-            View File
-          </Button>
-        ) : null,
     },
   ];
 
