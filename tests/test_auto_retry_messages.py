@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.api.routers.analysis import (
-    _auto_retry_failed_auto_import,
-    _summarize_archive_execution,
+from app.api.routers.analysis.execution import (
+    auto_retry_failed_auto_import,
+    summarize_archive_execution,
 )
 from app.api.schemas.shared import AnalyzeFileResponse
 
@@ -27,20 +27,14 @@ async def test_auto_retry_failed_import_requires_user_input_message(monkeypatch)
     async def fake_execute_interactive_import_endpoint(*_args, **_kwargs):
         raise AssertionError("Execute should not be called when can_execute is False")
 
-    monkeypatch.setattr(
-        "app.api.routers.analysis.analyze_file_interactive_endpoint",
-        fake_analyze_file_interactive_endpoint,
-    )
-    monkeypatch.setattr(
-        "app.api.routers.analysis.execute_interactive_import_endpoint",
-        fake_execute_interactive_import_endpoint,
-    )
-
-    result = await _auto_retry_failed_auto_import(
+    # Test the case where interactive analysis succeeds but cannot execute
+    result = await auto_retry_failed_auto_import(
         file_id="file-123",
         previous_error_message="upstream parse failed",
         max_iterations=3,
         db=None,  # db is unused in this failure path
+        analyze_file_interactive_fn=fake_analyze_file_interactive_endpoint,
+        execute_interactive_import_fn=fake_execute_interactive_import_endpoint,
     )
 
     assert result["success"] is False
@@ -63,7 +57,7 @@ def test_summarize_archive_execution_includes_interactive_hint():
         auto_retry_error="Interactive assistant requires user input before executing the retry plan.",
     )
 
-    summary = _summarize_archive_execution(response)
+    summary = summarize_archive_execution(response)
     assert summary["status"] == "failed"
     assert "Auto-retry paused" in summary["message"]
     assert "Try Again" in summary["message"]
@@ -83,7 +77,7 @@ def test_summarize_archive_execution_does_not_over_hint_for_other_errors():
         auto_retry_error="Timeout retrying execution",
     )
 
-    summary = _summarize_archive_execution(response)
+    summary = summarize_archive_execution(response)
     assert "Auto-retry paused" not in summary["message"]
     assert "Try Again: Timeout retrying execution" in summary["message"]
 
@@ -105,20 +99,13 @@ async def test_auto_retry_execute_path_surfaces_execution_error(monkeypatch):
     async def fake_execute(*_args, **_kwargs):
         return SimpleNamespace(success=False, message="execution failed hard")
 
-    monkeypatch.setattr(
-        "app.api.routers.analysis.analyze_file_interactive_endpoint",
-        fake_interactive,
-    )
-    monkeypatch.setattr(
-        "app.api.routers.analysis.execute_interactive_import_endpoint",
-        fake_execute,
-    )
-
-    result = await _auto_retry_failed_auto_import(
+    result = await auto_retry_failed_auto_import(
         file_id="file-123",
         previous_error_message="base fail",
         max_iterations=3,
         db=None,
+        analyze_file_interactive_fn=fake_interactive,
+        execute_interactive_import_fn=fake_execute,
     )
 
     assert result["success"] is False
@@ -148,20 +135,13 @@ async def test_auto_retry_execute_path_success(monkeypatch):
             records_processed=5,
         )
 
-    monkeypatch.setattr(
-        "app.api.routers.analysis.analyze_file_interactive_endpoint",
-        fake_interactive,
-    )
-    monkeypatch.setattr(
-        "app.api.routers.analysis.execute_interactive_import_endpoint",
-        fake_execute,
-    )
-
-    result = await _auto_retry_failed_auto_import(
+    result = await auto_retry_failed_auto_import(
         file_id="file-456",
         previous_error_message="",
         max_iterations=3,
         db=None,
+        analyze_file_interactive_fn=fake_interactive,
+        execute_interactive_import_fn=fake_execute,
     )
 
     assert result["success"] is True

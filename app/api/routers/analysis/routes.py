@@ -71,10 +71,6 @@ router = APIRouter(tags=["analysis"])
 logger = logging.getLogger(__name__)
 _preloaded_file_contents: Dict[str, bytes] = {}
 ARCHIVE_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xls")
-ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_auto_process.log")
-MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.log")
-_archive_log_lock = threading.Lock()
-_failure_log_lock = threading.Lock()
 
 
 def _normalize_forced_table_name(table_name: Optional[str]) -> Optional[str]:

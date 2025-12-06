@@ -205,7 +205,7 @@ def handle_interactive_execution_failure(
         "EXECUTION_FAILED\n"
         f"Error details: {error_message}\n"
         "Please analyze why this import failed and propose concrete fixes. "
-        "Wait for confirmation before finalizing a new mapping."
+        "Wait for user approval before finalizing a new mapping."
     )
 
     followup = run_interactive_session_step(
