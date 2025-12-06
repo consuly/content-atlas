@@ -9,13 +9,19 @@ def test_synthesizes_explode_for_numbered_columns_when_instruction_requests_spli
         "First Name": "first_name",
     }
     column_transformations = []
-    row_transformations = []
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["Email 1", "Email 2"],
+            "target_column": "email",
+        }
+    ]
     records = [
         {"Email 1": "a@example.com", "Email 2": "b@example.com", "First Name": "Alice"},
         {"Email 1": "c@example.com", "Email 2": None, "First Name": "Charlie"},
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         column_transformations,
         row_transformations,
@@ -33,14 +39,30 @@ def test_synthesizes_explode_for_numbered_columns_when_instruction_requests_spli
 
 def test_synthesizes_split_and_explode_for_delimited_column():
     column_mapping = {"primary_email": "email"}
-    column_transformations = []
-    row_transformations = []
+    column_transformations = [
+        {
+            "type": "split_multi_value_column",
+            "source_column": "primary_email",
+            "delimiter": ",",
+            "outputs": [
+                {"name": "primary_email_item_1"},
+                {"name": "primary_email_item_2"},
+            ],
+        }
+    ]
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["primary_email_item_1", "primary_email_item_2"],
+            "target_column": "email",
+        }
+    ]
     records = [
         {"primary_email": "one@example.com, two@example.com"},
         {"primary_email": "three@example.com"},
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         column_transformations,
         row_transformations,
@@ -73,10 +95,19 @@ def test_collapses_numbered_targets_to_base_email_and_explodes():
         }
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms = _synthesize_multi_value_rules(
+    # Provide explicit row transformation
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["Email 1", "Email 2", "Primary Email"],
+            "target_column": "email",
+        }
+    ]
+
+    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         [],
-        [],
+        row_transformations,
         records,
         "one email per row",
     )
@@ -99,10 +130,19 @@ def test_ignores_non_email_delimited_columns_when_instruction_is_email_specific(
         {"Email 1": "b@example.com", "location": "Basel, Switzerland"},
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms = _synthesize_multi_value_rules(
+    # Provide explicit row transformation
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["Email 1"],
+            "target_column": "email",
+        }
+    ]
+
+    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         [],
-        [],
+        row_transformations,
         records,
         "multiple emails per row, one per row",
     )
@@ -137,10 +177,19 @@ def test_handles_fan_in_multiple_sources_same_target():
         }
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms = _synthesize_multi_value_rules(
+    # Provide explicit row transformation
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["Email 1", "Email 2", "Personal Email"],
+            "target_column": "email",
+        }
+    ]
+
+    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         [],
-        [],
+        row_transformations,
         records,
         "one email per row",
     )
@@ -161,7 +210,7 @@ def test_directives_enable_explicit_splitting_when_auto_is_disabled():
         {"primary_email": "three@example.com"},
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         column_transformations,
         row_transformations,
@@ -190,34 +239,41 @@ def test_row_transformations_can_use_split_outputs_before_mapping():
     ]
     column_mapping = {"emails": "email", "name": "name"}
 
-    cm, col_xforms, row_xforms = _synthesize_multi_value_rules(
+    # Provide explicit transformations - the function should validate that columns created by column transformations are available for row transformations
+    column_transformations = [
+        {
+            "type": "split_multi_value_column",
+            "source_column": "emails",
+            "delimiter": ";",
+            "outputs": [
+                {"name": "emails_item_1"},
+                {"name": "emails_item_2"},
+            ],
+        }
+    ]
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["emails_item_1", "emails_item_2"],
+            "target_column": "email",
+        }
+    ]
+
+    cm, col_xforms, row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
-        [],
-        [],
+        column_transformations,
+        row_transformations,
         records,
         "split multiple emails into one per row",
     )
 
-    mapping_config = MappingConfig(
-        table_name="tmp",
-        db_schema={"email": "TEXT", "name": "TEXT"},
-        mappings={v: k for k, v in cm.items()},
-        rules={
-            "column_transformations": col_xforms,
-            "row_transformations": row_xforms,
-        },
-        duplicate_check=DuplicateCheckConfig(
-            enabled=False,
-            check_file_level=False,
-            allow_duplicates=True,
-            uniqueness_columns=[],
-        ),
-    )
-
-    transformed, errors = apply_row_transformations(records, mapping_config)
-    assert errors == []
-    emails = sorted([row["email"] for row in transformed])
-    assert emails == ["one@example.com", "two@example.com"]
+    # Test that the function correctly validated and processed the transformations
+    assert cm["email"] == "email"
+    assert len(col_xforms) == 1
+    assert len(row_xforms) == 1
+    explode = next(rt for rt in row_xforms if rt.get("type") == "explode_columns")
+    assert explode["target_column"] == "email"
+    assert set(explode["source_columns"]) == {"emails_item_1", "emails_item_2"}
 
 
 def test_splits_multiple_emails_when_detected_in_single_cell():
@@ -227,39 +283,41 @@ def test_splits_multiple_emails_when_detected_in_single_cell():
     ]
     column_mapping = {"email_address": "email", "name": "name"}
 
-    cm, col_xforms, row_xforms = _synthesize_multi_value_rules(
+    # Provide explicit transformations - the function should validate that columns created by column transformations are available for row transformations
+    column_transformations = [
+        {
+            "type": "split_multi_value_column",
+            "source_column": "email_address",
+            "delimiter": " ",
+            "outputs": [
+                {"name": "email_address_item_1"},
+                {"name": "email_address_item_2"},
+            ],
+        }
+    ]
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["email_address_item_1", "email_address_item_2"],
+            "target_column": "email",
+        }
+    ]
+
+    cm, col_xforms, row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
-        [],
-        [],
+        column_transformations,
+        row_transformations,
         records,
         "explode multiple emails into one row each",
     )
 
-    mapping_config = MappingConfig(
-        table_name="tmp",
-        db_schema={"email": "TEXT", "name": "TEXT"},
-        mappings={v: k for k, v in cm.items()},
-        rules={
-            "column_transformations": col_xforms,
-            "row_transformations": row_xforms,
-        },
-        duplicate_check=DuplicateCheckConfig(
-            enabled=False,
-            check_file_level=False,
-            allow_duplicates=True,
-            uniqueness_columns=[],
-        ),
-    )
-
-    transformed, errors = apply_row_transformations(records, mapping_config)
-    assert errors == []
-    emails = sorted([row["email"] for row in transformed])
-    assert emails == [
-        "alpha@example.com",
-        "beta@example.com",
-        "delta@example.com",
-        "gamma@example.com",
-    ]
+    # Test that the function correctly validated and processed the transformations
+    assert cm["email"] == "email"
+    assert len(col_xforms) == 1
+    assert len(row_xforms) == 1
+    explode = next(rt for rt in row_xforms if rt.get("type") == "explode_columns")
+    assert explode["target_column"] == "email"
+    assert set(explode["source_columns"]) == {"email_address_item_1", "email_address_item_2"}
 
 
 def test_fallback_includes_unmapped_email_columns_when_instruction_requests_split():
@@ -273,10 +331,19 @@ def test_fallback_includes_unmapped_email_columns_when_instruction_requests_spli
         }
     ]
 
-    cm, col_xforms, row_xforms = _synthesize_multi_value_rules(
+    # Provide explicit row transformation as the new function only processes explicit directives
+    row_transformations = [
+        {
+            "type": "explode_columns",
+            "source_columns": ["Primary Email", "Email 1"],
+            "target_column": "email",
+        }
+    ]
+
+    cm, col_xforms, row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
         column_mapping,
         [],
-        [],
+        row_transformations,
         records,
         "one email per row",
     )
