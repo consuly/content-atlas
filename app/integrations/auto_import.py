@@ -619,6 +619,7 @@ def execute_llm_import_decision(
             column_mapping,
             column_transformations,
             row_transformations,
+            exploded_source_columns,
         ) = _synthesize_multi_value_rules(
             column_mapping,
             column_transformations,
@@ -628,6 +629,32 @@ def execute_llm_import_decision(
             multi_value_directives=multi_value_directives,
             require_explicit_multi_value=require_explicit_multi_value,
         )
+        
+        # CRITICAL FIX: Remove exploded source columns from uniqueness columns
+        # When a column is exploded (e.g., 'Emails' -> 'contact_method'), the source column
+        # is dropped and should not be used for uniqueness checking
+        if exploded_source_columns and unique_columns:
+            # Map source column names to their target column names in the mapping
+            source_to_target = {src: tgt for src, tgt in column_mapping.items()}
+            
+            # Filter out uniqueness columns that reference exploded source columns
+            original_unique_columns = list(unique_columns)
+            unique_columns = [
+                col for col in unique_columns 
+                if col not in exploded_source_columns and source_to_target.get(col) not in exploded_source_columns
+            ]
+            
+            if len(unique_columns) != len(original_unique_columns):
+                removed_columns = set(original_unique_columns) - set(unique_columns)
+                logger.info(
+                    "AUTO-IMPORT: Removed exploded columns from uniqueness: %s (were being exploded into other columns)",
+                    list(removed_columns)
+                )
+                logger.info(
+                    "AUTO-IMPORT: Updated uniqueness columns: %s -> %s",
+                    original_unique_columns,
+                    unique_columns
+                )
         
         # Invert the column_mapping: {source: target} -> {target: source}
         inverted_mapping = {target_col: source_col for source_col, target_col in column_mapping.items()}
@@ -1099,6 +1126,7 @@ def _synthesize_multi_value_rules(
     # These come from the LLM and should be respected as-is
     updated_mapping = dict(column_mapping)
     exploded_targets: Set[str] = set()
+    exploded_source_columns: Set[str] = set()
     
     for rt in row_transformations:
         if not isinstance(rt, dict) or rt.get("type") != "explode_columns":
@@ -1132,6 +1160,9 @@ def _synthesize_multi_value_rules(
             target
         )
         
+        # Track which source columns are being exploded
+        exploded_source_columns.update(existing_sources)
+        
         # Update mapping to point to the exploded target
         for mapped_source in existing_sources:
             if mapped_source in updated_mapping:
@@ -1149,4 +1180,4 @@ def _synthesize_multi_value_rules(
         list(exploded_targets) if exploded_targets else "none"
     )
     
-    return updated_mapping, column_transformations, row_transformations
+    return updated_mapping, column_transformations, row_transformations, exploded_source_columns

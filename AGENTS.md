@@ -37,3 +37,7 @@
 ## Security & Configuration Tips
 - Store secrets such as `DATABASE_URL` and B2 keys in a local `.env`; never commit them.
 - When sharing configs, scrub sample files and reference `docs/DEPLOYMENT.md` for production hardening steps.
+
+## Personal Files
+
+- `logs/todo.md` is a personal file for the user and should not be read or referenced by agents or automated processes
