@@ -1835,7 +1835,6 @@ export const ImportMappingPage: React.FC = () => {
 
   const sendInteractiveMessage = async (messageToSend: string) => {
     if (!threadId || !id) return;
-    if (!ensureJobIsAvailable()) return;
     const trimmed = messageToSend.trim();
     if (!trimmed) return;
 
@@ -1900,7 +1899,6 @@ export const ImportMappingPage: React.FC = () => {
 
   const handleInteractiveExecute = async () => {
     if (!threadId || !id) return;
-    if (!ensureJobIsAvailable()) return;
 
     setProcessing(true);
     setError(null);
@@ -3115,19 +3113,17 @@ export const ImportMappingPage: React.FC = () => {
               showIcon
             />
 
-            {canExecute && (
-              <Button
-                type="primary"
-                size="large"
-                icon={<CheckCircleOutlined />}
-                onClick={handleInteractiveExecute}
-                loading={processing}
-                disabled={disableMappingActions}
-                block
-              >
-                {processing ? 'Executing...' : 'Execute Import'}
-              </Button>
-            )}
+            <Button
+              type="primary"
+              size="large"
+              icon={<CheckCircleOutlined />}
+              onClick={handleInteractiveExecute}
+              loading={processing}
+              disabled={!canExecute || processing}
+              block
+            >
+              {processing ? 'Executing...' : 'Execute Import'}
+            </Button>
 
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               <Space.Compact style={{ width: '100%' }}>
@@ -3141,7 +3137,7 @@ export const ImportMappingPage: React.FC = () => {
                     }
                   }}
                   placeholder="Ask for changes, confirmations, or next steps..."
-                  disabled={processing || !threadId || disableMappingActions}
+                  disabled={processing || !threadId}
                   style={{
                     flex: 1,
                     padding: '8px 12px',
@@ -3155,7 +3151,7 @@ export const ImportMappingPage: React.FC = () => {
                   onClick={handleInteractiveSend}
                   loading={processing}
                   disabled={
-                    !userInput.trim() || processing || !threadId || disableMappingActions
+                    !userInput.trim() || processing || !threadId
                   }
                   style={{ borderRadius: '0 4px 4px 0' }}
                 >
@@ -3169,7 +3165,7 @@ export const ImportMappingPage: React.FC = () => {
                     key={label}
                     size="small"
                     type={label === 'Approve Plan' ? 'primary' : 'default'}
-                    disabled={!threadId || processing || disableMappingActions}
+                    disabled={!threadId || processing}
                     onClick={() => handleQuickAction(prompt)}
                   >
                     {label}
@@ -3337,7 +3333,7 @@ export const ImportMappingPage: React.FC = () => {
         </Card>
       )}
 
-      {file.status === 'failed' ? (
+      {file.status === 'failed' && !showInteractiveRetry ? (
         <Card title={`Failed Mapping: ${file.file_name}`}>
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <Alert
