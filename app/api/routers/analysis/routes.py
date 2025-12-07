@@ -72,6 +72,12 @@ logger = logging.getLogger(__name__)
 _preloaded_file_contents: Dict[str, bytes] = {}
 ARCHIVE_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xls")
 
+# Debug logging configuration
+ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_debug.jsonl")
+MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.jsonl")
+_archive_log_lock = threading.Lock()
+_failure_log_lock = threading.Lock()
+
 
 def _normalize_forced_table_name(table_name: Optional[str]) -> Optional[str]:
     """Return a sanitized table name or raise if the provided value is blank."""
