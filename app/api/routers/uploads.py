@@ -13,7 +13,11 @@ from app.api.schemas.shared import (
     CheckDuplicateRequest, CheckDuplicateResponse,
     CompleteUploadRequest, CompleteUploadResponse
 )
-from app.integrations.b2 import upload_file_to_b2, delete_file_from_b2, generate_upload_authorization
+from app.integrations.storage import (
+    upload_file as upload_file_to_storage,
+    delete_file as delete_file_from_storage,
+    generate_presigned_upload_url
+)
 from app.domain.uploads.uploaded_files import (
     insert_uploaded_file, get_uploaded_file_by_name, get_uploaded_file_by_id,
     get_uploaded_files, get_uploaded_files_count, delete_uploaded_file,
@@ -40,7 +44,7 @@ def _ensure_within_size_limit(file_size: int, file_name: str) -> None:
 
 
 @router.post("/upload-to-b2", response_model=UploadFileResponse)
-async def upload_file_to_b2_endpoint(
+async def upload_file_to_storage_endpoint(
     file: UploadFile = File(...),
     allow_duplicate: bool = Form(False),
     db: Session = Depends(get_db)
@@ -88,28 +92,28 @@ async def upload_file_to_b2_endpoint(
         _ensure_within_size_limit(file_size, file.filename)
         print(f"[UPLOAD] File size: {file_size} bytes ({file_size / 1024:.2f} KB)")
         
-        # Upload to B2
-        print(f"[UPLOAD] Calling upload_file_to_b2()...")
+        # Upload to storage
+        print(f"[UPLOAD] Calling upload_file_to_storage()...")
         print(f"[UPLOAD] Target folder: uploads")
         print(f"[UPLOAD] Target filename: {file.filename}")
         
-        b2_result = upload_file_to_b2(
+        storage_result = upload_file_to_storage(
             file_content=file_content,
             file_name=file.filename,
             folder="uploads"
         )
         
-        print(f"[UPLOAD] B2 upload successful!")
-        print(f"[UPLOAD] B2 File ID: {b2_result['file_id']}")
-        print(f"[UPLOAD] B2 File Path: {b2_result['file_path']}")
-        print(f"[UPLOAD] B2 File Size: {b2_result['size']} bytes")
+        print(f"[UPLOAD] Storage upload successful!")
+        print(f"[UPLOAD] File ID: {storage_result['file_id']}")
+        print(f"[UPLOAD] File Path: {storage_result['file_path']}")
+        print(f"[UPLOAD] File Size: {storage_result['size']} bytes")
         
         # Store in database
         print(f"[UPLOAD] Storing file metadata in database...")
         uploaded_file = insert_uploaded_file(
             file_name=file.filename,
-            b2_file_id=b2_result["file_id"],
-            b2_file_path=b2_result["file_path"],
+            b2_file_id=storage_result["file_id"],
+            b2_file_path=storage_result["file_path"],
             file_size=file_size,
             content_type=file.content_type,
             user_id=None  # TODO: Get from auth context
@@ -137,7 +141,7 @@ async def upload_file_to_b2_endpoint(
 
 
 @router.post("/upload-to-b2/overwrite", response_model=UploadFileResponse)
-async def overwrite_file_in_b2_endpoint(
+async def overwrite_file_in_storage_endpoint(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -155,8 +159,8 @@ async def overwrite_file_in_b2_endpoint(
         existing_file = get_uploaded_file_by_name(file.filename)
         
         if existing_file:
-            # Delete old file from B2
-            delete_file_from_b2(existing_file["b2_file_path"])
+            # Delete old file from storage
+            delete_file_from_storage(existing_file["b2_file_path"])
             # Delete old database record
             delete_uploaded_file(existing_file["id"])
         
@@ -165,8 +169,8 @@ async def overwrite_file_in_b2_endpoint(
         file_size = len(file_content)
         _ensure_within_size_limit(file_size, file.filename)
         
-        # Upload new version to B2
-        b2_result = upload_file_to_b2(
+        # Upload new version to storage
+        storage_result = upload_file_to_storage(
             file_content=file_content,
             file_name=file.filename,
             folder="uploads"
@@ -175,8 +179,8 @@ async def overwrite_file_in_b2_endpoint(
         # Store in database
         uploaded_file = insert_uploaded_file(
             file_name=file.filename,
-            b2_file_id=b2_result["file_id"],
-            b2_file_path=b2_result["file_path"],
+            b2_file_id=storage_result["file_id"],
+            b2_file_path=storage_result["file_path"],
             file_size=file_size,
             content_type=file.content_type,
             user_id=None  # TODO: Get from auth context
@@ -288,9 +292,9 @@ async def delete_uploaded_file_endpoint(
         if not file:
             raise HTTPException(status_code=404, detail=f"File {file_id} not found")
         
-        b2_deleted = delete_file_from_b2(file["b2_file_path"])
-        if not b2_deleted:
-            raise HTTPException(status_code=500, detail="Failed to delete file from B2")
+        storage_deleted = delete_file_from_storage(file["b2_file_path"])
+        if not storage_deleted:
+            raise HTTPException(status_code=500, detail="Failed to delete file from storage")
 
         cleanup_summary = None
         cleanup_warning: Optional[str] = None
@@ -401,11 +405,16 @@ async def check_duplicate_endpoint(
     - upload_authorization: B2 credentials for direct upload (if can_upload=true)
     """
     try:
+        print(f"\n[CHECK-DUPLICATE] Checking file: {request.file_name}")
+        print(f"[CHECK-DUPLICATE] File hash: {request.file_hash}")
+        print(f"[CHECK-DUPLICATE] File size: {request.file_size}")
+        
         # Check if file with same hash exists
         existing_file = get_uploaded_file_by_hash(request.file_hash)
         
         if existing_file:
             # File is a duplicate
+            print(f"[CHECK-DUPLICATE] Duplicate found: {existing_file['file_name']}")
             return CheckDuplicateResponse(
                 success=True,
                 is_duplicate=True,
@@ -414,11 +423,16 @@ async def check_duplicate_endpoint(
                 can_upload=False
             )
         
-        # File is not a duplicate, generate upload authorization
-        upload_auth = generate_upload_authorization(
+        print(f"[CHECK-DUPLICATE] No duplicate found, generating presigned upload URL...")
+        
+        # File is not a duplicate, generate presigned upload URL
+        upload_auth = generate_presigned_upload_url(
             file_name=request.file_name,
-            folder="uploads"
+            folder="uploads",
+            content_type=None  # Will be set by browser
         )
+        
+        print(f"[CHECK-DUPLICATE] Presigned upload URL generated successfully")
         
         return CheckDuplicateResponse(
             success=True,
@@ -429,6 +443,9 @@ async def check_duplicate_endpoint(
         )
         
     except Exception as e:
+        print(f"\n[CHECK-DUPLICATE ERROR] Error: {type(e).__name__}: {str(e)}")
+        print(f"[CHECK-DUPLICATE ERROR] Traceback:")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Duplicate check failed: {str(e)}")
 
 

@@ -12,7 +12,7 @@ client = TestClient(app)
 
 
 @pytest.fixture
-def fake_b2_storage(monkeypatch):
+def fake_storage_storage(monkeypatch):
     storage = {}
 
     def fake_upload(file_content: bytes, file_name: str, folder: str = "uploads"):
@@ -34,11 +34,11 @@ def fake_b2_storage(monkeypatch):
         storage.pop(file_path, None)
         return True
 
-    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_b2", fake_delete)
-    monkeypatch.setattr("app.integrations.b2.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.integrations.b2.download_file_from_b2", fake_download)
-    monkeypatch.setattr("app.main.download_file_from_b2", fake_download, raising=False)
+    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_storage", fake_delete)
+    monkeypatch.setattr("app.integrations.b2.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.integrations.b2.download_file_from_storage", fake_download)
+    monkeypatch.setattr("app.main.download_file_from_storage", fake_download, raising=False)
     return storage
 
 
@@ -194,7 +194,7 @@ def in_memory_state(monkeypatch):
 
 def test_auto_execute_failure_marks_file_failed(
     monkeypatch,
-    fake_b2_storage,
+    fake_storage_storage,
     in_memory_state,
 ):
     # Disable auto-retry to keep control of the failure path
@@ -203,7 +203,7 @@ def test_auto_execute_failure_marks_file_failed(
     # Seed a workbook in fake B2 storage and uploaded_files table
     workbook_bytes = open(os.path.join("tests", "xlsx", "test-2-tabs.xlsx"), "rb").read()
     b2_path = "uploads/auto-fail.xlsx"
-    fake_b2_storage[b2_path] = workbook_bytes
+    fake_storage_storage[b2_path] = workbook_bytes
 
     # Create the file record using the in-memory state
     file_record = in_memory_state["uploads"]["550e8400-e29b-41d4-a716-446655440000"] = {

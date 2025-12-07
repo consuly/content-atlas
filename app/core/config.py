@@ -15,10 +15,14 @@ class Settings(BaseSettings):
     # Authentication
     secret_key: str = "your-secret-key-change-in-production"
     
-    # Backblaze B2 Configuration
-    b2_application_key_id: str = ""
-    b2_application_key: str = ""
-    b2_bucket_name: str = ""
+    # S3-Compatible Storage Configuration
+    # Supports: Backblaze B2, AWS S3, MinIO, Wasabi, DigitalOcean Spaces, etc.
+    storage_provider: str = "b2"  # "b2", "s3", "minio", "wasabi", etc.
+    storage_endpoint_url: str = ""  # Required for B2/MinIO (e.g., https://s3.us-west-004.backblazeb2.com), leave empty for AWS S3
+    storage_access_key_id: str = ""  # B2 Application Key ID or AWS Access Key ID
+    storage_secret_access_key: str = ""  # B2 Application Key or AWS Secret Access Key
+    storage_bucket_name: str = ""  # Bucket name
+    storage_region: str = "us-west-004"  # Region (for B2 or AWS)
 
     # LangChain API Keys
     anthropic_api_key: str = ""

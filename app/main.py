@@ -22,7 +22,6 @@ from .api.routers import (
 
 # Backwards-compatible exports used by tests and legacy modules.
 from .domain.queries.analyzer import analyze_file_for_import  # noqa: F401
-from .integrations.b2 import download_file_from_b2  # noqa: F401
 
 # Ensure logging is configured before the application starts serving requests.
 configure_logging(settings.log_level)

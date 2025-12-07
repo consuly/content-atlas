@@ -12,7 +12,7 @@ import time
 from app.db.session import get_db
 from app.api.schemas.shared import MapDataRequest, MapDataResponse, MappingConfig, MapB2DataRequest, DuplicateCheckConfig
 from app.api.dependencies import records_cache, CACHE_TTL_SECONDS
-from app.integrations.b2 import download_file_from_b2
+from app.integrations.storage import download_file
 from app.core.security import get_optional_user, User
 
 router = APIRouter(tags=["imports"])
@@ -186,8 +186,8 @@ async def map_data_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/map-b2-data", response_model=MapDataResponse)
-async def map_b2_data_endpoint(
+@router.post("/map-storage-data", response_model=MapDataResponse)
+async def map_storage_data_endpoint(
     request: MapB2DataRequest,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
@@ -211,8 +211,8 @@ async def map_b2_data_endpoint(
     from app.db.models import FileAlreadyImportedException, DuplicateDataException
     
     try:
-        # Download file from B2
-        file_content = download_file_from_b2(request.file_name)
+        # Download file from storage
+        file_content = download_file(request.file_name)
         
         # Enforce duplicate guardrails before executing import
         _enforce_duplicate_protection(request.mapping, current_user)
@@ -250,7 +250,7 @@ async def map_b2_data_endpoint(
 
 
 @router.post("/extract-b2-excel-csv")
-async def extract_b2_excel_csv_endpoint(request):
+async def extract_storage_excel_csv_endpoint(request):
     """
     Extract sheets from an Excel file in B2 storage to CSV format.
     
@@ -269,8 +269,8 @@ async def extract_b2_excel_csv_endpoint(request):
     from app.api.schemas.shared import ExtractB2ExcelRequest, ExtractExcelCsvResponse
     
     try:
-        # Download file from B2
-        file_content = download_file_from_b2(request.file_name)
+        # Download file from storage
+        file_content = download_file(request.file_name)
 
         # Extract sheets to CSV
         sheets_csv = extract_excel_sheets_to_csv(file_content, request.rows)

@@ -61,10 +61,10 @@ def test_analyze_file_endpoint_exists(require_llm):
     assert data["iterations_used"] <= data["max_iterations"]
 
 
-def test_analyze_b2_file_endpoint_exists():
+def test_analyze_storage_file_endpoint_exists():
     """Test that /analyze-b2-file endpoint exists."""
     # Mock both B2 download and analysis
-    with patch('app.main.download_file_from_b2') as mock_download, \
+    with patch('app.main.download_file_from_storage') as mock_download, \
          patch('app.main.analyze_file_for_import') as mock_analyze:
         
         mock_download.return_value = b"name,email\nJohn,john@example.com\n"
@@ -499,9 +499,9 @@ def test_analyze_response_structure(require_llm):
 
 
 @pytest.mark.b2
-def test_b2_analyze_response_structure(require_llm):
+def test_storage_analyze_response_structure(require_llm):
     """Test B2 analysis response structure with the real LLM."""
-    with patch('app.main.download_file_from_b2') as mock_download:
+    with patch('app.main.download_file_from_storage') as mock_download:
         mock_download.return_value = b"name,email\nJohn,john@example.com\n"
         
         response = client.post(

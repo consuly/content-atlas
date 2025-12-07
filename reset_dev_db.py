@@ -12,7 +12,7 @@ Usage:
 What gets reset:
     - All tables, including users and API keys
     - Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
-    - All files in B2 storage under "uploads/" folder
+    - All files in storage under "uploads/" folder
     - All log files in the logs/ directory
 """
 
@@ -37,7 +37,7 @@ def print_warning():
     print("   • All tables, including user accounts and API keys")
     print("   • Tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)")
     print("     - Tables will be dropped and need to be recreated via migrations/app startup")
-    print("   • All files in B2 storage (uploads folder)")
+    print("   • All files in storage (uploads folder)")
     print("   • All log files in the logs/ directory")
     print()
 
@@ -172,10 +172,12 @@ Examples:
             for table in results['tables_truncated']:
                 print(f"   • {table}")
         
-        if results['b2_files_deleted'] > 0:
-            print(f"\n☁️  Deleted {results['b2_files_deleted']} files from B2 storage")
+        # Check for storage_files_deleted (new) or b2_files_deleted (legacy)
+        storage_files_deleted = results.get('storage_files_deleted', results.get('b2_files_deleted', 0))
+        if storage_files_deleted > 0:
+            print(f"\n☁️  Deleted {storage_files_deleted} files from storage")
         else:
-            print("\n☁️  No B2 files to delete (or B2 not configured)")
+            print("\n☁️  No storage files to delete (or storage not configured)")
         
         if log_results['files_deleted'] > 0:
             print(f"\n📝 Deleted {log_results['files_deleted']} log files")

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { App as AntdApp, Upload, Modal, Button, Space } from 'antd';
+import { App as AntdApp, Upload, Modal, Button, Space, Progress } from 'antd';
 import { ExclamationCircleOutlined } from '@ant-design/icons';
 import { 
   FileSpreadsheet, 
@@ -11,6 +11,8 @@ import {
 import type { UploadProps, UploadFile } from 'antd';
 import axios from 'axios';
 import { API_URL, MAX_UPLOAD_SIZE_MB } from '../../config';
+import { calculateFileHash } from '../../utils/fileHash';
+import { uploadToStorageDirect } from '../../utils/storageUploader';
 
 const { Dragger } = Upload;
 
@@ -44,6 +46,8 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 }) => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [duplicateFile, setDuplicateFile] = useState<DuplicateFileInfo | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
   const { message: messageApi } = AntdApp.useApp();
 
   const handleDuplicateAction = async (action: 'overwrite' | 'duplicate' | 'skip') => {
@@ -88,42 +92,99 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   };
 
   const uploadFile = async (file: File): Promise<boolean> => {
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-      const token = localStorage.getItem('refine-auth');
-      const response = await axios.post(`${API_URL}/upload-to-b2`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          ...(token && { Authorization: `Bearer ${token}` }),
-        },
-      });
+      setIsUploading(true);
+      setUploadProgress(0);
 
-      if (response.data.success) {
-        messageApi.success(`${file.name} uploaded successfully`);
-        onUploadSuccess?.([response.data.files[0]]);
-        return true;
-      } else if (response.data.exists) {
+      // Step 1: Calculate file hash (for duplicate detection)
+      messageApi.info(`Preparing ${file.name}...`);
+      const fileHash = await calculateFileHash(file);
+      setUploadProgress(10);
+
+      // Step 2: Check for duplicates and get upload authorization
+      const token = localStorage.getItem('refine-auth');
+      const checkResponse = await axios.post(
+        `${API_URL}/check-duplicate`,
+        {
+          file_name: file.name,
+          file_hash: fileHash,
+          file_size: file.size,
+        },
+        {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+
+      // Handle duplicate file
+      if (checkResponse.data.is_duplicate) {
         setDuplicateFile({
           file,
-          existingFile: response.data.existing_file,
+          existingFile: checkResponse.data.existing_file,
         });
+        setIsUploading(false);
         return false;
       }
-      return false;
+
+      // Step 3: Upload directly to B2
+      if (!checkResponse.data.can_upload || !checkResponse.data.upload_authorization) {
+        throw new Error('Upload authorization failed');
+      }
+
+      messageApi.info(`Uploading ${file.name}...`);
+      const b2Result = await uploadToStorageDirect(
+        file,
+        checkResponse.data.upload_authorization,
+        (progress: number) => {
+          // Map progress from 10% to 90% (10% was hash calculation, 10% will be completion)
+          setUploadProgress(10 + (progress * 0.8));
+        }
+      );
+
+      setUploadProgress(90);
+
+      // Step 4: Complete upload by saving metadata
+      const completeResponse = await axios.post(
+        `${API_URL}/complete-upload`,
+        {
+          file_name: file.name,
+          file_hash: fileHash,
+          file_size: file.size,
+          content_type: file.type || 'application/octet-stream',
+          b2_file_id: b2Result.fileId,
+          b2_file_path: b2Result.filePath,
+        },
+        {
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+
+      setUploadProgress(100);
+      messageApi.success(`${file.name} uploaded successfully`);
+      onUploadSuccess?.([completeResponse.data.file]);
+      
+      setIsUploading(false);
+      return true;
     } catch (error) {
       const axiosError = error as { response?: { status?: number; data?: { exists?: boolean; existing_file?: UploadedFile } }; message?: string };
+      
+      // Handle duplicate detection from error response
       if (axiosError.response?.status === 409 || axiosError.response?.data?.exists) {
         setDuplicateFile({
           file,
           existingFile: axiosError.response?.data?.existing_file as UploadedFile,
         });
+        setIsUploading(false);
         return false;
       }
+      
       const err = error as Error;
       messageApi.error(`Failed to upload ${file.name}: ${err.message}`);
       onUploadError?.([err]);
+      setIsUploading(false);
       return false;
     }
   };
@@ -183,7 +244,12 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
   return (
     <>
-      <Dragger {...uploadProps} style={{ padding: '2rem', background: 'transparent', border: 'none' }}>
+      {isUploading && (
+        <div style={{ marginBottom: '1rem' }}>
+          <Progress percent={Math.round(uploadProgress)} status="active" />
+        </div>
+      )}
+      <Dragger {...uploadProps} style={{ padding: '2rem', background: 'transparent', border: 'none' }} disabled={isUploading}>
         <div className="flex flex-col items-center gap-6">
           {/* Header Status */}
           <div className="flex items-center justify-between w-full max-w-2xl border-b border-slate-200 dark:border-slate-700 pb-4 mb-2">
