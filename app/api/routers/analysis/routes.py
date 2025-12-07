@@ -31,10 +31,10 @@ from app.api.schemas.shared import (
     ensure_safe_table_name
 )
 from app.api.dependencies import detect_file_type, analysis_storage, interactive_sessions
-from app.integrations.b2 import (
-    download_file_from_b2 as _download_file_from_b2,
-    upload_file_to_b2,
-    B2ConnectionError,
+from app.integrations.storage import (
+    download_file as _download_file_from_storage,
+    upload_file as upload_file_to_storage,
+    StorageConnectionError,
 )
 from app.domain.imports.processors.csv_processor import (
     process_csv,
@@ -414,7 +414,7 @@ def _process_entry_bytes(
 
     # 2. B2 Upload (parallel)
     try:
-        upload_result = upload_file_to_b2(
+        upload_result = upload_file_to_storage(
             file_content=entry_bytes,
             file_name=stored_file_name,
             folder=archive_folder,
@@ -1405,30 +1405,18 @@ async def _auto_retry_failed_auto_import(
         return result
 
 def _get_analyze_file_for_import():
-    """Return the analyze_file_for_import callable, honoring legacy patches."""
-    try:
-        from app import main as main_module  # Local import avoids circular dependency at import time
-        return getattr(main_module, "analyze_file_for_import", _analyze_file_for_import)
-    except Exception:
-        return _analyze_file_for_import
+    """Return the analyze_file_for_import callable."""
+    return _analyze_file_for_import
 
 
-def _get_download_file_from_b2():
-    """Return the download_file_from_b2 callable, honoring legacy patches."""
-    try:
-        from app import main as main_module
-        return getattr(main_module, "download_file_from_b2", _download_file_from_b2)
-    except Exception:
-        return _download_file_from_b2
+def _get_download_file_from_storage():
+    """Return the download_file callable."""
+    return _download_file_from_storage
 
 
 def _get_execute_llm_import_decision():
-    """Return the execute_llm_import_decision callable, honoring legacy patches."""
-    try:
-        from app import main as main_module
-        return getattr(main_module, "execute_llm_import_decision", auto_import.execute_llm_import_decision)
-    except Exception:
-        return auto_import.execute_llm_import_decision
+    """Return the execute_llm_import_decision callable."""
+    return auto_import.execute_llm_import_decision
 
 
 @dataclass
@@ -1712,11 +1700,11 @@ async def analyze_file_endpoint(
                 file_content = preloaded
             else:
                 try:
-                    file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
-                except B2ConnectionError as b2_exc:
+                    file_content = _get_download_file_from_storage()(file_record["b2_file_path"])
+                except StorageConnectionError as storage_exc:
                     # Handle network connectivity errors specifically
-                    error_msg = str(b2_exc)
-                    logger.error("B2 network error for file %s: %s", file_id, error_msg)
+                    error_msg = str(storage_exc)
+                    logger.error("Storage network error for file %s: %s", file_id, error_msg)
 
                     # Update file status to failed
                     update_file_status(file_id, "failed", error_message=error_msg)
@@ -2096,7 +2084,7 @@ async def list_workbook_sheets_endpoint(file_id: str):
     if not file_name.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="File is not an Excel workbook")
 
-    file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+    file_content = _get_download_file_from_storage()(file_record["b2_file_path"])
     try:
         sheets = list_excel_sheets(file_content)
     except Exception as exc:
@@ -2159,11 +2147,11 @@ async def auto_process_archive_endpoint(
         raise HTTPException(status_code=400, detail="File is not a ZIP archive")
 
     try:
-        archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
-    except B2ConnectionError as b2_exc:
+        archive_bytes = _get_download_file_from_storage()(file_record["b2_file_path"])
+    except StorageConnectionError as storage_exc:
         # Handle network connectivity errors specifically
-        error_msg = str(b2_exc)
-        logger.error("B2 network error downloading archive %s: %s", file_id, error_msg)
+        error_msg = str(storage_exc)
+        logger.error("Storage network error downloading archive %s: %s", file_id, error_msg)
 
         # Update file status to failed
         update_file_status(file_id, "failed", error_message=error_msg)
@@ -2330,7 +2318,7 @@ async def resume_auto_process_archive_endpoint(
     if forced_table_name:
         forced_table_name = _normalize_forced_table_name(forced_table_name)
 
-    archive_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
+    archive_bytes = _get_download_file_from_storage()(file_record["b2_file_path"])
     try:
         supported_entries, extracted_skipped_results = _extract_supported_archive_entries(
             archive_bytes, allowed_paths=allowed_paths
@@ -2476,11 +2464,11 @@ async def auto_process_workbook_endpoint(
         raise HTTPException(status_code=400, detail="File is not an Excel workbook")
 
     try:
-        workbook_bytes = _get_download_file_from_b2()(file_record["b2_file_path"])
-    except B2ConnectionError as b2_exc:
+        workbook_bytes = _get_download_file_from_storage()(file_record["b2_file_path"])
+    except StorageConnectionError as storage_exc:
         # Handle network connectivity errors specifically
-        error_msg = str(b2_exc)
-        logger.error("B2 network error downloading workbook %s: %s", file_id, error_msg)
+        error_msg = str(storage_exc)
+        logger.error("Storage network error downloading workbook %s: %s", file_id, error_msg)
 
         # Update file status to failed
         update_file_status(file_id, "failed", error_message=error_msg)
@@ -2609,7 +2597,7 @@ async def auto_process_workbook_endpoint(
 
 
 @router.post("/analyze-b2-file", response_model=AnalyzeFileResponse)
-async def analyze_b2_file_endpoint(
+async def analyze_storage_file_endpoint(
     request: AnalyzeB2FileRequest,
     db: Session = Depends(get_db)
 ):
@@ -2621,7 +2609,7 @@ async def analyze_b2_file_endpoint(
     """
     try:
         # Download file from B2
-        file_content = _get_download_file_from_b2()(request.file_name)
+        file_content = _get_download_file_from_storage()(request.file_name)
         
         # Detect and process file
         file_type = detect_file_type(request.file_name)
@@ -2837,11 +2825,11 @@ async def analyze_file_interactive_endpoint(
                 logger.warning("Unable to create interactive import job for %s: %s", request.file_id, job_exc)
 
         try:
-            file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
-        except B2ConnectionError as b2_exc:
+            file_content = _get_download_file_from_storage()(file_record["b2_file_path"])
+        except StorageConnectionError as storage_exc:
             # Handle network connectivity errors specifically
-            error_msg = str(b2_exc)
-            logger.error("B2 network error for interactive file %s: %s", request.file_id, error_msg)
+            error_msg = str(storage_exc)
+            logger.error("Storage network error for interactive file %s: %s", request.file_id, error_msg)
 
             # Update file status to failed
             update_file_status(request.file_id, "failed", error_message=error_msg)
@@ -2970,7 +2958,7 @@ async def execute_interactive_import_endpoint(
         if job_id:
             update_import_job(job_id, status="running", stage="execution")
 
-        file_content = _get_download_file_from_b2()(file_record["b2_file_path"])
+        file_content = _get_download_file_from_storage()(file_record["b2_file_path"])
         file_type = detect_file_type(file_record["file_name"])
         file_name_for_import = file_record["file_name"]
 

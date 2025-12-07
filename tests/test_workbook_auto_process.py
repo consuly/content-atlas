@@ -42,7 +42,7 @@ def _wait_for_job(job_id: str, timeout: float = 5.0) -> dict:
 
 
 @pytest.fixture
-def fake_b2_storage(monkeypatch):
+def fake_storage_storage(monkeypatch):
     storage: Dict[str, bytes] = {}
 
     def fake_upload(file_content: bytes, file_name: str, folder: str = "uploads"):
@@ -64,11 +64,11 @@ def fake_b2_storage(monkeypatch):
         storage.pop(file_path, None)
         return True
 
-    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_b2", fake_delete)
-    monkeypatch.setattr("app.integrations.b2.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.integrations.b2.download_file_from_b2", fake_download)
-    monkeypatch.setattr("app.main.download_file_from_b2", fake_download, raising=False)
+    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_storage", fake_delete)
+    monkeypatch.setattr("app.integrations.b2.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.integrations.b2.download_file_from_storage", fake_download)
+    monkeypatch.setattr("app.main.download_file_from_storage", fake_download, raising=False)
     return storage
 
 
@@ -279,7 +279,7 @@ def _upsert_clients(store: Dict[str, Dict], records):
 
 
 @pytest.mark.not_b2
-def test_auto_process_workbook_merges_sheets(monkeypatch, fake_b2_storage, in_memory_state):
+def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, in_memory_state):
     analysis_module = __import__("app.api.routers.analysis", fromlist=[""])
 
     target_table = "clients_workbook"

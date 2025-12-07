@@ -172,30 +172,18 @@ async def auto_retry_failed_auto_import(
 
 
 def get_analyze_file_for_import():
-    """Return the analyze_file_for_import callable, honoring legacy patches."""
-    from app.domain.queries.analyzer import analyze_file_for_import as _analyze_file_for_import
-    try:
-        from app import main as main_module  # Local import avoids circular dependency at import time
-        return getattr(main_module, "analyze_file_for_import", _analyze_file_for_import)
-    except Exception:
-        return _analyze_file_for_import
+    """Return the analyze_file_for_import callable."""
+    from app.domain.queries.analyzer import analyze_file_for_import
+    return analyze_file_for_import
 
 
-def get_download_file_from_b2():
-    """Return the download_file_from_b2 callable, honoring legacy patches."""
-    from app.integrations.b2 import download_file_from_b2 as _download_file_from_b2
-    try:
-        from app import main as main_module
-        return getattr(main_module, "download_file_from_b2", _download_file_from_b2)
-    except Exception:
-        return _download_file_from_b2
+def get_download_file_from_storage():
+    """Return the download_file callable."""
+    from app.integrations.storage import download_file
+    return download_file
 
 
 def get_execute_llm_import_decision():
-    """Return the execute_llm_import_decision callable, honoring legacy patches."""
-    import app.integrations.auto_import as auto_import
-    try:
-        from app import main as main_module
-        return getattr(main_module, "execute_llm_import_decision", auto_import.execute_llm_import_decision)
-    except Exception:
-        return auto_import.execute_llm_import_decision
+    """Return the execute_llm_import_decision callable."""
+    from app.integrations.auto_import import execute_llm_import_decision
+    return execute_llm_import_decision

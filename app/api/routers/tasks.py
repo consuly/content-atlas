@@ -6,12 +6,12 @@ import uuid
 
 from app.api.schemas.shared import MapB2DataAsyncRequest, AsyncTaskStatus, MapDataResponse, MappingConfig
 from app.api.dependencies import task_storage
-from app.integrations.b2 import download_file_from_b2
+from app.integrations.storage import download_file
 
 router = APIRouter(tags=["tasks"])
 
 
-def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
+def process_storage_data_async(task_id: str, file_name: str, mapping: MappingConfig):
     """Background task for processing B2 data asynchronously."""
     from app.domain.imports.orchestrator import execute_data_import
     from app.db.models import FileAlreadyImportedException, DuplicateDataException
@@ -25,8 +25,8 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
             message="Downloading file from B2..."
         )
 
-        # Download file from B2
-        file_content = download_file_from_b2(file_name)
+        # Download file from storage
+        file_content = download_file(file_name)
 
         task_storage[task_id] = AsyncTaskStatus(
             task_id=task_id,
@@ -88,7 +88,7 @@ def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
 
 
 @router.post("/map-b2-data-async", response_model=AsyncTaskStatus)
-async def map_b2_data_async_endpoint(
+async def map_storage_data_async_endpoint(
     request: MapB2DataAsyncRequest,
     background_tasks: BackgroundTasks
 ):
@@ -117,7 +117,7 @@ async def map_b2_data_async_endpoint(
 
     # Add background task
     background_tasks.add_task(
-        process_b2_data_async,
+        process_storage_data_async,
         task_id=task_id,
         file_name=request.file_name,
         mapping=request.mapping

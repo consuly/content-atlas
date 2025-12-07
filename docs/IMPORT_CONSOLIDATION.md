@@ -154,10 +154,10 @@ async def map_data_endpoint(file: UploadFile, mapping_json: str):
 **After** (25 lines):
 ```python
 @app.post("/map-b2-data", response_model=MapDataResponse)
-async def map_b2_data_endpoint(request: MapB2DataRequest):
+async def map_storage_data_endpoint(request: MapB2DataRequest):
     from .import_orchestrator import execute_data_import
     
-    file_content = download_file_from_b2(request.file_name)
+    file_content = download_file_from_storage(request.file_name)
     
     result = execute_data_import(
         file_content=file_content,
@@ -174,7 +174,7 @@ async def map_b2_data_endpoint(request: MapB2DataRequest):
     )
 ```
 
-### 3. `process_b2_data_async()` (Background Task)
+### 3. `process_storage_data_async()` (Background Task)
 
 **Before** (80+ lines):
 ```python
@@ -183,13 +183,13 @@ async def map_b2_data_endpoint(request: MapB2DataRequest):
 
 **After** (40 lines):
 ```python
-def process_b2_data_async(task_id: str, file_name: str, mapping: MappingConfig):
+def process_storage_data_async(task_id: str, file_name: str, mapping: MappingConfig):
     from .import_orchestrator import execute_data_import
     
     # Update progress
     task_storage[task_id] = AsyncTaskStatus(status="processing", ...)
     
-    file_content = download_file_from_b2(file_name)
+    file_content = download_file_from_storage(file_name)
     
     result = execute_data_import(
         file_content=file_content,
