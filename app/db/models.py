@@ -199,9 +199,35 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
             def normalize_type(sql_type: str) -> str:
                 """Normalize SQL type for comparison."""
                 sql_type_upper = sql_type.upper()
+                
                 # Normalize VARCHAR variations
                 if 'CHARACTER VARYING' in sql_type_upper or 'VARCHAR' in sql_type_upper:
                     return 'VARCHAR'
+                
+                # Normalize NUMERIC/DECIMAL (equivalent in PostgreSQL)
+                if 'NUMERIC' in sql_type_upper or 'DECIMAL' in sql_type_upper:
+                    return 'DECIMAL'
+                
+                # Normalize BOOLEAN variations
+                if sql_type_upper in ('BOOL', 'BOOLEAN'):
+                    return 'BOOLEAN'
+                
+                # Normalize INTEGER variations
+                if sql_type_upper in ('INT', 'INTEGER', 'INT4'):
+                    return 'INTEGER'
+                
+                # Normalize BIGINT variations
+                if sql_type_upper in ('BIGINT', 'INT8'):
+                    return 'BIGINT'
+                
+                # Normalize SMALLINT variations
+                if sql_type_upper in ('SMALLINT', 'INT2'):
+                    return 'SMALLINT'
+                
+                # Normalize TIMESTAMP variations
+                if 'TIMESTAMP' in sql_type_upper:
+                    return 'TIMESTAMP'
+                
                 return sql_type_upper
             
             current_schema_normalized = {col: normalize_type(col_type) for col, col_type in current_schema.items()}
