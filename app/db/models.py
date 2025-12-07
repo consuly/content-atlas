@@ -558,9 +558,9 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
                 if count > 0:
                     duplicate_indices.append(global_idx)
                 
-                # DIAGNOSTIC: Log first few checks to see what's being queried
+                # Log first few checks for debugging (without exposing data values)
                 if global_idx < 3:
-                    logger.info(f"DIAGNOSTIC: Record {global_idx} duplicate check - count: {count}, params: {params}")
+                    logger.debug(f"Duplicate check for record {global_idx}: {count} matches found")
                     
             except Exception as e:
                 print(f"DEBUG: _check_for_duplicates_db_side: Error checking record {global_idx}: {e}")
@@ -1117,7 +1117,6 @@ def _check_chunks_parallel(
         sample_keys = list(sample_record.keys())
         logger.info(f"DIAGNOSTIC: Uniqueness columns requested: {uniqueness_columns}")
         logger.info(f"DIAGNOSTIC: Sample record keys (first 10): {sample_keys[:10]}")
-        logger.info(f"DIAGNOSTIC: Sample record (first 3 items): {dict(list(sample_record.items())[:3])}")
         
         # Check if uniqueness columns exist in records
         missing_in_records = [col for col in uniqueness_columns if col not in sample_keys]
