@@ -111,10 +111,6 @@ def fake_b2_storage(monkeypatch):
     monkeypatch.setattr("app.integrations.b2.upload_file_to_b2", fake_upload)
     monkeypatch.setattr("app.integrations.b2.download_file_from_b2", fake_download)
     monkeypatch.setattr("app.main.download_file_from_b2", fake_download, raising=False)
-    monkeypatch.setattr("app.api.routers.analysis.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr(
-        "app.api.routers.analysis._download_file_from_b2", fake_download, raising=False
-    )
     return storage
 
 
@@ -159,8 +155,6 @@ def test_auto_process_archive_happy_path(fake_b2_storage):
 
 @pytest.mark.not_b2
 def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_storage):
-    analysis_module = importlib.import_module("app.api.routers.analysis")
-
     def fake_analyze(**_kwargs):
         return {
             "success": True,
@@ -173,9 +167,8 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_stor
             },
         }
 
-    monkeypatch.setattr(
-        analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze
-    )
+    # Patch the analyzer function that _get_analyze_file_for_import looks for
+    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
 
     def fake_execute(**_kwargs):
         return {
@@ -228,8 +221,6 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_stor
 def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, tmp_path):
     forced_table = "forced_archive_table"
 
-    analysis_module = importlib.import_module("app.api.routers.analysis")
-
     def fake_analyze(**_kwargs):
         return {
             "success": True,
@@ -245,6 +236,9 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, 
             },
         }
 
+    # Patch the analyzer function that _get_analyze_file_for_import looks for
+    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
+
     captured = {}
 
     def fake_execute(file_content, file_name, all_records, llm_decision):
@@ -258,8 +252,6 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, 
             "records_processed": len(all_records),
             "duplicates_skipped": 0,
         }
-
-    monkeypatch.setattr(analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze)
     monkeypatch.setattr(
         "app.integrations.auto_import.execute_llm_import_decision", fake_execute
     )
@@ -303,7 +295,6 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, 
 
 @pytest.mark.not_b2
 def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_b2_storage):
-    analysis_module = importlib.import_module("app.api.routers.analysis")
     analysis_calls = {"count": 0}
     execution_calls = {"count": 0}
 
@@ -320,9 +311,8 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_b2_storag
             },
         }
 
-    monkeypatch.setattr(
-        analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze
-    )
+    # Patch the analyzer function that _get_analyze_file_for_import looks for
+    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
 
     def fake_execute(**_kwargs):
         execution_calls["count"] += 1
@@ -404,16 +394,16 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
             can_auto_execute=True,
         )
 
-    monkeypatch.setattr(analysis_module, "analyze_file_endpoint", fake_analyze_file_endpoint)
+    monkeypatch.setattr("app.api.routers.analysis.routes.analyze_file_endpoint", fake_analyze_file_endpoint)
     monkeypatch.setattr(
-        analysis_module, "_build_structure_fingerprint", lambda *_args, **_kwargs: "shared-fp"
+        "app.api.routers.analysis.routes._build_structure_fingerprint", lambda *_args, **_kwargs: "shared-fp"
     )
 
     entry_bytes = "name\nalpha\n".encode()
     session_local = get_session_local()
     db_session = session_local()
     try:
-        result = analysis_module._process_entry_bytes(
+        result = analysis_module.routes._process_entry_bytes(
             entry_bytes=entry_bytes,
             archive_path="shared.csv",
             entry_name="shared.csv",
@@ -441,7 +431,6 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
 
 @pytest.mark.not_b2
 def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_b2_storage):
-    analysis_module = importlib.import_module("app.api.routers.analysis")
     execution_calls = {"count": 0}
 
     def fake_analyze(**_kwargs):
@@ -456,9 +445,8 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_b2_storage
             },
         }
 
-    monkeypatch.setattr(
-        analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze
-    )
+    # Patch the analyzer function that _get_analyze_file_for_import looks for
+    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
 
     def fake_execute(**_kwargs):
         execution_calls["count"] += 1
@@ -542,7 +530,6 @@ def test_auto_process_archive_resume_all(monkeypatch, fake_b2_storage):
     When resume_failed_entries_only=False, the endpoint should reprocess the entire archive
     regardless of prior success/failure state.
     """
-    analysis_module = importlib.import_module("app.api.routers.analysis")
     execution_calls = {"count": 0}
 
     def fake_analyze(**_kwargs):
@@ -557,9 +544,8 @@ def test_auto_process_archive_resume_all(monkeypatch, fake_b2_storage):
             },
         }
 
-    monkeypatch.setattr(
-        analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze
-    )
+    # Patch the analyzer function that _get_analyze_file_for_import looks for
+    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
 
     def fake_execute(**_kwargs):
         execution_calls["count"] += 1

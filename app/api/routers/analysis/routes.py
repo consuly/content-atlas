@@ -71,10 +71,6 @@ router = APIRouter(tags=["analysis"])
 logger = logging.getLogger(__name__)
 _preloaded_file_contents: Dict[str, bytes] = {}
 ARCHIVE_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xls")
-ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_auto_process.log")
-MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.log")
-_archive_log_lock = threading.Lock()
-_failure_log_lock = threading.Lock()
 
 
 def _normalize_forced_table_name(table_name: Optional[str]) -> Optional[str]:
@@ -298,6 +294,7 @@ def _execute_cached_archive_decision(
             file_name=entry_name,
             all_records=records,
             llm_decision=llm_decision,
+            source_path=None,  # Cached execution doesn't have B2 path context
         )
         response = AnalyzeFileResponse(
             success=execution_result.get("success", False),
@@ -1839,7 +1836,8 @@ async def analyze_file_endpoint(
                     file_content=file_content,
                     file_name=file_name,
                     all_records=records,  # Use all records, not just sample
-                    llm_decision=llm_decision
+                    llm_decision=llm_decision,
+                    source_path=file_record.get("b2_file_path") if file_id else None
                 )
                 
                 response.auto_execution_result = AutoExecutionResult(**execution_result)
@@ -2999,7 +2997,8 @@ async def execute_interactive_import_endpoint(
                 file_content=file_content,
                 file_name=file_name_for_import,
                 all_records=records,
-                llm_decision=session.llm_decision
+                llm_decision=session.llm_decision,
+                source_path=file_record.get("b2_file_path")
             )
         except Exception as exc:
             error_text = str(exc)

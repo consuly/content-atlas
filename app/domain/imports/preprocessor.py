@@ -212,6 +212,10 @@ def _apply_explode_columns(
     Duplicate each row once per populated source column and place the value
     into a single target column.
     
+    This function now handles two scenarios:
+    1. Multiple source columns (e.g., email_1, email_2) -> stack into target
+    2. Single source column with comma-separated values -> split and explode
+    
     Returns transformed records, errors, and expansion stats.
     """
     errors: List[Dict[str, Any]] = []
@@ -233,6 +237,7 @@ def _apply_explode_columns(
     dedupe_values = transformation.get("dedupe_values", True)
     strip_whitespace = transformation.get("strip_whitespace", True)
     case_insensitive_dedupe = transformation.get("case_insensitive_dedupe", True)
+    delimiter = transformation.get("delimiter")  # Optional explicit delimiter
 
     if not source_columns or not target_column:
         errors.append(
@@ -259,7 +264,7 @@ def _apply_explode_columns(
                 "message": f"explode_columns skipped: none of the requested source columns exist ({source_columns})",
             }
         )
-        return records, errors
+        return records, errors, expansion_stats
     if missing_sources:
         for col in missing_sources:
             df[col] = None
@@ -273,8 +278,24 @@ def _apply_explode_columns(
                     }
                 )
 
+    # ENHANCEMENT: Parse comma-separated values in each source column before stacking
+    # This enables splitting "email1@test.com, email2@test.com" into separate rows
     value_df = df[present_sources].copy()
+    
+    # Apply parsing to split multi-value cells into lists
+    for col in present_sources:
+        value_df[col] = value_df[col].apply(
+            lambda v: _parse_list_for_explode(v, delimiter=delimiter, strip_whitespace=strip_whitespace)
+        )
+    
+    # Explode each column to expand lists into separate rows
+    # This creates multiple rows when a cell contains multiple values
+    for col in present_sources:
+        value_df = value_df.explode(col, ignore_index=False)
+    
+    # Now normalize the exploded values
     value_df = value_df.map(lambda v: _normalize_value(v, strip_whitespace))
+    
     # future_stack enables the upcoming stack behavior and silences pandas deprecation warnings.
     # Drop NA values manually because dropna cannot be combined with future_stack=True.
     stacked = value_df.stack(future_stack=True).reset_index()

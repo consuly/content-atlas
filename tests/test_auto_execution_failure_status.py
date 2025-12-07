@@ -151,36 +151,35 @@ def in_memory_state(monkeypatch):
 
     for target in (
         "app.domain.uploads.uploaded_files.insert_uploaded_file",
-        "app.api.routers.analysis.insert_uploaded_file",
         "app.api.routers.uploads.insert_uploaded_file",
     ):
         monkeypatch.setattr(target, insert_uploaded_file)
     for target in (
         "app.domain.uploads.uploaded_files.get_uploaded_file_by_id",
-        "app.api.routers.analysis.get_uploaded_file_by_id",
         "app.api.routers.uploads.get_uploaded_file_by_id",
+        "app.api.routers.analysis.routes.get_uploaded_file_by_id",
     ):
         monkeypatch.setattr(target, get_uploaded_file_by_id)
     monkeypatch.setattr("app.api.routers.uploads.get_uploaded_file_by_name", get_uploaded_file_by_name)
     for target in (
         "app.domain.uploads.uploaded_files.update_file_status",
-        "app.api.routers.analysis.update_file_status",
+        "app.api.routers.analysis.routes.update_file_status",
     ):
         monkeypatch.setattr(target, update_file_status)
 
     for target in (
         "app.domain.imports.jobs.create_import_job",
-        "app.api.routers.analysis.create_import_job",
+        "app.api.routers.analysis.routes.create_import_job",
     ):
         monkeypatch.setattr(target, create_import_job)
     for target in (
         "app.domain.imports.jobs.update_import_job",
-        "app.api.routers.analysis.update_import_job",
+        "app.api.routers.analysis.routes.update_import_job",
     ):
         monkeypatch.setattr(target, update_import_job)
     for target in (
         "app.domain.imports.jobs.complete_import_job",
-        "app.api.routers.analysis.complete_import_job",
+        "app.api.routers.analysis.routes.complete_import_job",
     ):
         monkeypatch.setattr(target, complete_import_job)
 
@@ -188,7 +187,7 @@ def in_memory_state(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr("app.api.routers.analysis.get_session_local", lambda: lambda: DummySession())
+    monkeypatch.setattr("app.api.routers.analysis.routes.get_session_local", lambda: lambda: DummySession())
 
     return {"uploads": uploads, "jobs": jobs}
 
@@ -206,13 +205,25 @@ def test_auto_execute_failure_marks_file_failed(
     b2_path = "uploads/auto-fail.xlsx"
     fake_b2_storage[b2_path] = workbook_bytes
 
-    file_record = analysis_module.insert_uploaded_file(
-        file_name="auto-fail.xlsx",
-        b2_file_id="fake-id",
-        b2_file_path=b2_path,
-        file_size=len(workbook_bytes),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    # Create the file record using the in-memory state
+    file_record = in_memory_state["uploads"]["550e8400-e29b-41d4-a716-446655440000"] = {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "file_name": "auto-fail.xlsx",
+        "b2_file_id": "fake-id",
+        "b2_file_path": b2_path,
+        "file_size": len(workbook_bytes),
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "upload_date": None,
+        "status": "uploaded",
+        "mapped_table_name": None,
+        "mapped_rows": None,
+        "error_message": None,
+        "active_job_id": None,
+        "active_job_status": None,
+        "active_job_stage": None,
+        "active_job_progress": None,
+        "active_job_started_at": None,
+    }
     file_id = file_record["id"]
 
     # Force deterministic analysis + failing execution
@@ -241,9 +252,14 @@ def test_auto_execute_failure_marks_file_failed(
             "target_table": "clients",
         }
 
+    # Patch both the module-level function and where it's imported in routes
     monkeypatch.setattr(
         analysis_module,
         "_get_execute_llm_import_decision",
+        lambda: _fail_execute,
+    )
+    monkeypatch.setattr(
+        "app.api.routers.analysis.routes._get_execute_llm_import_decision",
         lambda: _fail_execute,
     )
 
