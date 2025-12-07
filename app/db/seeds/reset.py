@@ -72,82 +72,56 @@ def get_user_created_tables(engine: Engine) -> List[str]:
         return [row[0] for row in result]
 
 
-def get_all_b2_files() -> List[Dict[str, Any]]:
+def get_all_storage_files() -> List[Dict[str, Any]]:
     """
-    Get list of all files in B2 storage under the uploads folder.
+    Get list of all files in storage under the uploads folder.
     
     Returns:
         List of file information dictionaries
     """
     try:
-        from app.integrations.b2 import get_b2_api
-        
-        b2_api = get_b2_api()
-        bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
+        from app.integrations.storage import list_files
         
         # List all files in the uploads folder
-        files = []
-        for file_version, _ in bucket.ls(folder_to_list='uploads/', recursive=True):
-            files.append({
-                'file_name': file_version.file_name,
-                'file_id': file_version.id_,
-                'size': file_version.size
-            })
+        files = list_files(folder='uploads')
         
         return files
         
     except ValueError as e:
-        # B2 not configured
-        logger.warning(f"B2 not configured, skipping file listing: {e}")
+        # Storage not configured
+        logger.warning(f"Storage not configured, skipping file listing: {e}")
         return []
     except Exception as e:
-        logger.error(f"Error listing B2 files: {e}")
+        logger.error(f"Error listing storage files: {e}")
         return []
 
 
-def delete_all_b2_files() -> Dict[str, Any]:
+def delete_all_storage_files() -> Dict[str, Any]:
     """
-    Delete all files from B2 storage under the uploads folder.
+    Delete all files from storage under the uploads folder.
     
     Returns:
         Dictionary with deletion results
     """
     try:
-        from app.integrations.b2 import get_b2_api
+        from app.integrations.storage import delete_all_files
         
-        b2_api = get_b2_api()
-        bucket = b2_api.get_bucket_by_name(settings.b2_bucket_name)
+        # Delete all files in the uploads folder
+        result = delete_all_files(folder='uploads')
         
-        # List and delete all files
-        deleted_count = 0
-        failed_count = 0
-        
-        for file_version, _ in bucket.ls(folder_to_list='uploads/', recursive=True):
-            try:
-                b2_api.delete_file_version(file_version.id_, file_version.file_name)
-                deleted_count += 1
-                logger.info(f"Deleted B2 file: {file_version.file_name}")
-            except Exception as e:
-                failed_count += 1
-                logger.error(f"Failed to delete B2 file {file_version.file_name}: {e}")
-        
-        return {
-            'success': failed_count == 0,
-            'deleted_count': deleted_count,
-            'failed_count': failed_count
-        }
+        return result
         
     except ValueError as e:
-        # B2 not configured
-        logger.warning(f"B2 not configured, skipping file deletion: {e}")
+        # Storage not configured
+        logger.warning(f"Storage not configured, skipping file deletion: {e}")
         return {
             'success': True,
             'deleted_count': 0,
             'failed_count': 0,
-            'message': 'B2 not configured'
+            'message': 'Storage not configured'
         }
     except Exception as e:
-        logger.error(f"Error deleting B2 files: {e}")
+        logger.error(f"Error deleting storage files: {e}")
         return {
             'success': False,
             'deleted_count': 0,
@@ -206,13 +180,13 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
             
-        # Database operations successful, now clean up B2
-        logger.info("Database reset successful, cleaning up B2 files...")
-        b2_result = delete_all_b2_files()
-        results['b2_files_deleted'] = b2_result.get('deleted_count', 0)
+        # Database operations successful, now clean up storage
+        logger.info("Database reset successful, cleaning up storage files...")
+        storage_result = delete_all_storage_files()
+        results['storage_files_deleted'] = storage_result.get('deleted_count', 0)
         
-        if not b2_result.get('success', False):
-            error_msg = f"B2 cleanup had issues: {b2_result.get('error', 'Unknown error')}"
+        if not storage_result.get('success', False):
+            error_msg = f"Storage cleanup had issues: {storage_result.get('error', 'Unknown error')}"
             results['errors'].append(error_msg)
             logger.warning(error_msg)
         
@@ -221,7 +195,7 @@ def reset_database_data(force_production: bool = False) -> Dict[str, Any]:
         
         logger.info(f"Reset complete: {len(results['tables_dropped'])} tables dropped, "
                    f"{len(results['tables_truncated'])} tables truncated, "
-                   f"{results['b2_files_deleted']} B2 files deleted")
+                   f"{results['storage_files_deleted']} storage files deleted")
         
         return results
         

@@ -16,7 +16,7 @@ from app.api.routers.analysis.execution import (
     auto_retry_failed_auto_import,
     summarize_archive_execution,
     get_analyze_file_for_import as _get_analyze_file_for_import,
-    get_download_file_from_b2 as _get_download_file_from_b2,
+    get_download_file_from_storage as _get_download_file_from_storage,
     get_execute_llm_import_decision as _get_execute_llm_import_decision,
 )
 
@@ -68,7 +68,7 @@ __all__ = [
     "auto_retry_failed_auto_import",
     "summarize_archive_execution",
     "_get_analyze_file_for_import",
-    "_get_download_file_from_b2",
+    "_get_download_file_from_storage",
     "_get_execute_llm_import_decision",
     # Interactive
     "InteractiveSessionState",
