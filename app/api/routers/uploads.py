@@ -11,12 +11,23 @@ from app.api.schemas.shared import (
     UploadFileResponse, UploadedFileInfo, FileExistsResponse,
     UploadedFilesListResponse, UploadedFileDetailResponse, DeleteFileResponse,
     CheckDuplicateRequest, CheckDuplicateResponse,
-    CompleteUploadRequest, CompleteUploadResponse
+    CompleteUploadRequest, CompleteUploadResponse,
+    StartMultipartUploadRequest, StartMultipartUploadResponse,
+    CompleteMultipartUploadRequest, CompleteMultipartUploadResponse,
+    AbortMultipartUploadRequest, AbortMultipartUploadResponse
 )
 from app.integrations.storage import (
     upload_file as upload_file_to_storage,
     delete_file as delete_file_from_storage,
     generate_presigned_upload_url
+)
+from app.integrations.storage_multipart import (
+    start_multipart_upload,
+    generate_presigned_upload_part_url,
+    complete_multipart_upload,
+    abort_multipart_upload,
+    calculate_part_ranges,
+    get_optimal_part_size
 )
 from app.domain.uploads.uploaded_files import (
     insert_uploaded_file, get_uploaded_file_by_name, get_uploaded_file_by_id,
@@ -491,3 +502,220 @@ async def complete_upload_endpoint(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload completion failed: {str(e)}")
+
+
+@router.post("/start-multipart-upload", response_model=StartMultipartUploadResponse)
+async def start_multipart_upload_endpoint(
+    request: StartMultipartUploadRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Start a multipart upload for large files (>10MB).
+    
+    This endpoint initiates a multipart upload session and returns presigned URLs
+    for each part, allowing the browser to upload chunks in parallel directly to B2.
+    
+    Parameters:
+    - file_name: Name of the file to upload
+    - file_size: Total size of the file in bytes
+    - file_hash: SHA-256 hash of the file content
+    - content_type: Optional MIME type of the file
+    
+    Returns:
+    - upload_id: Unique identifier for this multipart upload session
+    - file_path: Full path where the file will be stored
+    - part_size: Size of each part in bytes
+    - total_parts: Number of parts the file will be split into
+    - part_urls: List of presigned URLs for uploading each part
+    """
+    try:
+        print(f"\n[MULTIPART-START] Starting multipart upload for: {request.file_name}")
+        print(f"[MULTIPART-START] File size: {request.file_size} bytes ({request.file_size / (1024*1024):.2f} MB)")
+        print(f"[MULTIPART-START] File hash: {request.file_hash}")
+        
+        # Check if file with same hash exists
+        existing_file = get_uploaded_file_by_hash(request.file_hash)
+        
+        if existing_file:
+            print(f"[MULTIPART-START] Duplicate found: {existing_file['file_name']}")
+            raise HTTPException(
+                status_code=409,
+                detail=f"File already exists: {existing_file['file_name']}"
+            )
+        
+        # Ensure file size is within limits
+        _ensure_within_size_limit(request.file_size, request.file_name)
+        
+        # Calculate optimal part size
+        part_size = get_optimal_part_size(request.file_size)
+        print(f"[MULTIPART-START] Optimal part size: {part_size / (1024*1024):.2f} MB")
+        
+        # Calculate part ranges
+        part_ranges = calculate_part_ranges(request.file_size, part_size)
+        total_parts = len(part_ranges)
+        print(f"[MULTIPART-START] Total parts: {total_parts}")
+        
+        # Start multipart upload
+        multipart_result = start_multipart_upload(
+            file_name=request.file_name,
+            folder="uploads",
+            content_type=request.content_type
+        )
+        
+        upload_id = multipart_result["upload_id"]
+        file_path = multipart_result["file_path"]
+        
+        print(f"[MULTIPART-START] Upload ID: {upload_id}")
+        print(f"[MULTIPART-START] File path: {file_path}")
+        
+        # Generate presigned URLs for each part
+        part_urls = []
+        for part_range in part_ranges:
+            part_number = part_range["part_number"]
+            part_url = generate_presigned_upload_part_url(
+                file_path=file_path,
+                upload_id=upload_id,
+                part_number=part_number,
+                expires_in=3600  # 1 hour
+            )
+            part_urls.append(part_url)
+        
+        print(f"[MULTIPART-START] Generated {len(part_urls)} presigned URLs")
+        print(f"[MULTIPART-START] Multipart upload started successfully")
+        
+        return StartMultipartUploadResponse(
+            success=True,
+            upload_id=upload_id,
+            file_path=file_path,
+            part_size=part_size,
+            total_parts=total_parts,
+            part_urls=part_urls,
+            message=f"Multipart upload started with {total_parts} parts"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"\n[MULTIPART-START ERROR] Error: {type(e).__name__}: {str(e)}")
+        print(f"[MULTIPART-START ERROR] Traceback:")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to start multipart upload: {str(e)}")
+
+
+@router.post("/complete-multipart-upload", response_model=CompleteMultipartUploadResponse)
+async def complete_multipart_upload_endpoint(
+    request: CompleteMultipartUploadRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Complete a multipart upload after all parts have been uploaded.
+    
+    This endpoint finalizes the multipart upload by combining all parts into
+    a single file and saving the metadata to the database.
+    
+    Parameters:
+    - file_name: Name of the uploaded file
+    - file_hash: SHA-256 hash of the file content
+    - file_size: Total size of the file in bytes
+    - content_type: MIME type of the file
+    - upload_id: The multipart upload session ID
+    - file_path: Full path in B2 bucket
+    - parts: List of uploaded parts with PartNumber and ETag
+    
+    Returns:
+    - File metadata record
+    """
+    try:
+        print(f"\n[MULTIPART-COMPLETE] Completing multipart upload for: {request.file_name}")
+        print(f"[MULTIPART-COMPLETE] Upload ID: {request.upload_id}")
+        print(f"[MULTIPART-COMPLETE] Total parts: {len(request.parts)}")
+        
+        # Complete the multipart upload in B2
+        completion_result = complete_multipart_upload(
+            file_path=request.file_path,
+            upload_id=request.upload_id,
+            parts=request.parts
+        )
+        
+        print(f"[MULTIPART-COMPLETE] B2 file ID: {completion_result['file_id']}")
+        
+        # Save file metadata to database
+        uploaded_file = insert_uploaded_file(
+            file_name=request.file_name,
+            b2_file_id=completion_result["file_id"],
+            b2_file_path=request.file_path,
+            file_size=request.file_size,
+            content_type=request.content_type,
+            user_id=None,  # TODO: Get from auth context
+            file_hash=request.file_hash
+        )
+        
+        print(f"[MULTIPART-COMPLETE] Database record created: {uploaded_file['id']}")
+        print(f"[MULTIPART-COMPLETE] Multipart upload completed successfully")
+        
+        return CompleteMultipartUploadResponse(
+            success=True,
+            message="Multipart upload completed successfully",
+            file=UploadedFileInfo(**uploaded_file)
+        )
+        
+    except Exception as e:
+        print(f"\n[MULTIPART-COMPLETE ERROR] Error: {type(e).__name__}: {str(e)}")
+        print(f"[MULTIPART-COMPLETE ERROR] Traceback:")
+        print(traceback.format_exc())
+        
+        # Try to abort the multipart upload to clean up
+        try:
+            abort_multipart_upload(request.file_path, request.upload_id)
+            print(f"[MULTIPART-COMPLETE ERROR] Aborted multipart upload {request.upload_id}")
+        except Exception as abort_error:
+            print(f"[MULTIPART-COMPLETE ERROR] Failed to abort upload: {abort_error}")
+        
+        raise HTTPException(status_code=500, detail=f"Failed to complete multipart upload: {str(e)}")
+
+
+@router.post("/abort-multipart-upload", response_model=AbortMultipartUploadResponse)
+async def abort_multipart_upload_endpoint(
+    request: AbortMultipartUploadRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Abort a multipart upload and clean up any uploaded parts.
+    
+    This should be called if the upload fails or is cancelled to clean up
+    storage space and avoid charges for incomplete uploads.
+    
+    Parameters:
+    - upload_id: The multipart upload session ID
+    - file_path: Full path in B2 bucket
+    
+    Returns:
+    - Success message
+    """
+    try:
+        print(f"\n[MULTIPART-ABORT] Aborting multipart upload")
+        print(f"[MULTIPART-ABORT] Upload ID: {request.upload_id}")
+        print(f"[MULTIPART-ABORT] File path: {request.file_path}")
+        
+        success = abort_multipart_upload(
+            file_path=request.file_path,
+            upload_id=request.upload_id
+        )
+        
+        if success:
+            print(f"[MULTIPART-ABORT] Multipart upload aborted successfully")
+            return AbortMultipartUploadResponse(
+                success=True,
+                message="Multipart upload aborted successfully"
+            )
+        else:
+            print(f"[MULTIPART-ABORT] Failed to abort multipart upload")
+            raise HTTPException(status_code=500, detail="Failed to abort multipart upload")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"\n[MULTIPART-ABORT ERROR] Error: {type(e).__name__}: {str(e)}")
+        print(f"[MULTIPART-ABORT ERROR] Traceback:")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to abort multipart upload: {str(e)}")
