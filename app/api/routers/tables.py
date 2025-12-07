@@ -72,6 +72,7 @@ async def query_table(
     table_name: str,
     limit: int = 100,
     offset: int = 0,
+    import_id: Optional[str] = None,
     search: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_order: str = "asc",
@@ -83,6 +84,9 @@ async def query_table(
 ):
     """
     Query table data with pagination, optional search, sorting, and filtering.
+    
+    Parameters:
+    - import_id: Optional UUID to filter rows by specific import
     """
     try:
         if is_reserved_system_table(table_name):
@@ -154,6 +158,11 @@ async def query_table(
 
             where_clauses: List[str] = []
             query_params: Dict[str, Any] = {}
+
+            # Filter by import_id if provided
+            if import_id:
+                where_clauses.append('"_import_id" = :import_id')
+                query_params["import_id"] = import_id
 
             for idx, filter_obj in enumerate(parsed_filters):
                 column = filter_obj["column"]

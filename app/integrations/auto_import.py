@@ -512,7 +512,8 @@ def execute_llm_import_decision(
     file_content: bytes,
     file_name: str,
     all_records: List[Dict[str, Any]],
-    llm_decision: Dict[str, Any]
+    llm_decision: Dict[str, Any],
+    source_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Execute an import based on LLM's decision.
@@ -522,6 +523,7 @@ def execute_llm_import_decision(
         file_name: Name of the file
         all_records: All records from the file (not just sample)
         llm_decision: LLM's decision with strategy, target_table, column_mapping, etc.
+        source_path: Optional B2 file path for tracking (enables duplicate count matching)
         
     Returns:
         Execution result with success status and details
@@ -899,7 +901,8 @@ def execute_llm_import_decision(
             file_content=file_content,
             file_name=file_name,
             mapping_config=mapping_config,
-            source_type="local_upload",
+            source_type="b2_storage" if source_path else "local_upload",
+            source_path=source_path,
             import_strategy=strategy,
             metadata_info=metadata_info,
             pre_parsed_records=records,  # Use records parsed according to LLM instructions

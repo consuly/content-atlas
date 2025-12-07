@@ -695,10 +695,9 @@ export const ImportPage: React.FC = () => {
         }
         const duplicates = record.duplicates_found;
         if (duplicates === undefined) {
-          return <Badge status="default" text="Unknown" />;
+          return 'Unknown';
         }
-        const label = `${duplicates.toLocaleString()} duplicate${duplicates === 1 ? '' : 's'}`;
-        return <Badge status={duplicates > 0 ? 'warning' : 'success'} text={label} />;
+        return duplicates.toLocaleString();
       },
     },
     {
