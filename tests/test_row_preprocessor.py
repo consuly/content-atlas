@@ -33,7 +33,7 @@ def test_explode_columns_creates_one_row_per_email_and_drops_sources():
 
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, stats = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert len(transformed) == 2
     emails = {row["email"] for row in transformed}
@@ -63,7 +63,7 @@ def test_record_numbers_survive_explosion_for_mapping_errors():
     }
 
     pre_config = _config_with_rules(rules)
-    exploded, preprocess_errors = apply_row_transformations(records, pre_config, row_offset=0)
+    exploded, preprocess_errors, _ = apply_row_transformations(records, pre_config, row_offset=0)
     assert preprocess_errors == []
     assert len(exploded) == 2
     assert all(row["_source_record_number"] == 1 for row in exploded)
@@ -101,7 +101,7 @@ def test_filter_rows_with_include_and_exclude_patterns():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert len(transformed) == 2
     emails = {row["email"] for row in transformed}
@@ -125,7 +125,7 @@ def test_filter_rows_skips_when_columns_missing():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert transformed == records  # no rows dropped
     assert any("none of the requested columns exist" in err["message"] for err in errors)
 
@@ -143,7 +143,7 @@ def test_explode_columns_skips_when_all_sources_missing():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert transformed == records  # passthrough when nothing to explode
     assert any("none of the requested source columns exist" in err["message"] for err in errors)
 
@@ -165,7 +165,7 @@ def test_regex_replace_cleans_phone_numbers():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert [row["phone_raw"] for row in transformed] == ["5551234567", "155598765432"]
 
@@ -190,7 +190,7 @@ def test_regex_replace_outputs_capture_groups():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert transformed[0]["email_user"] == "one"
     assert transformed[0]["email_domain"] == "example.com"
@@ -222,7 +222,7 @@ def test_conditional_transform_only_applies_to_matching_rows():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert len(transformed) == 2
     emails = {row["email"] for row in transformed}
@@ -249,7 +249,7 @@ def test_explode_list_rows_expands_list_column_and_dedupes():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert len(transformed) == 2
     assert {row["email"] for row in transformed} == {"a@example.com", "b@example.com"}
@@ -273,7 +273,7 @@ def test_concat_columns_respects_skip_nulls_defaults():
     }
     config = _config_with_rules(rules)
 
-    transformed, errors = apply_row_transformations(records, config, row_offset=0)
+    transformed, errors, _ = apply_row_transformations(records, config, row_offset=0)
     assert errors == []
     assert transformed[0]["full_name"] == "Alice Smith"
     assert transformed[1]["full_name"] == "Bob"

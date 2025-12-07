@@ -21,7 +21,7 @@ def test_synthesizes_explode_for_numbered_columns_when_instruction_requests_spli
         {"Email 1": "c@example.com", "Email 2": None, "First Name": "Charlie"},
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, _ = _synthesize_multi_value_rules(
         column_mapping,
         column_transformations,
         row_transformations,
@@ -62,7 +62,7 @@ def test_synthesizes_split_and_explode_for_delimited_column():
         {"primary_email": "three@example.com"},
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, _ = _synthesize_multi_value_rules(
         column_mapping,
         column_transformations,
         row_transformations,
@@ -104,7 +104,7 @@ def test_collapses_numbered_targets_to_base_email_and_explodes():
         }
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, _ = _synthesize_multi_value_rules(
         column_mapping,
         [],
         row_transformations,
@@ -139,7 +139,7 @@ def test_ignores_non_email_delimited_columns_when_instruction_is_email_specific(
         }
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, _ = _synthesize_multi_value_rules(
         column_mapping,
         [],
         row_transformations,
@@ -186,7 +186,7 @@ def test_handles_fan_in_multiple_sources_same_target():
         }
     ]
 
-    new_mapping, new_col_xforms, new_row_xforms, exploded_source_columns = _synthesize_multi_value_rules(
+    new_mapping, new_col_xforms, new_row_xforms, _ = _synthesize_multi_value_rules(
         column_mapping,
         [],
         row_transformations,
