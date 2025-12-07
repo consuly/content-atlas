@@ -10,7 +10,7 @@ import time
 from app.db.session import get_db
 from app.api.schemas.shared import DetectB2MappingRequest, DetectB2MappingResponse
 from app.api.dependencies import records_cache, CACHE_TTL_SECONDS
-from app.integrations.b2 import download_file_from_b2
+from app.integrations.storage import download_file
 from app.domain.imports.mapper import detect_mapping_from_file
 
 router = APIRouter(tags=["mapping"])
@@ -88,7 +88,7 @@ async def detect_mapping_endpoint(
 
 
 @router.post("/detect-b2-mapping", response_model=DetectB2MappingResponse)
-async def detect_b2_mapping_endpoint(request: DetectB2MappingRequest):
+async def detect_storage_mapping_endpoint(request: DetectB2MappingRequest):
     """
     Detect mapping configuration from a file in B2 storage.
     
@@ -106,8 +106,8 @@ async def detect_b2_mapping_endpoint(request: DetectB2MappingRequest):
     - Number of rows sampled
     """
     try:
-        # Download file from B2
-        file_content = download_file_from_b2(request.file_name)
+        # Download file from storage
+        file_content = download_file(request.file_name)
 
         # Detect mapping from file
         file_type, detected_mapping, columns_found, rows_sampled = detect_mapping_from_file(

@@ -12,7 +12,7 @@ client = TestClient(app)
 @pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")
 def test_query_database_structured_output_fallback():
     """Test that agent can provide ideas and fall back to LLM response if structured output fails."""
-    # Database should already be populated from test_map_b2_data_real_file
+    # Database should already be populated from test_map_storage_data_real_file
 
     # Test the query-database endpoint with ideas request
     response = client.post("/query-database", json={

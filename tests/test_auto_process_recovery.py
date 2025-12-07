@@ -36,7 +36,7 @@ def _upload_fixture(csv_path: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def fake_b2_storage(monkeypatch):
+def fake_storage_storage(monkeypatch):
     """
     Patch B2 helpers so uploads store bytes in-memory and downloads read from that store,
     mirroring the real controller flow used by the frontend.
@@ -63,16 +63,16 @@ def fake_b2_storage(monkeypatch):
         return True
 
     # Patch the routers that call these helpers.
-    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_b2", fake_delete)
-    monkeypatch.setattr("app.integrations.b2.download_file_from_b2", fake_download)
-    monkeypatch.setattr("app.main.download_file_from_b2", fake_download, raising=False)
+    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_storage", fake_delete)
+    monkeypatch.setattr("app.integrations.b2.download_file_from_storage", fake_download)
+    monkeypatch.setattr("app.main.download_file_from_storage", fake_download, raising=False)
 
     return storage
 
 
 @pytest.mark.not_b2
-def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_b2_storage):
+def test_marketing_agency_auto_process_recovers_via_llm_plan(monkeypatch, fake_storage_storage):
     """
     Full-stack regression test that mirrors the frontend workflow:
     - Upload the US CSV, auto-process successfully.

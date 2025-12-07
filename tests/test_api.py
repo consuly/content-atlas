@@ -56,7 +56,7 @@ def test_async_endpoints_exist():
     assert response.status_code == 404  # Task not found (expected)
 
     # Test async processing endpoint (endpoint accepts request and queues it)
-    with patch("app.api.routers.tasks.process_b2_data_async") as mock_process:
+    with patch("app.api.routers.tasks.process_storage_data_async") as mock_process:
         mock_process.return_value = None  # prevent actual background execution
         response = client.post("/map-b2-data-async", timeout=REQUEST_TIMEOUT, json={
             "file_name": "test.xlsx",
@@ -165,7 +165,7 @@ def test_response_structure():
 
 
 @pytest.mark.b2
-def test_map_b2_data_real_file():
+def test_map_storage_data_real_file():
     """Test mapping a large Excel file end-to-end using local test file."""
     import io
     

@@ -84,7 +84,7 @@ def reset_tables():
 
 
 @pytest.fixture
-def fake_b2_storage(monkeypatch):
+def fake_storage_storage(monkeypatch):
     storage: Dict[str, bytes] = {}
 
     def fake_upload(file_content: bytes, file_name: str, folder: str = "uploads"):
@@ -106,16 +106,16 @@ def fake_b2_storage(monkeypatch):
         storage.pop(file_path, None)
         return True
 
-    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_b2", fake_delete)
-    monkeypatch.setattr("app.integrations.b2.upload_file_to_b2", fake_upload)
-    monkeypatch.setattr("app.integrations.b2.download_file_from_b2", fake_download)
-    monkeypatch.setattr("app.main.download_file_from_b2", fake_download, raising=False)
+    monkeypatch.setattr("app.api.routers.uploads.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.api.routers.uploads.delete_file_from_storage", fake_delete)
+    monkeypatch.setattr("app.integrations.b2.upload_file_to_storage", fake_upload)
+    monkeypatch.setattr("app.integrations.b2.download_file_from_storage", fake_download)
+    monkeypatch.setattr("app.main.download_file_from_storage", fake_download, raising=False)
     return storage
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_happy_path(fake_b2_storage):
+def test_auto_process_archive_happy_path(fake_storage_storage):
     entries = {
         "Marketing Agency - US.csv": os.path.join(
             "tests", "csv", "Marketing Agency - US.csv"
@@ -154,7 +154,7 @@ def test_auto_process_archive_happy_path(fake_b2_storage):
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_storage):
+def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage_storage):
     def fake_analyze(**_kwargs):
         return {
             "success": True,
@@ -218,7 +218,7 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_b2_stor
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, tmp_path):
+def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_storage, tmp_path):
     forced_table = "forced_archive_table"
 
     def fake_analyze(**_kwargs):
@@ -294,7 +294,7 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_b2_storage, 
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_b2_storage):
+def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_storage):
     analysis_calls = {"count": 0}
     execution_calls = {"count": 0}
 
@@ -364,7 +364,7 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_b2_storag
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fake_b2_storage):
+def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fake_storage_storage):
     """If a cached fingerprint lacks a decision, the worker should still analyze and return a result."""
     analysis_module = importlib.import_module("app.api.routers.analysis")
     cached_event = threading.Event()
@@ -430,7 +430,7 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_b2_storage):
+def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_storage):
     execution_calls = {"count": 0}
 
     def fake_analyze(**_kwargs):
@@ -525,7 +525,7 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_b2_storage
 
 
 @pytest.mark.not_b2
-def test_auto_process_archive_resume_all(monkeypatch, fake_b2_storage):
+def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage):
     """
     When resume_failed_entries_only=False, the endpoint should reprocess the entire archive
     regardless of prior success/failure state.
