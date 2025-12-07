@@ -90,11 +90,15 @@ def initialize_test_database():
         
     except OperationalError as exc:
         print(f"  WARNING: Database unavailable, skipping system table init: {exc}")
+        import traceback
+        traceback.print_exc()
         print("="*80 + "\n")
         yield
         return
     except Exception as e:
         print(f"  ERROR: Failed to initialize system tables: {e}")
+        import traceback
+        traceback.print_exc()
         print("="*80 + "\n")
         raise
     

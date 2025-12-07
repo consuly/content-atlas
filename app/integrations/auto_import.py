@@ -1082,7 +1082,7 @@ def _synthesize_multi_value_rules(
     *,
     multi_value_directives: Optional[List[Dict[str, Any]]] = None,
     require_explicit_multi_value: bool = True,
-) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]], Set[str]]:
     """
     Process multi-value transformation rules by trusting the LLM's explicit directives.
     
@@ -1102,7 +1102,7 @@ def _synthesize_multi_value_rules(
     2. Explicit row_transformations with explode_columns are provided by the LLM
     """
     if not records or not column_mapping:
-        return column_mapping, column_transformations, row_transformations
+        return column_mapping, column_transformations, row_transformations, set()
 
     available_columns: Set[str] = set()
     for record in records[:50]:
@@ -1122,6 +1122,28 @@ def _synthesize_multi_value_rules(
             row_transformations,
         )
 
+    # Track columns that will be created by column_transformations
+    # These columns need to be available for row_transformations
+    columns_created_by_transforms: Set[str] = set()
+    for ct in column_transformations:
+        if not isinstance(ct, dict):
+            continue
+        if ct.get("type") == "split_multi_value_column":
+            outputs = ct.get("outputs") or []
+            for output in outputs:
+                if isinstance(output, dict) and output.get("name"):
+                    columns_created_by_transforms.add(output["name"])
+    
+    # Expand available columns to include those created by column transformations
+    available_columns_with_transforms = available_columns | columns_created_by_transforms
+    
+    logger.info(
+        "AUTO-IMPORT: Available columns for row transformations: %d original + %d created = %d total",
+        len(available_columns),
+        len(columns_created_by_transforms),
+        len(available_columns_with_transforms)
+    )
+
     # Process any explode_columns transformations already in row_transformations
     # These come from the LLM and should be respected as-is
     updated_mapping = dict(column_mapping)
@@ -1138,8 +1160,8 @@ def _synthesize_multi_value_rules(
             
         raw_sources = list(rt.get("source_columns") or rt.get("columns") or [])
         
-        # Validate that source columns exist
-        existing_sources = [col for col in raw_sources if col in available_columns]
+        # Validate that source columns exist (including those created by column transformations)
+        existing_sources = [col for col in raw_sources if col in available_columns_with_transforms]
         
         if not existing_sources:
             logger.warning(

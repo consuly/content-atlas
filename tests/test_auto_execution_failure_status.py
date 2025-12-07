@@ -157,24 +157,29 @@ def in_memory_state(monkeypatch):
     for target in (
         "app.domain.uploads.uploaded_files.get_uploaded_file_by_id",
         "app.api.routers.uploads.get_uploaded_file_by_id",
+        "app.api.routers.analysis.routes.get_uploaded_file_by_id",
     ):
         monkeypatch.setattr(target, get_uploaded_file_by_id)
     monkeypatch.setattr("app.api.routers.uploads.get_uploaded_file_by_name", get_uploaded_file_by_name)
     for target in (
         "app.domain.uploads.uploaded_files.update_file_status",
+        "app.api.routers.analysis.routes.update_file_status",
     ):
         monkeypatch.setattr(target, update_file_status)
 
     for target in (
         "app.domain.imports.jobs.create_import_job",
+        "app.api.routers.analysis.routes.create_import_job",
     ):
         monkeypatch.setattr(target, create_import_job)
     for target in (
         "app.domain.imports.jobs.update_import_job",
+        "app.api.routers.analysis.routes.update_import_job",
     ):
         monkeypatch.setattr(target, update_import_job)
     for target in (
         "app.domain.imports.jobs.complete_import_job",
+        "app.api.routers.analysis.routes.complete_import_job",
     ):
         monkeypatch.setattr(target, complete_import_job)
 
@@ -247,9 +252,14 @@ def test_auto_execute_failure_marks_file_failed(
             "target_table": "clients",
         }
 
+    # Patch both the module-level function and where it's imported in routes
     monkeypatch.setattr(
         analysis_module,
         "_get_execute_llm_import_decision",
+        lambda: _fail_execute,
+    )
+    monkeypatch.setattr(
+        "app.api.routers.analysis.routes._get_execute_llm_import_decision",
         lambda: _fail_execute,
     )
 
