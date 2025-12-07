@@ -783,38 +783,6 @@ export const ImportMappingPage: React.FC = () => {
     try {
       const token = localStorage.getItem('refine-auth');
 
-      // Fetch table data preview
-      const tableResponse = await axios.get(`${API_URL}/tables/${tableName}`, {
-        params: { limit: 10, offset: 0 },
-        headers: {
-          ...(token && { Authorization: `Bearer ${token}` }),
-        },
-      });
-
-      if (tableResponse.data.success) {
-        const rawData = tableResponse.data.data as Record<string, unknown>[];
-        const dataWithKeys = rawData.map((row, index) => {
-          const existingKey =
-            (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as
-              | string
-              | number
-              | undefined;
-          const key =
-            existingKey !== undefined
-              ? String(existingKey)
-              : `${tableName}-${index}`;
-
-          return {
-            __rowKey: key,
-            ...row,
-          };
-        });
-        setTableData({
-          data: dataWithKeys,
-          total_rows: tableResponse.data.total_rows,
-        });
-      }
-
       // Prefer matching import history using original file metadata so
       // duplicates/summary reflect the specific upload even when multiple
       // files target the same table.
@@ -850,6 +818,39 @@ export const ImportMappingPage: React.FC = () => {
 
       if (historyResponse.data.success && historyResponse.data.imports.length > 0) {
         setImportHistory(historyResponse.data.imports[0]);
+        
+        // Fetch table data preview filtered by import_id to show only imported rows
+        const importId = historyResponse.data.imports[0].import_id;
+        const tableResponse = await axios.get(`${API_URL}/tables/${tableName}`, {
+          params: { limit: 10, offset: 0, import_id: importId },
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        if (tableResponse.data.success) {
+          const rawData = tableResponse.data.data as Record<string, unknown>[];
+          const dataWithKeys = rawData.map((row, index) => {
+            const existingKey =
+              (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as
+                | string
+                | number
+                | undefined;
+            const key =
+              existingKey !== undefined
+                ? String(existingKey)
+                : `${tableName}-${index}`;
+
+            return {
+              __rowKey: key,
+              ...row,
+            };
+          });
+          setTableData({
+            data: dataWithKeys,
+            total_rows: tableResponse.data.total_rows,
+          });
+        }
       } else {
         setImportHistory(null);
       }
@@ -2560,7 +2561,7 @@ export const ImportMappingPage: React.FC = () => {
         {/* Data Preview */}
         {tableData && tableData.data.length > 0 && (
           <Card 
-            title={<><EyeOutlined /> Data Preview (First 10 Rows)</>} 
+            title={<><EyeOutlined /> Imported Data Preview</>} 
             size="small"
             loading={loadingDetails}
             extra={
@@ -2594,7 +2595,7 @@ export const ImportMappingPage: React.FC = () => {
             />
             <Divider />
             <Text type="secondary">
-              Showing 10 of {tableData.total_rows.toLocaleString()} total rows
+              Showing {tableData.data.length} of {tableData.total_rows.toLocaleString()} rows from this import
             </Text>
           </Card>
         )}
