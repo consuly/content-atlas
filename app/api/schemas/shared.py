@@ -631,6 +631,55 @@ class CompleteUploadResponse(BaseModel):
     file: UploadedFileInfo
 
 
+class StartMultipartUploadRequest(BaseModel):
+    """Request to start a multipart upload"""
+    file_name: str
+    file_size: int
+    file_hash: str
+    content_type: Optional[str] = None
+
+
+class StartMultipartUploadResponse(BaseModel):
+    """Response from starting multipart upload"""
+    success: bool
+    upload_id: str
+    file_path: str
+    part_size: int
+    total_parts: int
+    part_urls: List[str]
+    message: str
+
+
+class CompleteMultipartUploadRequest(BaseModel):
+    """Request to complete a multipart upload"""
+    file_name: str
+    file_hash: str
+    file_size: int
+    content_type: str
+    upload_id: str
+    file_path: str
+    parts: List[Dict[str, Any]]  # List of {PartNumber: int, ETag: str}
+
+
+class CompleteMultipartUploadResponse(BaseModel):
+    """Response from completing multipart upload"""
+    success: bool
+    message: str
+    file: UploadedFileInfo
+
+
+class AbortMultipartUploadRequest(BaseModel):
+    """Request to abort a multipart upload"""
+    upload_id: str
+    file_path: str
+
+
+class AbortMultipartUploadResponse(BaseModel):
+    """Response from aborting multipart upload"""
+    success: bool
+    message: str
+
+
 class ImportJobInfo(BaseModel):
     """Metadata about a long-running import job."""
     id: str
