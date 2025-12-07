@@ -1,6 +1,7 @@
 import io
 import os
 import time
+import uuid
 from typing import Dict, Optional
 
 import pandas as pd
@@ -84,8 +85,9 @@ def in_memory_state(monkeypatch):
         content_type: str = None,
         user_id: str = None,
         file_hash: str = None,
+        parent_file_id: str = None,
     ) -> Dict:
-        file_id = str(len(uploads) + 1)
+        file_id = str(uuid.uuid4())
         record = {
             "id": file_id,
             "file_name": file_name,
@@ -134,7 +136,7 @@ def in_memory_state(monkeypatch):
         conflict_mode: str,
         metadata: Optional[Dict] = None,
     ) -> Dict:
-        job_id = str(len(jobs) + 1)
+        job_id = str(uuid.uuid4())
         job = {
             "id": job_id,
             "file_id": file_id,
@@ -181,41 +183,41 @@ def in_memory_state(monkeypatch):
 
     for target in (
         "app.domain.uploads.uploaded_files.insert_uploaded_file",
-        "app.api.routers.analysis.insert_uploaded_file",
+        "app.api.routers.analysis.routes.insert_uploaded_file",
         "app.api.routers.uploads.insert_uploaded_file",
     ):
         monkeypatch.setattr(target, insert_uploaded_file)
     for target in (
         "app.domain.uploads.uploaded_files.get_uploaded_file_by_id",
-        "app.api.routers.analysis.get_uploaded_file_by_id",
+        "app.api.routers.analysis.routes.get_uploaded_file_by_id",
         "app.api.routers.uploads.get_uploaded_file_by_id",
     ):
         monkeypatch.setattr(target, get_uploaded_file_by_id)
     monkeypatch.setattr("app.api.routers.uploads.get_uploaded_file_by_name", get_uploaded_file_by_name)
     for target in (
         "app.domain.uploads.uploaded_files.update_file_status",
-        "app.api.routers.analysis.update_file_status",
+        "app.api.routers.analysis.routes.update_file_status",
     ):
         monkeypatch.setattr(target, update_file_status)
 
     for target in (
         "app.domain.imports.jobs.create_import_job",
-        "app.api.routers.analysis.create_import_job",
+        "app.api.routers.analysis.routes.create_import_job",
     ):
         monkeypatch.setattr(target, create_import_job)
     for target in (
         "app.domain.imports.jobs.update_import_job",
-        "app.api.routers.analysis.update_import_job",
+        "app.api.routers.analysis.routes.update_import_job",
     ):
         monkeypatch.setattr(target, update_import_job)
     for target in (
         "app.domain.imports.jobs.complete_import_job",
-        "app.api.routers.analysis.complete_import_job",
+        "app.api.routers.analysis.routes.complete_import_job",
     ):
         monkeypatch.setattr(target, complete_import_job)
     for target in (
         "app.domain.imports.jobs.get_import_job",
-        "app.api.routers.analysis.get_import_job",
+        "app.api.routers.analysis.routes.get_import_job",
         "app.api.routers.jobs.get_import_job",
     ):
         monkeypatch.setattr(target, get_import_job)
@@ -229,7 +231,7 @@ def in_memory_state(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr("app.api.routers.analysis.get_session_local", lambda: lambda: DummySession())
+    monkeypatch.setattr("app.api.routers.analysis.routes.get_session_local", lambda: lambda: DummySession())
 
     return {"uploads": uploads, "jobs": jobs}
 

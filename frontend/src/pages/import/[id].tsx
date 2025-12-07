@@ -783,38 +783,6 @@ export const ImportMappingPage: React.FC = () => {
     try {
       const token = localStorage.getItem('refine-auth');
 
-      // Fetch table data preview
-      const tableResponse = await axios.get(`${API_URL}/tables/${tableName}`, {
-        params: { limit: 10, offset: 0 },
-        headers: {
-          ...(token && { Authorization: `Bearer ${token}` }),
-        },
-      });
-
-      if (tableResponse.data.success) {
-        const rawData = tableResponse.data.data as Record<string, unknown>[];
-        const dataWithKeys = rawData.map((row, index) => {
-          const existingKey =
-            (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as
-              | string
-              | number
-              | undefined;
-          const key =
-            existingKey !== undefined
-              ? String(existingKey)
-              : `${tableName}-${index}`;
-
-          return {
-            __rowKey: key,
-            ...row,
-          };
-        });
-        setTableData({
-          data: dataWithKeys,
-          total_rows: tableResponse.data.total_rows,
-        });
-      }
-
       // Prefer matching import history using original file metadata so
       // duplicates/summary reflect the specific upload even when multiple
       // files target the same table.
@@ -850,6 +818,39 @@ export const ImportMappingPage: React.FC = () => {
 
       if (historyResponse.data.success && historyResponse.data.imports.length > 0) {
         setImportHistory(historyResponse.data.imports[0]);
+        
+        // Fetch table data preview filtered by import_id to show only imported rows
+        const importId = historyResponse.data.imports[0].import_id;
+        const tableResponse = await axios.get(`${API_URL}/tables/${tableName}`, {
+          params: { limit: 10, offset: 0, import_id: importId },
+          headers: {
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        });
+
+        if (tableResponse.data.success) {
+          const rawData = tableResponse.data.data as Record<string, unknown>[];
+          const dataWithKeys = rawData.map((row, index) => {
+            const existingKey =
+              (row.id ?? row.ID ?? row.Id ?? row.uuid ?? row.UUID) as
+                | string
+                | number
+                | undefined;
+            const key =
+              existingKey !== undefined
+                ? String(existingKey)
+                : `${tableName}-${index}`;
+
+            return {
+              __rowKey: key,
+              ...row,
+            };
+          });
+          setTableData({
+            data: dataWithKeys,
+            total_rows: tableResponse.data.total_rows,
+          });
+        }
       } else {
         setImportHistory(null);
       }
@@ -1835,7 +1836,6 @@ export const ImportMappingPage: React.FC = () => {
 
   const sendInteractiveMessage = async (messageToSend: string) => {
     if (!threadId || !id) return;
-    if (!ensureJobIsAvailable()) return;
     const trimmed = messageToSend.trim();
     if (!trimmed) return;
 
@@ -1900,7 +1900,6 @@ export const ImportMappingPage: React.FC = () => {
 
   const handleInteractiveExecute = async () => {
     if (!threadId || !id) return;
-    if (!ensureJobIsAvailable()) return;
 
     setProcessing(true);
     setError(null);
@@ -2562,7 +2561,7 @@ export const ImportMappingPage: React.FC = () => {
         {/* Data Preview */}
         {tableData && tableData.data.length > 0 && (
           <Card 
-            title={<><EyeOutlined /> Data Preview (First 10 Rows)</>} 
+            title={<><EyeOutlined /> Imported Data Preview</>} 
             size="small"
             loading={loadingDetails}
             extra={
@@ -2596,7 +2595,7 @@ export const ImportMappingPage: React.FC = () => {
             />
             <Divider />
             <Text type="secondary">
-              Showing 10 of {tableData.total_rows.toLocaleString()} total rows
+              Showing {tableData.data.length} of {tableData.total_rows.toLocaleString()} rows from this import
             </Text>
           </Card>
         )}
@@ -2703,15 +2702,34 @@ export const ImportMappingPage: React.FC = () => {
 
   const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
     {
+      title: 'Actions',
+      key: 'actions',
+      fixed: 'left',
+      width: 60,
+      render: (_: unknown, record) =>
+        record.uploaded_file_id ? (
+          <Button
+            type="link"
+            size="small"
+            onClick={() => navigate(`/import/${record.uploaded_file_id}`)}
+          >
+            View
+          </Button>
+        ) : null,
+    },
+    {
       title: 'Archive Path',
       dataIndex: 'archive_path',
       key: 'archive_path',
+      width: 250,
+      ellipsis: true,
       render: (text: string) => <Text code>{text}</Text>,
     },
     {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
+      width: 100,
       render: (value: ArchiveFileStatus) => {
         const color =
           value === 'processed' ? 'green' : value === 'failed' ? 'red' : 'default';
@@ -2722,12 +2740,15 @@ export const ImportMappingPage: React.FC = () => {
       title: 'Table',
       dataIndex: 'table_name',
       key: 'table_name',
+      width: 180,
+      ellipsis: true,
       render: (value?: string | null) => value || '-',
     },
     {
       title: 'Records',
       dataIndex: 'records_processed',
       key: 'records_processed',
+      width: 120,
       render: (value?: number | null) =>
         typeof value === 'number' ? value.toLocaleString() : '-',
     },
@@ -2735,22 +2756,9 @@ export const ImportMappingPage: React.FC = () => {
       title: 'Duplicates',
       dataIndex: 'duplicates_skipped',
       key: 'duplicates_skipped',
+      width: 120,
       render: (value?: number | null) =>
         typeof value === 'number' ? value.toLocaleString() : '-',
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_: unknown, record) =>
-        record.uploaded_file_id ? (
-          <Button
-            type="link"
-            size="small"
-            onClick={() => navigate(`/import/${record.uploaded_file_id}`)}
-          >
-            View File
-          </Button>
-        ) : null,
     },
   ];
 
@@ -3115,19 +3123,17 @@ export const ImportMappingPage: React.FC = () => {
               showIcon
             />
 
-            {canExecute && (
-              <Button
-                type="primary"
-                size="large"
-                icon={<CheckCircleOutlined />}
-                onClick={handleInteractiveExecute}
-                loading={processing}
-                disabled={disableMappingActions}
-                block
-              >
-                {processing ? 'Executing...' : 'Execute Import'}
-              </Button>
-            )}
+            <Button
+              type="primary"
+              size="large"
+              icon={<CheckCircleOutlined />}
+              onClick={handleInteractiveExecute}
+              loading={processing}
+              disabled={!canExecute || processing}
+              block
+            >
+              {processing ? 'Executing...' : 'Execute Import'}
+            </Button>
 
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               <Space.Compact style={{ width: '100%' }}>
@@ -3141,7 +3147,7 @@ export const ImportMappingPage: React.FC = () => {
                     }
                   }}
                   placeholder="Ask for changes, confirmations, or next steps..."
-                  disabled={processing || !threadId || disableMappingActions}
+                  disabled={processing || !threadId}
                   style={{
                     flex: 1,
                     padding: '8px 12px',
@@ -3155,7 +3161,7 @@ export const ImportMappingPage: React.FC = () => {
                   onClick={handleInteractiveSend}
                   loading={processing}
                   disabled={
-                    !userInput.trim() || processing || !threadId || disableMappingActions
+                    !userInput.trim() || processing || !threadId
                   }
                   style={{ borderRadius: '0 4px 4px 0' }}
                 >
@@ -3169,7 +3175,7 @@ export const ImportMappingPage: React.FC = () => {
                     key={label}
                     size="small"
                     type={label === 'Approve Plan' ? 'primary' : 'default'}
-                    disabled={!threadId || processing || disableMappingActions}
+                    disabled={!threadId || processing}
                     onClick={() => handleQuickAction(prompt)}
                   >
                     {label}
@@ -3337,7 +3343,7 @@ export const ImportMappingPage: React.FC = () => {
         </Card>
       )}
 
-      {file.status === 'failed' ? (
+      {file.status === 'failed' && !showInteractiveRetry ? (
         <Card title={`Failed Mapping: ${file.file_name}`}>
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <Alert

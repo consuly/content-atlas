@@ -23,6 +23,9 @@ def create_workflow_tables():
     engine = get_engine()
     
     with engine.begin() as conn:
+        # Ensure pgcrypto extension exists for gen_random_uuid() (PostgreSQL < 13)
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        
         # Workflows table
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS workflows (

@@ -20,6 +20,7 @@ from app.db.models import create_file_imports_table_if_not_exists
 from app.domain.imports.jobs import ensure_import_jobs_table
 from app.domain.queries.history import create_query_history_tables
 from app.db.llm_instructions import create_llm_instruction_table
+from app.domain.workflows.models import create_workflow_tables
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -80,17 +81,24 @@ def initialize_test_database():
 
         print("  Creating file_imports table...")
         create_file_imports_table_if_not_exists(engine)
+
+        print("  Creating workflow tables...")
+        create_workflow_tables()
         
         print("  ✓ All system tables initialized successfully")
         print("="*80 + "\n")
         
     except OperationalError as exc:
         print(f"  WARNING: Database unavailable, skipping system table init: {exc}")
+        import traceback
+        traceback.print_exc()
         print("="*80 + "\n")
         yield
         return
     except Exception as e:
         print(f"  ERROR: Failed to initialize system tables: {e}")
+        import traceback
+        traceback.print_exc()
         print("="*80 + "\n")
         raise
     

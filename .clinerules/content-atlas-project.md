@@ -135,3 +135,7 @@ Project-specific guidelines for Content Atlas - a data consolidation platform de
 - Keep README.md updated with quick start and examples
 - Include inline comments for complex logic
 - Document configuration options and environment variables
+
+## Personal Files
+
+- `logs/todo.md` is a personal file for the user and should not be read or referenced by agents or automated processes

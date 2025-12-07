@@ -4,10 +4,10 @@ from typing import List, Dict, Any
 import pytest
 
 from app.api.routers import analysis as analysis_module
-from app.api.routers.analysis import (
+from app.api.routers.analysis.interactive import (
     InteractiveSessionState,
-    _run_interactive_session_step,
-    _handle_interactive_execution_failure,
+    run_interactive_session_step,
+    handle_interactive_execution_failure,
 )
 from app.api.schemas.shared import AnalyzeFileInteractiveResponse
 
@@ -57,7 +57,7 @@ def test_run_interactive_session_initial_prompt(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(analysis_module, "_get_analyze_file_for_import", lambda: fake_analyze)
 
     session = _make_session()
-    response = _run_interactive_session_step(session, user_message=None)
+    response = run_interactive_session_step(session, user_message=None, analyze_fn=fake_analyze)
 
     assert response.success is True
     assert response.needs_user_input is True
@@ -102,7 +102,7 @@ def test_run_interactive_session_includes_previous_error(monkeypatch: pytest.Mon
     session = _make_session()
     session.last_error = "duplicate key value violates constraint"
 
-    _run_interactive_session_step(session, user_message=None)
+    run_interactive_session_step(session, user_message=None, analyze_fn=fake_analyze)
 
     assert "previous execution attempt failed" in session.conversation[0]["content"]
     assert "duplicate key value violates constraint" in session.conversation[0]["content"]
@@ -142,7 +142,7 @@ def test_run_interactive_session_confirms_plan(monkeypatch: pytest.MonkeyPatch) 
     session.initial_prompt_sent = True
     session.conversation.append({"role": "user", "content": "Initial prompt already sent."})
 
-    response = _run_interactive_session_step(session, user_message="CONFIRM IMPORT")
+    response = run_interactive_session_step(session, user_message="CONFIRM IMPORT", analyze_fn=fake_analyze)
 
     assert response.success is True
     assert response.can_execute is True
@@ -167,16 +167,29 @@ def test_handle_interactive_execution_failure(monkeypatch: pytest.MonkeyPatch) -
         max_iterations=5,
     )
 
-    def fake_run_step(session, user_message=None, conversation_role="user"):
+    def fake_run_step(
+        *,
+        file_sample,
+        file_metadata,
+        analysis_mode,
+        conflict_mode,
+        user_id,
+        max_iterations,
+        thread_id,
+        messages,
+        interactive_mode
+    ):
+        # Extract user_message from messages
+        user_message = messages[-1]["content"] if messages else ""
         # The failure prompt should be delivered from the backend.
         assert user_message and user_message.startswith("EXECUTION_FAILED")
-        # Maintain conversation continuity so the session can resume.
-        session.conversation.append({"role": "assistant", "content": followup.llm_message})
-        session.llm_decision = None
-        session.status = "awaiting_user"
-        return followup
-
-    monkeypatch.setattr(analysis_module, "_run_interactive_session_step", fake_run_step)
+        # Return a dict like the real analyze function
+        return {
+            "success": True,
+            "response": followup.llm_message,
+            "iterations_used": followup.iterations_used,
+            "llm_decision": followup.llm_decision,
+        }
 
     session = _make_session()
     session.llm_decision = {
@@ -185,7 +198,7 @@ def test_handle_interactive_execution_failure(monkeypatch: pytest.MonkeyPatch) -
         "column_mapping": {"col_a": "name"},
     }
 
-    result = _handle_interactive_execution_failure(session, "duplicate key value violates constraint")
+    result = handle_interactive_execution_failure(session, "duplicate key value violates constraint", analyze_fn=fake_run_step)
 
     assert result.success is False
     assert "duplicate key value violates constraint" in result.message

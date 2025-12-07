@@ -102,6 +102,15 @@ def build_interactive_initial_prompt(session: InteractiveSessionState) -> str:
     return prompt
 
 
+def _is_user_confirmation(message: str) -> bool:
+    """Check if user message is an explicit confirmation to proceed with import."""
+    if not message:
+        return False
+    normalized = message.lower().strip()
+    confirmation_phrases = ["confirm import", "confirm", "approve", "proceed", "execute", "yes", "go ahead"]
+    return any(phrase in normalized for phrase in confirmation_phrases)
+
+
 def run_interactive_session_step(
     session: InteractiveSessionState,
     *,
@@ -118,6 +127,9 @@ def run_interactive_session_step(
         messages.append({"role": "user", "content": initial_prompt})
         session.conversation.append({"role": "user", "content": initial_prompt})
         session.initial_prompt_sent = True
+
+    # Check if user is explicitly confirming the mapping
+    is_confirmation = user_message and _is_user_confirmation(user_message)
 
     if user_message is not None:
         normalized = user_message.strip()
@@ -152,17 +164,28 @@ def run_interactive_session_step(
     llm_response = analysis_result["response"]
     session.conversation.append({"role": "assistant", "content": llm_response})
     session.llm_decision = analysis_result.get("llm_decision")
-    session.status = "ready_to_execute" if session.llm_decision else "awaiting_user"
+    
+    # If user explicitly confirmed but LLM didn't call make_import_decision,
+    # enable execution anyway - user has final say
+    if is_confirmation and session.llm_decision is None:
+        # User wants to proceed, so mark as ready to execute
+        # The actual decision will be validated during execution
+        session.status = "ready_to_execute"
+        can_execute = True
+    else:
+        session.status = "ready_to_execute" if session.llm_decision else "awaiting_user"
+        can_execute = bool(session.llm_decision)
+    
     session.last_error = None if session.llm_decision else session.last_error
 
     return AnalyzeFileInteractiveResponse(
         success=True,
         thread_id=session.thread_id,
         llm_message=llm_response,
-        needs_user_input=session.llm_decision is None,
+        needs_user_input=not can_execute,
         question=None,
         options=None,
-        can_execute=bool(session.llm_decision),
+        can_execute=can_execute,
         llm_decision=session.llm_decision,
         iterations_used=analysis_result["iterations_used"],
         max_iterations=session.max_iterations,
@@ -182,7 +205,7 @@ def handle_interactive_execution_failure(
         "EXECUTION_FAILED\n"
         f"Error details: {error_message}\n"
         "Please analyze why this import failed and propose concrete fixes. "
-        "Wait for confirmation before finalizing a new mapping."
+        "Wait for user approval before finalizing a new mapping."
     )
 
     followup = run_interactive_session_step(

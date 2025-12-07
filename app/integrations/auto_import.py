@@ -512,7 +512,8 @@ def execute_llm_import_decision(
     file_content: bytes,
     file_name: str,
     all_records: List[Dict[str, Any]],
-    llm_decision: Dict[str, Any]
+    llm_decision: Dict[str, Any],
+    source_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Execute an import based on LLM's decision.
@@ -522,6 +523,7 @@ def execute_llm_import_decision(
         file_name: Name of the file
         all_records: All records from the file (not just sample)
         llm_decision: LLM's decision with strategy, target_table, column_mapping, etc.
+        source_path: Optional B2 file path for tracking (enables duplicate count matching)
         
     Returns:
         Execution result with success status and details
@@ -619,6 +621,7 @@ def execute_llm_import_decision(
             column_mapping,
             column_transformations,
             row_transformations,
+            exploded_source_columns,
         ) = _synthesize_multi_value_rules(
             column_mapping,
             column_transformations,
@@ -628,6 +631,32 @@ def execute_llm_import_decision(
             multi_value_directives=multi_value_directives,
             require_explicit_multi_value=require_explicit_multi_value,
         )
+        
+        # CRITICAL FIX: Remove exploded source columns from uniqueness columns
+        # When a column is exploded (e.g., 'Emails' -> 'contact_method'), the source column
+        # is dropped and should not be used for uniqueness checking
+        if exploded_source_columns and unique_columns:
+            # Map source column names to their target column names in the mapping
+            source_to_target = {src: tgt for src, tgt in column_mapping.items()}
+            
+            # Filter out uniqueness columns that reference exploded source columns
+            original_unique_columns = list(unique_columns)
+            unique_columns = [
+                col for col in unique_columns 
+                if col not in exploded_source_columns and source_to_target.get(col) not in exploded_source_columns
+            ]
+            
+            if len(unique_columns) != len(original_unique_columns):
+                removed_columns = set(original_unique_columns) - set(unique_columns)
+                logger.info(
+                    "AUTO-IMPORT: Removed exploded columns from uniqueness: %s (were being exploded into other columns)",
+                    list(removed_columns)
+                )
+                logger.info(
+                    "AUTO-IMPORT: Updated uniqueness columns: %s -> %s",
+                    original_unique_columns,
+                    unique_columns
+                )
         
         # Invert the column_mapping: {source: target} -> {target: source}
         inverted_mapping = {target_col: source_col for source_col, target_col in column_mapping.items()}
@@ -872,7 +901,8 @@ def execute_llm_import_decision(
             file_content=file_content,
             file_name=file_name,
             mapping_config=mapping_config,
-            source_type="local_upload",
+            source_type="b2_storage" if source_path else "local_upload",
+            source_path=source_path,
             import_strategy=strategy,
             metadata_info=metadata_info,
             pre_parsed_records=records,  # Use records parsed according to LLM instructions
@@ -1055,7 +1085,7 @@ def _synthesize_multi_value_rules(
     *,
     multi_value_directives: Optional[List[Dict[str, Any]]] = None,
     require_explicit_multi_value: bool = True,
-) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]], Set[str]]:
     """
     Process multi-value transformation rules by trusting the LLM's explicit directives.
     
@@ -1075,7 +1105,7 @@ def _synthesize_multi_value_rules(
     2. Explicit row_transformations with explode_columns are provided by the LLM
     """
     if not records or not column_mapping:
-        return column_mapping, column_transformations, row_transformations
+        return column_mapping, column_transformations, row_transformations, set()
 
     available_columns: Set[str] = set()
     for record in records[:50]:
@@ -1095,10 +1125,33 @@ def _synthesize_multi_value_rules(
             row_transformations,
         )
 
+    # Track columns that will be created by column_transformations
+    # These columns need to be available for row_transformations
+    columns_created_by_transforms: Set[str] = set()
+    for ct in column_transformations:
+        if not isinstance(ct, dict):
+            continue
+        if ct.get("type") == "split_multi_value_column":
+            outputs = ct.get("outputs") or []
+            for output in outputs:
+                if isinstance(output, dict) and output.get("name"):
+                    columns_created_by_transforms.add(output["name"])
+    
+    # Expand available columns to include those created by column transformations
+    available_columns_with_transforms = available_columns | columns_created_by_transforms
+    
+    logger.info(
+        "AUTO-IMPORT: Available columns for row transformations: %d original + %d created = %d total",
+        len(available_columns),
+        len(columns_created_by_transforms),
+        len(available_columns_with_transforms)
+    )
+
     # Process any explode_columns transformations already in row_transformations
     # These come from the LLM and should be respected as-is
     updated_mapping = dict(column_mapping)
     exploded_targets: Set[str] = set()
+    exploded_source_columns: Set[str] = set()
     
     for rt in row_transformations:
         if not isinstance(rt, dict) or rt.get("type") != "explode_columns":
@@ -1110,8 +1163,8 @@ def _synthesize_multi_value_rules(
             
         raw_sources = list(rt.get("source_columns") or rt.get("columns") or [])
         
-        # Validate that source columns exist
-        existing_sources = [col for col in raw_sources if col in available_columns]
+        # Validate that source columns exist (including those created by column transformations)
+        existing_sources = [col for col in raw_sources if col in available_columns_with_transforms]
         
         if not existing_sources:
             logger.warning(
@@ -1132,6 +1185,9 @@ def _synthesize_multi_value_rules(
             target
         )
         
+        # Track which source columns are being exploded
+        exploded_source_columns.update(existing_sources)
+        
         # Update mapping to point to the exploded target
         for mapped_source in existing_sources:
             if mapped_source in updated_mapping:
@@ -1149,4 +1205,4 @@ def _synthesize_multi_value_rules(
         list(exploded_targets) if exploded_targets else "none"
     )
     
-    return updated_mapping, column_transformations, row_transformations
+    return updated_mapping, column_transformations, row_transformations, exploded_source_columns

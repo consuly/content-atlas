@@ -695,15 +695,15 @@ export const ImportPage: React.FC = () => {
         }
         const duplicates = record.duplicates_found;
         if (duplicates === undefined) {
-          return <Badge status="default" text="Unknown" />;
+          return 'Unknown';
         }
-        const label = `${duplicates.toLocaleString()} duplicate${duplicates === 1 ? '' : 's'}`;
-        return <Badge status={duplicates > 0 ? 'warning' : 'success'} text={label} />;
+        return duplicates.toLocaleString();
       },
     },
     {
       title: 'Actions',
       key: 'actions',
+      fixed: 'right',
       width: 220,
       render: (_: unknown, record: UploadedFile & ImportSummary) => (
         <Space size="small">
@@ -718,13 +718,15 @@ export const ImportPage: React.FC = () => {
               Map Now
             </Button>
           )}
-          <Button
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => handleView(record)}
-          >
-            View
-          </Button>
+          {record.status !== 'uploaded' && (
+            <Button
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => handleView(record)}
+            >
+              View
+            </Button>
+          )}
           <Button
             size="small"
             danger
