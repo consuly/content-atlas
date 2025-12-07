@@ -36,7 +36,138 @@ This guide explains how to configure Backblaze B2 storage for the Content Atlas 
    - **keyID** (Application Key ID)
    - **applicationKey** (Application Key)
 
-## Step 3: Configure Environment Variables
+## Step 3: Configure CORS Rules for Direct Browser Uploads
+
+**CRITICAL**: The B2 web console's basic CORS settings are **not sufficient** for direct browser uploads using presigned URLs. You must configure custom CORS rules using the B2 CLI.
+
+### Why Custom CORS Rules Are Required
+
+When browsers upload files directly to B2 using presigned URLs, they send an OPTIONS preflight request before the actual PUT request. The B2 web console's simple CORS settings don't properly configure:
+- The OPTIONS method for preflight requests
+- Required headers like `Content-Type` and authorization headers
+- Exposing the `ETag` header (needed for upload confirmation)
+
+### Install B2 CLI
+
+```bash
+pip install b2
+```
+
+### Authorize B2 CLI
+
+Use the Application Key credentials from Step 2:
+
+```bash
+b2 authorize-account <your_application_key_id> <your_application_key>
+```
+
+### Create CORS Rules File
+
+Create a file named `cors_rules.json` with the following content:
+
+**For Development (localhost):**
+```json
+[
+  {
+    "corsRuleName": "allowDirectUpload",
+    "allowedOrigins": [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "http://localhost:8000"
+    ],
+    "allowedOperations": [
+      "s3_put",
+      "s3_get",
+      "s3_head"
+    ],
+    "allowedHeaders": ["*"],
+    "exposeHeaders": ["ETag", "x-amz-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+**For Production:**
+```json
+[
+  {
+    "corsRuleName": "allowDirectUpload",
+    "allowedOrigins": [
+      "https://yourdomain.com",
+      "https://www.yourdomain.com"
+    ],
+    "allowedOperations": [
+      "s3_put",
+      "s3_get",
+      "s3_head"
+    ],
+    "allowedHeaders": ["*"],
+    "exposeHeaders": ["ETag", "x-amz-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+**For Testing (Allow All Origins - NOT RECOMMENDED FOR PRODUCTION):**
+```json
+[
+  {
+    "corsRuleName": "allowDirectUpload",
+    "allowedOrigins": ["*"],
+    "allowedOperations": [
+      "s3_put",
+      "s3_get",
+      "s3_head"
+    ],
+    "allowedHeaders": ["*"],
+    "exposeHeaders": ["ETag", "x-amz-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+### Apply CORS Rules
+
+Apply the CORS rules to your bucket:
+
+```bash
+b2 bucket update --cors-rules "$(cat cors_rules.json)" <your-bucket-name> allPrivate
+```
+
+**Windows PowerShell:**
+```powershell
+$corsRules = Get-Content cors_rules.json -Raw
+b2 bucket update --cors-rules $corsRules <your-bucket-name> allPrivate
+```
+
+**Windows Command Prompt:**
+```cmd
+b2 bucket update --cors-rules @cors_rules.json <your-bucket-name> allPrivate
+```
+
+### Verify CORS Configuration
+
+Check that CORS rules were applied correctly:
+
+```bash
+b2 bucket get <your-bucket-name>
+```
+
+Look for the `corsRules` section in the output. It should show your configured rules.
+
+### Understanding CORS Rule Parameters
+
+- **corsRuleName**: A descriptive name for the rule
+- **allowedOrigins**: List of origins (domains) allowed to make requests. Use `["*"]` for all origins (development only)
+- **allowedOperations**: S3 operations allowed:
+  - `s3_put`: Upload files (required for direct uploads)
+  - `s3_get`: Download files
+  - `s3_head`: Check file existence/metadata
+- **allowedHeaders**: Headers the browser can send. Use `["*"]` to allow all headers
+- **exposeHeaders**: Headers the browser can read from responses. `ETag` is required for upload confirmation
+- **maxAgeSeconds**: How long browsers can cache the preflight response (3600 = 1 hour)
+
+## Step 4: Configure Environment Variables
 
 ### Backend Configuration
 
@@ -67,7 +198,7 @@ Replace the placeholders:
 
 The frontend automatically uses the backend API, so no additional configuration is needed.
 
-## Step 4: Verify Configuration
+## Step 5: Verify Configuration
 
 ### Test B2 Connection
 
@@ -96,7 +227,7 @@ If B2 credentials are missing, you'll see an error when attempting to upload:
 ValueError: B2 configuration is incomplete. Please set B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, and B2_BUCKET_NAME in your environment.
 ```
 
-## Step 5: Restart Services
+## Step 6: Restart Services
 
 After configuring the environment variables:
 
@@ -112,6 +243,25 @@ python -m uvicorn app.main:app --reload
 ```
 
 ## Troubleshooting
+
+### CORS Error: "No 'Access-Control-Allow-Origin' header is present"
+
+**Cause**: CORS rules are not properly configured for direct browser uploads.
+
+**Solution**:
+1. Follow Step 3 to configure custom CORS rules using the B2 CLI
+2. The B2 web console's basic CORS settings are **not sufficient** for presigned URL uploads
+3. Verify CORS rules are applied: `b2 bucket get <your-bucket-name>`
+4. Clear browser cache and try uploading again
+5. Check browser console for the exact error message
+
+**Common CORS Issues:**
+- **Web UI CORS settings don't work**: You must use the B2 CLI to set custom CORS rules
+- **Wrong origin**: Ensure your frontend URL (e.g., `http://localhost:5173`) is in `allowedOrigins`
+- **Missing operations**: Must include `s3_put` in `allowedOperations`
+- **Missing headers**: Use `["*"]` for `allowedHeaders` to allow all headers
+- **Missing ETag exposure**: Must include `"ETag"` in `exposeHeaders`
+
 
 ### Error: "B2 configuration is incomplete"
 
