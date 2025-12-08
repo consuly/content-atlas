@@ -191,22 +191,82 @@ def get_related_tables_tool(query: str) -> str:
         return f"Error analyzing related tables: {str(e)}"
 
 
+def _message_has_tool_result(msg: Any) -> bool:
+    """Check if a message contains a tool_result block."""
+    content = getattr(msg, 'content', None)
+    if isinstance(content, list):
+        return any(
+            isinstance(block, dict) and block.get('type') == 'tool_result'
+            for block in content
+        )
+    return False
+
+
+def _message_has_tool_use(msg: Any) -> bool:
+    """Check if a message contains a tool_use block."""
+    content = getattr(msg, 'content', None)
+    if isinstance(content, list):
+        return any(
+            isinstance(block, dict) and block.get('type') == 'tool_use'
+            for block in content
+        )
+    # Also check tool_calls attribute (LangChain format)
+    tool_calls = getattr(msg, 'tool_calls', None)
+    return bool(tool_calls)
+
+
 @before_model
 def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
-    """Keep only the last few messages to fit context window and maintain performance."""
+    """
+    Keep only recent messages while preserving tool_use/tool_result pairs.
+    
+    Claude API requires that every tool_result has a corresponding tool_use
+    in the previous message. This function ensures we never cut between
+    tool_use and tool_result blocks when trimming conversation history.
+    """
     messages = state["messages"]
     
-    # Keep at least 3 messages (system + user + assistant)
+    # Keep at least 6 messages to avoid trimming too aggressively
     if len(messages) <= 6:
         return None  # No changes needed
     
-    # Keep the first message (system prompt with schema context)
+    # Always keep the first message (system prompt with schema context)
     first_msg = messages[0]
     
-    # Keep the last 5-6 conversation turns (10-12 messages)
-    # Ensure we keep an even number to maintain user/assistant pairs
-    recent_messages = messages[-10:] if len(messages) % 2 == 0 else messages[-11:]
+    # Target: keep last ~10 messages, but adjust to respect tool boundaries
+    target_keep = 10
+    cut_index = max(1, len(messages) - target_keep)
     
+    # Walk forward from cut_index to find a safe boundary
+    # A safe boundary is BEFORE a message that doesn't contain tool_result
+    while cut_index < len(messages):
+        msg = messages[cut_index]
+        
+        # If this message has a tool_result, we need to include the preceding
+        # tool_use message(s). Walk backwards to find the start of the tool cycle.
+        if _message_has_tool_result(msg):
+            # Look backwards for the tool_use message
+            search_index = cut_index - 1
+            while search_index >= 1:
+                if _message_has_tool_use(messages[search_index]):
+                    # Found the tool_use - cut before it
+                    cut_index = search_index
+                    break
+                search_index -= 1
+            
+            # If we couldn't find tool_use, keep searching forward
+            if search_index < 1:
+                cut_index += 1
+                continue
+        
+        # This is a safe cut point
+        break
+    
+    # Ensure we don't cut too much (keep at least 3 messages after first)
+    if len(messages) - cut_index < 3:
+        cut_index = max(1, len(messages) - 3)
+    
+    recent_messages = messages[cut_index:]
     new_messages = [first_msg] + recent_messages
     
     return {
