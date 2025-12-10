@@ -7,7 +7,6 @@ import {
   Switch,
   Input,
   Button,
-  Collapse,
   Row,
   Col,
 } from 'antd';
@@ -19,7 +18,6 @@ import { ErrorLogViewer } from '../../../components/error-log-viewer';
 import { UploadedFile, ProcessingResult } from './types';
 
 const { Text, Paragraph } = Typography;
-const { Panel } = Collapse;
 
 interface ImportAutoSectionProps {
   file: UploadedFile;
@@ -95,7 +93,105 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
 
       {!result && (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          
+          <Space>
+            <SettingOutlined />
+            <Text strong>Advanced Configuration</Text>
+            <Text type="secondary" style={{ fontSize: '12px' }}>(Schema, Duplicates, Instructions)</Text>
+          </Space>
+
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            {isExcelFile && (
+              <div>
+                <Text strong>Workbook tabs</Text>
+                <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: '12px' }}>
+                  Creates one import per selected tab.
+                </Paragraph>
+                <Select
+                  mode="multiple"
+                  style={{ width: '100%' }}
+                  placeholder={sheetNames.length ? 'Select sheets to process' : 'No sheets found'}
+                  value={selectedSheets}
+                  onChange={(values) => setSelectedSheets(values)}
+                  options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
+                  disabled={!sheetNames.length}
+                />
+              </div>
+            )}
+            
+            <Row gutter={[24, 24]}>
+              <Col span={12}>
+                <Space align="start">
+                  <Switch checked={skipFileDuplicateCheck} onChange={(checked) => setSkipFileDuplicateCheck(checked)} />
+                  <div>
+                    <Text strong>Skip duplicate check</Text>
+                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                      Import all rows without checking for duplicates.
+                    </div>
+                  </div>
+                </Space>
+              </Col>
+              <Col span={12}>
+                <Space align="start">
+                  <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
+                  <div>
+                    <Text strong>Use single table</Text>
+                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                      Map {isArchive ? 'all files' : 'this file'} into one specific table.
+                    </div>
+                  </div>
+                </Space>
+              </Col>
+            </Row>
+
+            {useSharedTable && (
+              <div style={{ background: '#fafafa', padding: 16, borderRadius: 8 }}>
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <Text strong>Target Table Settings</Text>
+                  <Space>
+                    <Select
+                      value={sharedTableMode}
+                      style={{ width: 180 }}
+                      onChange={(value) => {
+                        setSharedTableMode(value as 'existing' | 'new');
+                        setSharedTableName('');
+                      }}
+                      options={[
+                        { value: 'new', label: 'Create new table' },
+                        { value: 'existing', label: 'Use existing table' },
+                      ]}
+                    />
+                    {sharedTableMode === 'new' ? (
+                      <Input
+                        value={sharedTableName}
+                        placeholder="Enter new table name"
+                        onChange={(e) => setSharedTableName(e.target.value)}
+                        style={{ width: 300 }}
+                      />
+                    ) : (
+                      <Select
+                        showSearch
+                        value={sharedTableName || undefined}
+                        placeholder="Select an existing table"
+                        onChange={(value) => setSharedTableName(value)}
+                        loading={loadingTables}
+                        style={{ width: 300 }}
+                        options={existingTables.map((table) => ({
+                          value: table.table_name,
+                          label: `${table.table_name} (${table.row_count.toLocaleString()} rows)`,
+                        }))}
+                        filterOption={(input, option) =>
+                          (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                      />
+                    )}
+                  </Space>
+                </Space>
+              </div>
+            )}
+            
+            {instructionField}
+          </Space>
+
           {!isArchive && (
             <Button
               type="primary"
@@ -125,112 +221,6 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
               {archiveProcessing ? 'Processing Archive...' : 'Auto Process Archive'}
             </Button>
           )}
-
-          <Collapse ghost expandIconPosition="end">
-            <Panel 
-              header={
-                <Space>
-                  <SettingOutlined />
-                  <Text strong>Advanced Configuration</Text>
-                  <Text type="secondary" style={{ fontSize: '12px' }}>(Schema, Duplicates, Instructions)</Text>
-                </Space>
-              } 
-              key="1"
-            >
-              <Space direction="vertical" size="large" style={{ width: '100%' }}>
-                {isExcelFile && (
-                  <div>
-                    <Text strong>Workbook tabs</Text>
-                    <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: '12px' }}>
-                      Creates one import per selected tab.
-                    </Paragraph>
-                    <Select
-                      mode="multiple"
-                      style={{ width: '100%' }}
-                      placeholder={sheetNames.length ? 'Select sheets to process' : 'No sheets found'}
-                      value={selectedSheets}
-                      onChange={(values) => setSelectedSheets(values)}
-                      options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
-                      disabled={!sheetNames.length}
-                    />
-                  </div>
-                )}
-                
-                <Row gutter={[24, 24]}>
-                  <Col span={12}>
-                    <Space align="start">
-                      <Switch checked={skipFileDuplicateCheck} onChange={(checked) => setSkipFileDuplicateCheck(checked)} />
-                      <div>
-                        <Text strong>Skip duplicate check</Text>
-                        <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
-                          Import all rows without checking for duplicates.
-                        </div>
-                      </div>
-                    </Space>
-                  </Col>
-                  <Col span={12}>
-                    <Space align="start">
-                      <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
-                      <div>
-                        <Text strong>Use single table</Text>
-                        <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
-                          Map {isArchive ? 'all files' : 'this file'} into one specific table.
-                        </div>
-                      </div>
-                    </Space>
-                  </Col>
-                </Row>
-
-                {useSharedTable && (
-                  <div style={{ background: '#fafafa', padding: 16, borderRadius: 8 }}>
-                    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                      <Text strong>Target Table Settings</Text>
-                      <Space>
-                        <Select
-                          value={sharedTableMode}
-                          style={{ width: 180 }}
-                          onChange={(value) => {
-                            setSharedTableMode(value as 'existing' | 'new');
-                            setSharedTableName('');
-                          }}
-                          options={[
-                            { value: 'new', label: 'Create new table' },
-                            { value: 'existing', label: 'Use existing table' },
-                          ]}
-                        />
-                        {sharedTableMode === 'new' ? (
-                          <Input
-                            value={sharedTableName}
-                            placeholder="Enter new table name"
-                            onChange={(e) => setSharedTableName(e.target.value)}
-                            style={{ width: 300 }}
-                          />
-                        ) : (
-                          <Select
-                            showSearch
-                            value={sharedTableName || undefined}
-                            placeholder="Select an existing table"
-                            onChange={(value) => setSharedTableName(value)}
-                            loading={loadingTables}
-                            style={{ width: 300 }}
-                            options={existingTables.map((table) => ({
-                              value: table.table_name,
-                              label: `${table.table_name} (${table.row_count.toLocaleString()} rows)`,
-                            }))}
-                            filterOption={(input, option) =>
-                              (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
-                            }
-                          />
-                        )}
-                      </Space>
-                    </Space>
-                  </div>
-                )}
-                
-                {instructionField}
-              </Space>
-            </Panel>
-          </Collapse>
         </Space>
       )}
 

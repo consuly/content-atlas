@@ -76,21 +76,6 @@ export const ImportMappingPage: React.FC = () => {
   const [canExecute, setCanExecute] = useState(false);
   const [needsUserInput, setNeedsUserInput] = useState(true);
   const [showInteractiveRetry, setShowInteractiveRetry] = useState(false);
-  const quickActions = [
-    { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
-    {
-      label: 'Request New Table',
-      prompt: 'Could we create a brand new table for this import instead? Outline the recommended schema.',
-    },
-    {
-      label: 'Adjust Column Mapping',
-      prompt: 'Please walk me through adjusting the column mapping. Suggest columns that should be renamed or remapped.',
-    },
-    {
-      label: 'Review Duplicates',
-      prompt: 'Explain how duplicate detection is configured. Are there better uniqueness rules we should consider?',
-    },
-  ];
 
   const fetchInstructions = useCallback(async () => {
     setLoadingInstructions(true);
@@ -1638,11 +1623,6 @@ export const ImportMappingPage: React.FC = () => {
     await sendInteractiveMessage(userInput);
   };
 
-  const handleQuickAction = async (prompt: string) => {
-    if (!prompt || processing) return;
-    await sendInteractiveMessage(prompt);
-  };
-
   const handleInteractiveExecute = async () => {
     if (!threadId || !id) return;
 
@@ -1932,9 +1912,7 @@ export const ImportMappingPage: React.FC = () => {
           onInteractiveStart={handleInteractiveStart}
           onInteractiveSend={handleInteractiveSend}
           onInteractiveExecute={handleInteractiveExecute}
-          onQuickAction={handleQuickAction}
           instructionField={renderedInstructionField}
-          quickActions={quickActions}
           disableMappingActions={disableMappingActions}
           skipFileDuplicateCheck={skipFileDuplicateCheck}
           setSkipFileDuplicateCheck={setSkipFileDuplicateCheck}
