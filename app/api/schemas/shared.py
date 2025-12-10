@@ -753,6 +753,9 @@ class AnalyzeFileInteractiveRequest(BaseModel):
     save_llm_instruction: bool = False
     llm_instruction_title: Optional[str] = None
     require_explicit_multi_value: bool = False
+    target_table_name: Optional[str] = None
+    target_table_mode: Optional[str] = None
+    skip_file_duplicate_check: bool = False
 
 
 class AnalyzeFileInteractiveResponse(BaseModel):
