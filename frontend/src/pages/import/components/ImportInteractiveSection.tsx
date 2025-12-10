@@ -8,15 +8,20 @@ import {
   Input,
   Button,
   Spin,
+  Collapse,
+  Row,
+  Col,
 } from 'antd';
 import {
   MessageOutlined,
   CheckCircleOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { ErrorLogViewer } from '../../../components/error-log-viewer';
 import { UploadedFile, ProcessingResult } from './types';
 
 const { Text, Paragraph } = Typography;
+const { Panel } = Collapse;
 
 interface ImportInteractiveSectionProps {
   file: UploadedFile;
@@ -39,7 +44,6 @@ interface ImportInteractiveSectionProps {
   onInteractiveExecute: () => void;
   onQuickAction: (prompt: string) => void;
   instructionField: React.ReactNode;
-  formatBytes: (bytes: number) => string;
   quickActions: Array<{ label: string; prompt: string }>;
   disableMappingActions: boolean;
 
@@ -77,7 +81,6 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
   onInteractiveExecute,
   onQuickAction,
   instructionField,
-  formatBytes,
   quickActions,
   disableMappingActions,
   skipFileDuplicateCheck,
@@ -93,112 +96,15 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
 }) => {
   return (
     <div style={{ padding: '24px 0' }}>
-      <Alert
-        message="Interactive Processing"
-        description="The AI will ask you questions to better understand how to import your data. This gives you more control over the process."
-        type="info"
-        showIcon
-        style={{ marginBottom: 24 }}
-      />
-
       {error && !result && (
         <div style={{ marginBottom: 24 }}>
           <ErrorLogViewer error={error} showRetry={false} />
         </div>
       )}
 
-      <div style={{ marginBottom: 16 }}>{instructionField}</div>
-
       {!result && conversation.length === 0 && (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <div>
-            <Text strong>File: </Text>
-            <Text>{file.file_name}</Text>
-          </div>
-          <div>
-            <Text strong>Size: </Text>
-            <Text>{formatBytes(file.file_size)}</Text>
-          </div>
-          {isExcelFile && sheetNames.length > 0 && (
-            <div style={{ maxWidth: 360 }}>
-              <Text strong>Choose a tab to review</Text>
-              <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                Interactive mode works one sheet at a time. Pick a tab or leave the default to start with the first sheet.
-              </Paragraph>
-              <Select
-                style={{ width: '100%' }}
-                placeholder="Select a sheet"
-                value={interactiveSheet}
-                onChange={(value) => setInteractiveSheet(value)}
-                options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
-              />
-            </div>
-          )}
-
-          <div>
-            <Space align="start">
-              <Switch checked={skipFileDuplicateCheck} onChange={(checked) => setSkipFileDuplicateCheck(checked)} />
-              <div>
-                <Text strong>Skip duplicate row detection</Text>
-                <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                  By default, duplicate rows are detected and skipped based on unique columns. Enable this to import all rows without checking for duplicates.
-                </Paragraph>
-              </div>
-            </Space>
-          </div>
           
-          <div>
-            <Space align="start">
-              <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
-              <div>
-                <Text strong>Use a single table for this import</Text>
-                <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                  Map this file into a specific table.
-                </Paragraph>
-                {useSharedTable && (
-                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                    <Select
-                      value={sharedTableMode}
-                      style={{ width: 240 }}
-                      onChange={(value) => {
-                        setSharedTableMode(value as 'existing' | 'new');
-                        setSharedTableName('');
-                      }}
-                      options={[
-                        { value: 'new', label: 'Create new table' },
-                        { value: 'existing', label: 'Use existing table' },
-                      ]}
-                    />
-                    {sharedTableMode === 'new' ? (
-                      <Input
-                        value={sharedTableName}
-                        placeholder="Enter new table name"
-                        onChange={(e) => setSharedTableName(e.target.value)}
-                        style={{ width: 360 }}
-                      />
-                    ) : (
-                      <Select
-                        showSearch
-                        value={sharedTableName || undefined}
-                        placeholder="Select an existing table"
-                        onChange={(value) => setSharedTableName(value)}
-                        loading={loadingTables}
-                        style={{ width: 360 }}
-                        options={existingTables.map((table) => ({
-                          value: table.table_name,
-                          label: `${table.table_name} (${table.row_count.toLocaleString()} rows)`,
-                        }))}
-                        filterOption={(input, option) =>
-                          (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
-                        }
-                      />
-                    )}
-                  </Space>
-                )}
-              </div>
-            </Space>
-          </div>
-
           {processing ? (
             <div style={{ textAlign: 'center', padding: '24px 0' }}>
               <Spin size="large" />
@@ -217,10 +123,115 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
               }}
               disabled={disableMappingActions}
               block
+              style={{ height: '50px', fontSize: '18px' }}
             >
               Start Interactive Analysis
             </Button>
           )}
+
+          <Collapse ghost expandIconPosition="end">
+            <Panel 
+              header={
+                <Space>
+                  <SettingOutlined />
+                  <Text strong>Advanced Configuration</Text>
+                  <Text type="secondary" style={{ fontSize: '12px' }}>(Schema, Duplicates, Instructions)</Text>
+                </Space>
+              } 
+              key="1"
+            >
+              <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                {isExcelFile && sheetNames.length > 0 && (
+                  <div>
+                    <Text strong>Choose a tab to review</Text>
+                    <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: '12px' }}>
+                      Interactive mode works one sheet at a time.
+                    </Paragraph>
+                    <Select
+                      style={{ width: '100%' }}
+                      placeholder="Select a sheet"
+                      value={interactiveSheet}
+                      onChange={(value) => setInteractiveSheet(value)}
+                      options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
+                    />
+                  </div>
+                )}
+
+                <Row gutter={[24, 24]}>
+                  <Col span={12}>
+                    <Space align="start">
+                      <Switch checked={skipFileDuplicateCheck} onChange={(checked) => setSkipFileDuplicateCheck(checked)} />
+                      <div>
+                        <Text strong>Skip duplicate check</Text>
+                        <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                          Import all rows without checking for duplicates.
+                        </div>
+                      </div>
+                    </Space>
+                  </Col>
+                  <Col span={12}>
+                    <Space align="start">
+                      <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
+                      <div>
+                        <Text strong>Use single table</Text>
+                        <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                          Map this file into a specific table.
+                        </div>
+                      </div>
+                    </Space>
+                  </Col>
+                </Row>
+                
+                {useSharedTable && (
+                  <div style={{ background: '#fafafa', padding: 16, borderRadius: 8 }}>
+                    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                      <Text strong>Target Table Settings</Text>
+                      <Space>
+                        <Select
+                          value={sharedTableMode}
+                          style={{ width: 180 }}
+                          onChange={(value) => {
+                            setSharedTableMode(value as 'existing' | 'new');
+                            setSharedTableName('');
+                          }}
+                          options={[
+                            { value: 'new', label: 'Create new table' },
+                            { value: 'existing', label: 'Use existing table' },
+                          ]}
+                        />
+                        {sharedTableMode === 'new' ? (
+                          <Input
+                            value={sharedTableName}
+                            placeholder="Enter new table name"
+                            onChange={(e) => setSharedTableName(e.target.value)}
+                            style={{ width: 300 }}
+                          />
+                        ) : (
+                          <Select
+                            showSearch
+                            value={sharedTableName || undefined}
+                            placeholder="Select an existing table"
+                            onChange={(value) => setSharedTableName(value)}
+                            loading={loadingTables}
+                            style={{ width: 300 }}
+                            options={existingTables.map((table) => ({
+                              value: table.table_name,
+                              label: `${table.table_name} (${table.row_count.toLocaleString()} rows)`,
+                            }))}
+                            filterOption={(input, option) =>
+                              (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
+                            }
+                          />
+                        )}
+                      </Space>
+                    </Space>
+                  </div>
+                )}
+
+                {instructionField}
+              </Space>
+            </Panel>
+          </Collapse>
         </Space>
       )}
 

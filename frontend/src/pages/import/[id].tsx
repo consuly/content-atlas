@@ -1902,7 +1902,6 @@ export const ImportMappingPage: React.FC = () => {
           onArchiveAutoProcess={handleArchiveAutoProcess}
           instructionField={renderedInstructionField}
           archiveResultsPanel={renderedArchiveResultsPanel}
-          formatBytes={formatBytes}
         />
       ),
     },
@@ -1935,7 +1934,6 @@ export const ImportMappingPage: React.FC = () => {
           onInteractiveExecute={handleInteractiveExecute}
           onQuickAction={handleQuickAction}
           instructionField={renderedInstructionField}
-          formatBytes={formatBytes}
           quickActions={quickActions}
           disableMappingActions={disableMappingActions}
           skipFileDuplicateCheck={skipFileDuplicateCheck}
@@ -2272,7 +2270,7 @@ export const ImportMappingPage: React.FC = () => {
           )}
         </Card>
       ) : (
-        <Card title={`Map File: ${file.file_name}`}>
+        <Card title={`Map File: ${file.file_name} (${formatBytes(file.file_size)})`}>
           <Tabs
             activeKey={activeTab}
             onChange={setActiveTab}
