@@ -56,6 +56,7 @@ export const QueryInput: React.FC<QueryInputProps> = ({
         placeholder={placeholder}
         autoSize={{ minRows: 1, maxRows: 6 }}
         disabled={disabled}
+        size="large"
         style={{ resize: 'none' }}
       />
       <Button
@@ -63,6 +64,7 @@ export const QueryInput: React.FC<QueryInputProps> = ({
         icon={<SendOutlined />}
         onClick={handleSend}
         disabled={disabled || !value.trim()}
+        size="large"
         style={{ height: 'auto' }}
       >
         Send
