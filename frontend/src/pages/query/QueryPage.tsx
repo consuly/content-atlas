@@ -237,7 +237,7 @@ export const QueryPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: '24px', height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ padding: '24px', height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <Card
         className="surface-card"
@@ -279,8 +279,8 @@ export const QueryPage: React.FC = () => {
           <Card
             title="Conversations"
             className="surface-card"
-            style={{ width: 320, flexShrink: 0, overflow: 'hidden' }}
-            styles={{ body: { padding: 0, height: '100%', overflow: 'auto' } }}
+            style={{ width: 320, flexShrink: 0, overflow: 'hidden', marginBottom: '16px' }}
+            styles={{ body: { padding: 0, overflow: 'auto' } }}
             extra={<Button size="small" onClick={loadConversationList} loading={isLoadingConversationList}>Refresh</Button>}
         >
           <List
@@ -289,24 +289,19 @@ export const QueryPage: React.FC = () => {
             renderItem={(conv) => (
               <List.Item
                 key={conv.thread_id}
-                style={{ cursor: 'pointer', padding: '12px 16px' }}
+                style={{ cursor: 'pointer', padding: '12px 16px', marginBottom: '16px' }}
                 onClick={() => handleLoadConversation(conv.thread_id)}
               >
                 <List.Item.Meta
                   title={
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text strong ellipsis style={{ maxWidth: 200 }}>
+                    <div style={{ display: 'flex',  flexDirection: 'column' }}>
+                      <Text strong ellipsis>
                         {conv.first_user_prompt || 'Conversation'}
                       </Text>
                       <Text type="secondary" style={{ fontSize: 12 }}>
                         {conv.updated_at ? new Date(conv.updated_at).toLocaleString() : ''}
                       </Text>
                     </div>
-                  }
-                  description={
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      ID: {conv.thread_id}
-                    </Text>
                   }
                 />
               </List.Item>
@@ -373,8 +368,7 @@ export const QueryPage: React.FC = () => {
                   <Card
                     size="small"
                     className="surface-card"
-                    style={{ maxWidth: '85%', borderRadius: 8 }}
-                    bodyStyle={{ padding: '16px' }}
+                    style={{ maxWidth: '85%', borderRadius: 8, padding: '16px' }}
                   >
                     <Space>
                       <Spin size="small" />
@@ -402,17 +396,31 @@ export const QueryPage: React.FC = () => {
       )}
 
       {/* Input Area */}
-      <Card className="surface-card" styles={{ body: { padding: '16px' } }}>
-        <QueryInput
-          onSend={handleSendQuery}
-          disabled={isBusy}
-          placeholder="Ask a question about your data... (Press Enter to send, Shift+Enter for new line)"
-        />
-        <div style={{ marginTop: 8 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            💡 Tip: You can ask follow-up questions and I'll remember the context of our conversation.
-          </Text>
-        </div>
+      <Card 
+        className="surface-card" 
+        style={{ 
+          boxShadow: '0 4px 12px rgba(24, 144, 255, 0.1)' // Highlight shadow
+        }}
+        styles={{ body: { padding: '20px' } }}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <div style={{ marginBottom: 4 }}>
+            <Text strong style={{ color: '#1890ff' }}><RobotOutlined /> Ask AI Assistant</Text>
+          </div>
+          <QueryInput
+            onSend={handleSendQuery}
+            disabled={isBusy}
+            placeholder="Ask a question about your data... (Press Enter to send, Shift+Enter for new line)"
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Press <b>Enter</b> to send, <b>Shift+Enter</b> for new line
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              💡 Tip: I remember context!
+            </Text>
+          </div>
+        </Space>
       </Card>
     </div>
   );
