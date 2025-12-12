@@ -1,3 +1,7 @@
+[ ] Review duplicate logic
+
+
+
 When generating workflow we get this error on some request:
 
 Response:
@@ -38,3 +42,24 @@ Use only one column email in the new table. If the row has two different emails 
 
 
 Standardize and internationalize the phone number by prefixing it with the + international code. Create a regex to clean up all the phone numbers and output them in the same format.
+
+Map only those columns from the file:
+name, short_description, semrush_global_rank, semrush_visits_latest_month, num_investors, funding_total, num_exits, num_funding_rounds, last_funding_type, last_funding_at, num_acquisitions, contact_email, phone_number, facebook, linkedin, twitter, num_investments, num_lead_investments, num_lead_investors, listed_stock_symbol, company_type, operating_status, founded_on, categories, founders, website, ipo_status, num_employees_enum, locations, growth_insight_description, growth_insight_indicator, growth_insight_direction, growth_insight_confidence, investor_insight_description, crunchbase_url
+Rename url to crunchbase_url.
+Standardize and internationalize the phone number with the + international code at the begining.
+
+
+
+
+
+
+
+
+In query page when returning query results make sure to remove the system columns like _row_id so they don't show to the user.
+
+Query Results
+(2 rows)
+#	_row_id	contact_full_name	first_name	last_name	job_title	department	seniority_level	company_name	company_website	list_source	linkedin_profile_url	contact_phone	company_phone	company_street_1	company_street_2	company_city	company_state	company_postal_code	company_county	company_annual_revenue	company_description	company_website_domain	company_founded_date	company_industry	company_linkedin_url	company_linkedin_id	company_revenue_range	company_staff_count	company_staff_count_range	email	_import_id	_imported_at	_source_row_number	_corrections_applied	
+1	1	Chloe Woods	Chloe	Woods	Owner	Other	C-Level	Ring	ring.com	Home Security, O/F/C	https://www.linkedin.com/in/chloe-woods-79805b33	18,006,561,918	13,109,297,085	1523 26th Street	-	Santa Monica	California	90,404	-	50,000,000	Since its founding in 2013, Ring has been on a mission to make neighborhoods safer. From the first-ever video doorbell, to the award-winning DIY Ring Alarm system, Ring’s smart home security product line, as well as the Neighbors app, offer users affordable whole-home and neighborhood security. At Ring, we are committed to making home and neighborhood security accessible and effective for everyone -- while working hard to bring communities together. Ring is an Amazon company. For more information, visit www.ring.com. With Ring, you’re always home.	ring.com	-	Consumer Electronics	https://www.linkedin.com/company/4787585	4,787,585	$20M - $50M	1,001	1,001 - 5,000 employees	chloe.woods@ring.com	1fd90c23-2204-4fda-bb13-188940fdac3b	2025-12-07 17:50:23.605550	1	-
+2	2	Robert Hällsten	Robert	Hällsten	IT Workplace Solution Architect & Product Owner	IT	Manager	Verisure	verisure.com	Home Security, O/F/C	https://www.linkedin.com/in/roberthallsten	-	46,040,254,500	3a Chemin Jean-Baptiste-Vandelle	-	Versoix	GE	-	-	1,000,000,000	Verisure is the leading provider of peace of mind and protection to residential and small business customers across Europe and Latin America. We deliver professionally-monitored smart alarms and outstanding service to 3 million customers in 16 countries across Europe and Latin America, with a team of more than 18,000 colleagues .	-	-	-	-	-	-	-	-	-	-	-	-	-
+Total 2 rows

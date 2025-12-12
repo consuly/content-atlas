@@ -7,8 +7,79 @@ from .metadata import get_all_table_metadata
 from .models import SYSTEM_COLUMNS
 
 
-def get_database_schema() -> Dict[str, Any]:
-    """Get comprehensive database schema information for all user tables."""
+def get_table_names() -> List[Dict[str, Any]]:
+    """
+    Get a lightweight list of user tables with basic metadata.
+    Used for initial discovery before fetching detailed schema.
+    """
+    engine = get_engine()
+    
+    with engine.connect() as conn:
+        # Get all user tables (same exclusion logic as get_database_schema)
+        tables_result = conn.execute(text(r"""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns',
+                                 'raster_columns', 'raster_overviews',
+                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'llm_instructions',
+                                 'workflows', 'workflow_steps', 'workflow_variables', 'workflow_executions', 'workflow_step_results')
+            AND table_name NOT LIKE 'pg_%'
+            AND table_name NOT LIKE 'test!_%' ESCAPE '!'
+            ORDER BY table_name
+        """))
+        
+        tables = [row[0] for row in tables_result]
+        
+        # Get basic metadata (purposes)
+        all_metadata = {}
+        try:
+            all_metadata = get_all_table_metadata()
+        except Exception:
+            pass
+            
+        result = []
+        for table in tables:
+            # Get row count
+            try:
+                count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"'))
+                row_count = count_result.scalar()
+            except Exception:
+                row_count = 0
+                
+            meta = all_metadata.get(table, {})
+            result.append({
+                "name": table,
+                "row_count": row_count,
+                "purpose": meta.get("purpose_short", "No description available"),
+                "domain": meta.get("data_domain")
+            })
+            
+        return result
+
+
+def format_table_list_for_prompt(tables: List[Dict[str, Any]]) -> str:
+    """Format the list of tables into a concise prompt."""
+    lines = ["## Available Database Tables\n"]
+    lines.append(f"Total Tables: {len(tables)}\n")
+    
+    for t in tables:
+        desc = f"{t['name']} (Rows: {t['row_count']})"
+        if t['purpose']:
+            desc += f" - {t['purpose']}"
+        lines.append(f"- {desc}")
+        
+    lines.append("\nTo see columns and sample data, use 'get_table_schema_tool' with specific table names.")
+    return "\n".join(lines)
+
+
+def get_database_schema(table_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Get comprehensive database schema information.
+    
+    Args:
+        table_names: Optional list of specific tables to fetch. If None, fetches all.
+    """
     engine = get_engine()
 
     with engine.connect() as conn:
@@ -26,7 +97,15 @@ def get_database_schema() -> Dict[str, Any]:
             ORDER BY table_name
         """))
 
-        tables = [row[0] for row in tables_result]
+        all_tables = [row[0] for row in tables_result]
+        
+        # Filter if specific tables requested
+        if table_names:
+            # Case-insensitive matching
+            requested_lower = {t.lower() for t in table_names}
+            tables = [t for t in all_tables if t.lower() in requested_lower]
+        else:
+            tables = all_tables
 
         schema_info = {
             "tables": {},
@@ -146,12 +225,16 @@ def get_database_schema() -> Dict[str, Any]:
             column_name = row[1]
             # Exclude relationships involving system columns
             if column_name not in SYSTEM_COLUMNS:
-                schema_info["relationships"].append({
-                    "table": row[0],
-                    "column": column_name,
-                    "references_table": row[2],
-                    "references_column": row[3]
-                })
+                # Only include relationships where at least one table is in our filtered list
+                # This gives context without overwhelming if a table links to something we didn't ask for,
+                # but usually we want to see relationships for the tables we requested.
+                if row[0] in tables or row[2] in tables:
+                    schema_info["relationships"].append({
+                        "table": row[0],
+                        "column": column_name,
+                        "references_table": row[2],
+                        "references_column": row[3]
+                    })
     
     # Get table metadata (purposes, domains, etc.)
     try:
@@ -177,7 +260,7 @@ def format_schema_for_prompt(schema_info: Dict[str, Any]) -> str:
     """Format database schema information into a readable prompt context."""
     lines = ["## Database Schema Overview\n"]
 
-    lines.append(f"Total Tables: {len(schema_info['tables'])}\n")
+    lines.append(f"Tables Included: {len(schema_info['tables'])}\n")
 
     for table_name, table_info in schema_info["tables"].items():
         lines.append(f"### Table: {table_name}")
