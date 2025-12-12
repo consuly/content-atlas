@@ -18,7 +18,13 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 from langchain_core.runnables import RunnableConfig
 from app.db.session import get_engine
-from app.db.context import get_database_schema, format_schema_for_prompt, get_related_tables
+from app.db.context import (
+    get_database_schema, 
+    format_schema_for_prompt, 
+    get_related_tables,
+    get_table_names,
+    format_table_list_for_prompt
+)
 from app.core.config import settings
 from app.domain.queries.charting import build_chart_suggestion
 
@@ -95,9 +101,15 @@ IMPORTANT CAPABILITIES:
 3. You can execute SQL queries when specific data is requested
 4. You can politely decline dangerous operations (DELETE, DROP, etc.)
 
+QUERY STRATEGY (LAZY LOADING):
+To optimize performance and accuracy, follow this 3-step process for every new query:
+1. **Discovery**: Call `list_tables_tool` to see what tables are available.
+2. **Schema Analysis**: Based on the user's request and the table list, identify the 1-3 most relevant tables and call `get_table_schema_tool(table_names=[...])` to get their detailed structure.
+3. **Execution**: Once you have the schema, construct and run the SQL query using `execute_sql_query`.
+
 When a user asks for:
-- Ideas, suggestions, or recommendations: Provide thoughtful analysis based on available schema
-- Specific data queries: Use get_database_schema_tool, then execute_sql_query
+- Ideas, suggestions, or recommendations: Provide thoughtful analysis based on available schema (fetch schema if needed)
+- Specific data queries: Follow the Discovery -> Schema -> Execution flow.
 - Dangerous operations: Politely explain why you cannot perform them
 
 When generating SQL queries:
@@ -168,20 +180,41 @@ class DatabaseQueryResult(TypedDict):
 
 
 @tool
-def get_database_schema_tool() -> str:
-    """Get comprehensive information about all tables and their schemas in the database."""
+def list_tables_tool() -> str:
+    """
+    List all available tables in the database with brief descriptions.
+    Use this FIRST to identify which tables might contain the data you need.
+    """
     try:
-        schema_info = get_database_schema()
+        tables = get_table_names()
+        return format_table_list_for_prompt(tables)
+    except Exception as e:
+        return f"Error listing tables: {str(e)}"
+
+
+@tool
+def get_table_schema_tool(table_names: List[str]) -> str:
+    """
+    Get detailed schema (columns, types, samples) for specific tables.
+    Use this AFTER identifying relevant tables with list_tables_tool.
+    
+    Args:
+        table_names: List of table names to fetch schema for (e.g., ["orders", "customers"])
+    """
+    try:
+        schema_info = get_database_schema(table_names=table_names)
         return format_schema_for_prompt(schema_info)
     except Exception as e:
-        return f"Error retrieving database schema: {str(e)}"
+        return f"Error retrieving schema: {str(e)}"
 
 
 @tool
 def get_related_tables_tool(query: str) -> str:
     """Analyze a query and suggest which tables might be relevant for JOINs or related data."""
     try:
-        schema_info = get_database_schema()
+        # For this tool, we still need the full schema logic internally to analyze relationships,
+        # but we don't return the full schema to the LLM.
+        schema_info = get_database_schema() 
         related = get_related_tables(query, schema_info)
         if related:
             return f"Potentially related tables for this query: {', '.join(related)}"
@@ -219,31 +252,67 @@ def _message_has_tool_use(msg: Any) -> bool:
 def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     """
     Keep only recent messages while preserving tool_use/tool_result pairs.
-    
-    Claude API requires that every tool_result has a corresponding tool_use
-    in the previous message. This function ensures we never cut between
-    tool_use and tool_result blocks when trimming conversation history.
+    Also implements token-based trimming to prevent context overflow.
     """
     messages = state["messages"]
     
-    # Keep at least 6 messages to avoid trimming too aggressively
+    # Keep at least 6 messages to avoid trimming too aggressively if small
     if len(messages) <= 6:
         return None  # No changes needed
     
-    # Always keep the first message (system prompt with schema context)
+    # Always keep the first message (system prompt/context)
     first_msg = messages[0]
+    
+    # --- Token-Based Trimming Logic ---
+    # Approximate token count (4 characters per token is a safe upper bound estimate)
+    MAX_CONTEXT_TOKENS = 120000 
+    
+    def estimate_tokens(msg):
+        content = getattr(msg, 'content', "") or ""
+        if isinstance(content, list):
+            text_content = ""
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_content += block.get("text", "")
+            content = text_content
+        return len(str(content)) // 4
+
+    current_tokens = 0
+    # Calculate total tokens (roughly)
+    for m in messages:
+        current_tokens += estimate_tokens(m)
+        
+    # --- Logic ---
     
     # Target: keep last ~10 messages, but adjust to respect tool boundaries
     target_keep = 10
     cut_index = max(1, len(messages) - target_keep)
     
-    # Walk forward from cut_index to find a safe boundary
-    # A safe boundary is BEFORE a message that doesn't contain tool_result
+    # If we are over token limit, be more aggressive with cut_index
+    if current_tokens > MAX_CONTEXT_TOKENS:
+        # Walk backwards from end, accumulating tokens until we hit limit
+        tokens_so_far = 0
+        new_cut_index = len(messages)
+        
+        # Always reserve tokens for first message
+        first_msg_tokens = estimate_tokens(first_msg)
+        budget = MAX_CONTEXT_TOKENS - first_msg_tokens
+        
+        for i in range(len(messages) - 1, 0, -1):
+            msg_tokens = estimate_tokens(messages[i])
+            if tokens_so_far + msg_tokens > budget:
+                new_cut_index = i + 1
+                break
+            tokens_so_far += msg_tokens
+            new_cut_index = i
+            
+        # Use the more aggressive cut index
+        cut_index = max(cut_index, new_cut_index)
+
+    # Walk forward from cut_index to find a safe boundary (don't split tool use/result)
     while cut_index < len(messages):
         msg = messages[cut_index]
         
-        # If this message has a tool_result, we need to include the preceding
-        # tool_use message(s). Walk backwards to find the start of the tool cycle.
         if _message_has_tool_result(msg):
             # Look backwards for the tool_use message
             search_index = cut_index - 1
@@ -254,7 +323,6 @@ def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
                     break
                 search_index -= 1
             
-            # If we couldn't find tool_use, keep searching forward
             if search_index < 1:
                 cut_index += 1
                 continue
@@ -374,9 +442,10 @@ def create_query_agent(system_prompt: str):
 
     # Define tools
     tools = [
-        get_database_schema_tool,
-        get_related_tables_tool,
-        execute_sql_query
+        list_tables_tool,          # New tool: lightweight discovery
+        get_table_schema_tool,     # New tool: detailed drill-down
+        get_related_tables_tool,   # Existing
+        execute_sql_query          # Existing
     ]
 
     # Create the agent with v1.0 features including memory and message trimming
