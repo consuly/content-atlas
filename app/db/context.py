@@ -278,7 +278,7 @@ def format_schema_for_prompt(schema_info: Dict[str, Any]) -> str:
         lines.append("⚠️ **IMPORTANT**: Some table names contain hyphens or spaces. Always use double quotes:")
         for t in special_char_tables[:5]:
             lines.append(f'  - Use: "{t}" (with quotes)')
-        lines.append(""
+        lines.append("")
 
     for table_name, table_info in schema_info["tables"].items():
         lines.append(f"### Table: {table_name}")
