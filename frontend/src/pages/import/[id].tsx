@@ -1,172 +1,39 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Descriptions, Table, Tag, Divider, Modal, Switch, Input, Progress, Select, Checkbox, Collapse } from 'antd';
-import type { BreadcrumbProps, DescriptionsProps } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import { ThunderboltOutlined, MessageOutlined, CheckCircleOutlined, ArrowLeftOutlined, HomeOutlined, FileOutlined, DatabaseOutlined, InfoCircleOutlined, EyeOutlined, MergeCellsOutlined } from '@ant-design/icons';
+import { App as AntdApp, Card, Tabs, Button, Space, Alert, Spin, Typography, Result, Statistic, Row, Col, Breadcrumb, Tag, Progress, Collapse, Table, type BreadcrumbProps } from 'antd';
+import { ArrowLeftOutlined, ThunderboltOutlined, MessageOutlined, HomeOutlined, FileOutlined } from '@ant-design/icons';
 import axios, { AxiosError } from 'axios';
 import { ErrorLogViewer } from '../../components/error-log-viewer';
 import { formatUserFacingError } from '../../utils/errorMessages';
 import { API_URL } from '../../config';
+import {
+  UploadedFile,
+  ProcessingResult,
+  TableData,
+  ImportHistory,
+  DuplicateRowsState,
+  DuplicateDetail,
+  AutoRecoveryOutcome,
+  ImportJobInfo,
+  ArchiveAutoProcessResult,
+  ArchiveJobCompletedEntry,
+  ArchiveJobMetadata,
+  ArchiveResultMetadata,
+  ArchiveHistorySummary,
+  InstructionOption,
+  DuplicateRowData,
+  DuplicateExistingRow,
+  ArchiveFileResult,
+  ArchiveFileStatus,
+} from './components/types';
+import { ImportMappedFileSection } from './components/ImportMappedFileSection';
+import { ImportAutoSection } from './components/ImportAutoSection';
+import { ImportInteractiveSection } from './components/ImportInteractiveSection';
+import { ArchiveResultsPanel } from './components/ArchiveResultsPanel';
+import { InstructionField } from './components/InstructionField';
 
 const { Text, Paragraph } = Typography;
-const { TextArea } = Input;
 const DUPLICATE_PREVIEW_LIMIT = 20;
-
-interface UploadedFile {
-  id: string;
-  file_name: string;
-  b2_file_id: string;
-  b2_file_path: string;
-  file_size: number;
-  content_type?: string;
-  upload_date?: string;
-  status: string;
-  mapped_table_name?: string;
-  mapped_date?: string;
-  mapped_rows?: number;
-  error_message?: string;
-  active_job_id?: string;
-  active_job_status?: string;
-  active_job_stage?: string;
-  active_job_progress?: number;
-  active_job_started_at?: string;
-}
-
-interface ProcessingResult {
-  success: boolean;
-  table_name?: string;
-  rows_imported?: number;
-  execution_time?: number;
-  error?: string;
-}
-
-interface TableData {
-  data: Array<Record<string, unknown>>;
-  total_rows: number;
-}
-
-interface ImportHistory {
-  import_id: string;
-  import_timestamp: string;
-  table_name: string;
-  import_strategy?: string;
-  status: string;
-  total_rows_in_file?: number;
-  rows_inserted?: number;
-  duplicates_found?: number;
-  data_validation_errors?: number;
-  duration_seconds?: number;
-  mapping_config?: Record<string, unknown>;
-}
-
-interface DuplicateRowData {
-  id: number;
-  record_number?: number | null;
-  record: Record<string, unknown>;
-  detected_at?: string | null;
-  resolved_at?: string | null;
-  resolved_by?: string | null;
-  resolution_details?: Record<string, unknown> | null;
-}
-
-interface DuplicateRowsState {
-  rows: DuplicateRowData[];
-  total: number;
-}
-
-interface DuplicateExistingRow {
-  row_id: number;
-  record: Record<string, unknown>;
-}
-
-interface DuplicateDetail {
-  duplicate: DuplicateRowData;
-  existing_row: DuplicateExistingRow | null;
-  uniqueness_columns: string[];
-}
-
-type AutoRecoveryOutcome =
-  | { recovered: true }
-  | {
-      recovered: false;
-      reason: 'no_plan' | 'analysis_failed' | 'execution_failed' | 'exception';
-      errorMessage?: string;
-    };
-
-interface ImportJobInfo {
-  id: string;
-  file_id: string;
-  status: string;
-  stage?: string | null;
-  progress?: number | null;
-  error_message?: string | null;
-  trigger_source?: string | null;
-  analysis_mode?: string | null;
-  conflict_mode?: string | null;
-  retry_attempt?: number | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  completed_at?: string | null;
-  metadata?: Record<string, unknown> | null;
-  result_metadata?: Record<string, unknown> | null;
-}
-
-type ArchiveFileStatus = 'processed' | 'failed' | 'skipped';
-
-interface ArchiveFileResult {
-  archive_path: string;
-  stored_file_name?: string | null;
-  uploaded_file_id?: string | null;
-  sheet_name?: string | null;
-  status: ArchiveFileStatus;
-  table_name?: string | null;
-  records_processed?: number | null;
-  duplicates_skipped?: number | null;
-  import_id?: string | null;
-  auto_retry_used?: boolean;
-  message?: string | null;
-}
-
-interface ArchiveAutoProcessResult {
-  success: boolean;
-  total_files: number;
-  processed_files: number;
-  failed_files: number;
-  skipped_files: number;
-  results: ArchiveFileResult[];
-  job_id?: string | null;
-}
-
-type ArchiveJobCompletedEntry = {
-  archive_path: string;
-  status: ArchiveFileStatus;
-};
-
-type ArchiveJobMetadata = {
-  source?: string;
-  files_in_archive?: number;
-  remaining_files?: string[];
-  completed_files?: ArchiveJobCompletedEntry[];
-  current_file?: string | null;
-  processed?: number;
-  failed?: number;
-  skipped?: number;
-  total?: number;
-};
-
-type ArchiveResultMetadata = {
-  files_total?: number;
-  processed_files?: number;
-  failed_files?: number;
-  skipped_files?: number;
-  results?: ArchiveFileResult[];
-};
-
-interface ArchiveHistorySummary {
-  job: ImportJobInfo;
-  result: ArchiveAutoProcessResult;
-}
 
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -197,9 +64,7 @@ export const ImportMappingPage: React.FC = () => {
   const [llmInstruction, setLlmInstruction] = useState('');
   const [instructionTitle, setInstructionTitle] = useState('');
   const [saveInstruction, setSaveInstruction] = useState(false);
-  const [instructionOptions, setInstructionOptions] = useState<
-    { id: string; title: string; content: string }[]
-  >([]);
+  const [instructionOptions, setInstructionOptions] = useState<InstructionOption[]>([]);
   const [selectedInstructionId, setSelectedInstructionId] = useState<string | null>(null);
   const [loadingInstructions, setLoadingInstructions] = useState(false);
   const [instructionActionLoading, setInstructionActionLoading] = useState(false);
@@ -211,27 +76,12 @@ export const ImportMappingPage: React.FC = () => {
   const [canExecute, setCanExecute] = useState(false);
   const [needsUserInput, setNeedsUserInput] = useState(true);
   const [showInteractiveRetry, setShowInteractiveRetry] = useState(false);
-  const quickActions = [
-    { label: 'Approve Plan', prompt: 'CONFIRM IMPORT' },
-    {
-      label: 'Request New Table',
-      prompt: 'Could we create a brand new table for this import instead? Outline the recommended schema.',
-    },
-    {
-      label: 'Adjust Column Mapping',
-      prompt: 'Please walk me through adjusting the column mapping. Suggest columns that should be renamed or remapped.',
-    },
-    {
-      label: 'Review Duplicates',
-      prompt: 'Explain how duplicate detection is configured. Are there better uniqueness rules we should consider?',
-    },
-  ];
 
   const fetchInstructions = useCallback(async () => {
     setLoadingInstructions(true);
     try {
       const token = localStorage.getItem('refine-auth');
-      const response = await axios.get<{ success: boolean; instructions: { id: string; title: string; content: string }[] }>(
+      const response = await axios.get<{ success: boolean; instructions: InstructionOption[] }>(
         `${API_URL}/llm-instructions`,
         {
           headers: {
@@ -273,14 +123,6 @@ export const ImportMappingPage: React.FC = () => {
       typeof effectiveArchiveResult.failed_files === 'number' && effectiveArchiveResult.failed_files > 0
         ? effectiveArchiveResult.failed_files
         : 0;
-    const processedFiles =
-      typeof effectiveArchiveResult.processed_files === 'number'
-        ? effectiveArchiveResult.processed_files
-        : 0;
-    const skippedFiles =
-      typeof effectiveArchiveResult.skipped_files === 'number'
-        ? effectiveArchiveResult.skipped_files
-        : 0;
     const resultCount = Array.isArray(effectiveArchiveResult.results)
       ? effectiveArchiveResult.results.length
       : 0;
@@ -290,12 +132,14 @@ export const ImportMappingPage: React.FC = () => {
         : resultCount;
     const derivedTotal =
       totalFilesFromResult ||
-      processedFiles + failedFiles + skippedFiles ||
+      effectiveArchiveResult.processed_files + failedFiles + effectiveArchiveResult.skipped_files ||
       resultCount;
     const totalFiles = Math.max(derivedTotal, 0);
-    const successfulFiles = Math.max(0, totalFiles - failedFiles - skippedFiles);
     const hasPartialFailure =
       failedFiles > 0 && totalFiles > 0 && failedFiles < totalFiles;
+
+    const successfulFiles = effectiveArchiveResult.processed_files ?? 0;
+    const skippedFiles = effectiveArchiveResult.skipped_files ?? 0;
 
     return {
       totalFiles,
@@ -308,9 +152,9 @@ export const ImportMappingPage: React.FC = () => {
 
   const hasPartialArchiveFailure = !!archiveFailureSummary?.hasPartialFailure;
   const archiveFailedFileCount = archiveFailureSummary?.failedFiles ?? 0;
-  const archiveTotalFileCount = archiveFailureSummary?.totalFiles ?? 0;
   const archiveSuccessfulFileCount = archiveFailureSummary?.successfulFiles ?? 0;
   const archiveSkippedFileCount = archiveFailureSummary?.skippedFiles ?? 0;
+  const archiveTotalFileCount = archiveFailureSummary?.totalFiles ?? 0;
   const archiveTotalForDisplay =
     archiveTotalFileCount ||
     archiveSuccessfulFileCount + archiveFailedFileCount + archiveSkippedFileCount;
@@ -542,129 +386,13 @@ export const ImportMappingPage: React.FC = () => {
     [chunkProgressLabel]
   );
 
-  const instructionField = (
-    <div style={{ width: '100%' }}>
-      <Text strong>LLM instruction (optional)</Text>
-      <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-        This note is passed to the AI for every file in this upload (including archives and workbooks).
-      </Paragraph>
-      <Space direction="vertical" size="small" style={{ width: '100%' }}>
-        <Select
-          allowClear
-          showSearch
-          placeholder="Select a saved instruction"
-          value={selectedInstructionId || undefined}
-          onChange={(value) => {
-            setSelectedInstructionId(value || null);
-            const selected = instructionOptions.find((option) => option.id === value);
-            if (selected) {
-              setLlmInstruction(selected.content);
-              setInstructionTitle(selected.title);
-            }
-          }}
-          options={instructionOptions.map((option) => ({
-            value: option.id,
-            label: option.title,
-          }))}
-          loading={loadingInstructions}
-          style={{ width: '100%' }}
-        />
-        <TextArea
-          value={llmInstruction}
-          onChange={(e) => {
-            setLlmInstruction(e.target.value);
-            if (selectedInstructionId) {
-              setSelectedInstructionId(null);
-            }
-          }}
-          placeholder="Example: Keep phone numbers as text and do not drop rows when the address is missing."
-          autoSize={{ minRows: 2, maxRows: 4 }}
-        />
-        <Space align="start">
-          <Checkbox
-            checked={saveInstruction}
-            onChange={(e) => setSaveInstruction(e.target.checked)}
-          >
-            Save this instruction for future imports
-          </Checkbox>
-          {saveInstruction && (
-            <Input
-              value={instructionTitle}
-              onChange={(e) => setInstructionTitle(e.target.value)}
-              placeholder="Instruction name (e.g., Marketing Cleanup Rules)"
-              style={{ minWidth: 240 }}
-            />
-          )}
-        </Space>
-        {selectedInstructionId && (
-          <Space>
-            <Button
-              size="small"
-              onClick={async () => {
-                if (!selectedInstructionId) return;
-                const title = instructionTitle.trim() || 'Saved import instruction';
-                setInstructionActionLoading(true);
-                try {
-                  const token = localStorage.getItem('refine-auth');
-                  await axios.patch(
-                    `${API_URL}/llm-instructions/${selectedInstructionId}`,
-                    { title, content: llmInstruction },
-                    {
-                      headers: {
-                        'Content-Type': 'application/json',
-                        ...(token && { Authorization: `Bearer ${token}` }),
-                      },
-                    }
-                  );
-                  messageApi.success('Instruction updated');
-                  await fetchInstructions();
-                } catch (err) {
-                  console.error('Unable to update instruction', err);
-                  messageApi.error('Unable to update instruction');
-                } finally {
-                  setInstructionActionLoading(false);
-                }
-              }}
-              loading={instructionActionLoading}
-              disabled={disableMappingActions}
-            >
-              Update selected
-            </Button>
-            <Button
-              size="small"
-              danger
-              onClick={async () => {
-                if (!selectedInstructionId) return;
-                setInstructionActionLoading(true);
-                try {
-                  const token = localStorage.getItem('refine-auth');
-                  await axios.delete(`${API_URL}/llm-instructions/${selectedInstructionId}`, {
-                    headers: {
-                      ...(token && { Authorization: `Bearer ${token}` }),
-                    },
-                  });
-                  messageApi.success('Instruction deleted');
-                  setSelectedInstructionId(null);
-                  setLlmInstruction('');
-                  setInstructionTitle('');
-                  await fetchInstructions();
-                } catch (err) {
-                  console.error('Unable to delete instruction', err);
-                  messageApi.error('Unable to delete instruction');
-                } finally {
-                  setInstructionActionLoading(false);
-                }
-              }}
-              loading={instructionActionLoading}
-              disabled={disableMappingActions}
-            >
-              Delete selected
-            </Button>
-          </Space>
-        )}
-      </Space>
-    </div>
-  );
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+  };
 
   const showActiveJobWarning = useCallback(() => {
     messageApi.warning(
@@ -783,9 +511,6 @@ export const ImportMappingPage: React.FC = () => {
     try {
       const token = localStorage.getItem('refine-auth');
 
-      // Prefer matching import history using original file metadata so
-      // duplicates/summary reflect the specific upload even when multiple
-      // files target the same table.
       const importParams: Record<string, unknown> = {
         table_name: tableName,
         file_name: fileMeta.file_name,
@@ -806,8 +531,6 @@ export const ImportMappingPage: React.FC = () => {
         (!historyResponse.data.success || historyResponse.data.imports.length === 0) &&
         fileMeta.mapped_table_name
       ) {
-        // Fallback to table-level lookup so we still show something even if
-        // file-specific filters miss (e.g. legacy records without metadata).
         historyResponse = await axios.get(`${API_URL}/import-history`, {
           params: { table_name: tableName, limit: 1 },
           headers: {
@@ -819,7 +542,6 @@ export const ImportMappingPage: React.FC = () => {
       if (historyResponse.data.success && historyResponse.data.imports.length > 0) {
         setImportHistory(historyResponse.data.imports[0]);
         
-        // Fetch table data preview filtered by import_id to show only imported rows
         const importId = historyResponse.data.imports[0].import_id;
         const tableResponse = await axios.get(`${API_URL}/tables/${tableName}`, {
           params: { limit: 10, offset: 0, import_id: importId },
@@ -1790,6 +1512,14 @@ export const ImportMappingPage: React.FC = () => {
       }
       appendInstructionPayload(payload);
 
+      if (useSharedTable && sharedTableName.trim()) {
+        payload.target_table_name = sharedTableName.trim();
+        payload.target_table_mode = sharedTableMode;
+      }
+      if (skipFileDuplicateCheck) {
+        payload.skip_file_duplicate_check = true;
+      }
+
       const response = await axios.post(
         `${API_URL}/analyze-file-interactive`,
         payload,
@@ -1893,11 +1623,6 @@ export const ImportMappingPage: React.FC = () => {
     await sendInteractiveMessage(userInput);
   };
 
-  const handleQuickAction = async (prompt: string) => {
-    if (!prompt || processing) return;
-    await sendInteractiveMessage(prompt);
-  };
-
   const handleInteractiveExecute = async () => {
     if (!threadId || !id) return;
 
@@ -1969,667 +1694,6 @@ export const ImportMappingPage: React.FC = () => {
     }
   };
 
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-  };
-
-  const formatDate = (dateString?: string): string => {
-    if (!dateString) return '-';
-    return new Date(dateString).toLocaleString();
-  };
-
-  const renderDuplicateValue = (value: unknown): React.ReactNode => {
-    if (value === null || value === undefined) {
-      return <Text type="secondary">-</Text>;
-    }
-    if (Array.isArray(value) || typeof value === 'object') {
-      try {
-        const asJson = JSON.stringify(value);
-        return (
-          <Text code style={{ maxWidth: 220 }} ellipsis={{ tooltip: asJson }}>
-            {asJson}
-          </Text>
-        );
-      } catch (err) {
-        console.error('Failed to render duplicate value as JSON', err);
-        return String(value);
-      }
-    }
-    const textValue = String(value);
-    return (
-      <Text style={{ maxWidth: 200 }} ellipsis={{ tooltip: textValue }}>
-        {textValue}
-      </Text>
-    );
-  };
-
-  const renderMappedFileView = () => {
-    if (!file || file.status !== 'mapped') return null;
-
-    if (isArchiveFile) {
-      const summaryResult = effectiveArchiveResult;
-      const jobId = archiveJobDetails?.id ?? archiveResult?.job_id ?? null;
-      const jobSource = archiveJobDetails?.trigger_source || 'Auto Process Archive';
-      const jobCompletedAt = archiveJobDetails?.completed_at ?? file.mapped_date;
-      const filesInArchiveMeta =
-        archiveJobDetails?.metadata && typeof archiveJobDetails.metadata['files_in_archive'] === 'number'
-          ? (archiveJobDetails.metadata['files_in_archive'] as number)
-          : undefined;
-      const filesInArchiveCount = filesInArchiveMeta ?? summaryResult?.total_files;
-      const summaryTagColor = summaryResult
-        ? summaryResult.failed_files > 0
-          ? 'orange'
-          : 'green'
-        : 'default';
-      const summaryTagText = summaryResult
-        ? summaryResult.failed_files > 0
-          ? 'Completed with warnings'
-          : 'Completed'
-        : 'Awaiting summary';
-
-      const archiveSummaryItems: DescriptionsProps['items'] = [
-        {
-          key: 'archive-name',
-          label: 'Archive',
-          children: <Text>{file.file_name}</Text>,
-        },
-        {
-          key: 'file-size',
-          label: 'File Size',
-          children: formatBytes(file.file_size),
-        },
-        {
-          key: 'uploaded',
-          label: 'Uploaded',
-          children: formatDate(file.upload_date),
-        },
-        {
-          key: 'last-processed',
-          label: 'Last Processed',
-          children: formatDate(jobCompletedAt),
-        },
-        {
-          key: 'job-id',
-          label: 'Import Job',
-          children: jobId ? <Text code>{jobId}</Text> : '-',
-        },
-        {
-          key: 'trigger',
-          label: 'Trigger Source',
-          children: jobSource,
-        },
-        {
-          key: 'files-total',
-          label: 'Files in Archive',
-          children:
-            typeof filesInArchiveCount === 'number'
-              ? filesInArchiveCount.toLocaleString()
-              : '-',
-        },
-        {
-          key: 'status',
-          label: 'Status',
-          children: <Tag color={summaryTagColor}>{summaryTagText}</Tag>,
-        },
-      ];
-
-      const archiveAlertType =
-        summaryResult && summaryResult.failed_files > 0
-          ? 'warning'
-          : summaryResult
-            ? 'success'
-            : 'info';
-      const archiveAlertDescription = summaryResult
-        ? summaryResult.failed_files > 0
-          ? 'Some files in this archive failed to import. Review the table below for details.'
-          : 'All supported files in this archive were imported successfully.'
-        : 'We could not find a previous auto-process summary for this archive.';
-
-      return (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <Descriptions
-            title="Archive Details"
-            bordered
-            size="middle"
-            column={2}
-            items={archiveSummaryItems}
-          />
-          <Alert
-            type={archiveAlertType}
-            message="Archive Import Summary"
-            description={archiveAlertDescription}
-            showIcon
-          />
-          {summaryResult ? (
-            <>
-              <Row gutter={16}>
-                <Col span={6}>
-                  <Statistic title="Processed" value={summaryResult.processed_files} />
-                </Col>
-                <Col span={6}>
-                  <Statistic title="Failed" value={summaryResult.failed_files} />
-                </Col>
-                <Col span={6}>
-                  <Statistic title="Skipped" value={summaryResult.skipped_files} />
-                </Col>
-                <Col span={6}>
-                  <Statistic title="Total Files" value={summaryResult.total_files} />
-                </Col>
-              </Row>
-              {archiveAggregates && (
-                <Row gutter={16} style={{ marginTop: 16 }}>
-                  <Col span={8}>
-                    <Statistic title="Rows Inserted" value={archiveAggregates.totalRecords} />
-                  </Col>
-                  <Col span={8}>
-                    <Statistic
-                      title="Duplicates Skipped"
-                      value={archiveAggregates.totalDuplicates}
-                    />
-                  </Col>
-                  <Col span={8}>
-                    <Statistic title="Tables Updated" value={archiveAggregates.tablesTouched} />
-                  </Col>
-                </Row>
-              )}
-              <Card
-                title="Files in Archive"
-                size="small"
-                style={{ marginTop: 16 }}
-              >
-                <Table
-                  dataSource={archiveResultRows}
-                  columns={archiveResultsColumns}
-                  pagination={false}
-                  size="small"
-                  scroll={{ x: 'max-content' }}
-                />
-              </Card>
-            </>
-          ) : (
-            <Alert
-              type="warning"
-              showIcon
-              message="Archive summary not available"
-              description="This ZIP was marked as mapped, but we couldn't locate a completed Auto Process Archive job. Run Auto Process Archive again to rebuild the summary."
-            />
-          )}
-        </Space>
-      );
-    }
-
-    const summaryItems: DescriptionsProps['items'] = [
-      {
-        key: 'table-name',
-        label: 'Table Name',
-        children: <Tag color="blue">{file.mapped_table_name}</Tag>,
-      },
-      {
-        key: 'mapped-date',
-        label: 'Mapped Date',
-        children: formatDate(file.mapped_date),
-      },
-      {
-        key: 'rows-imported',
-        label: 'Rows Imported',
-        children: <Text strong>{file.mapped_rows?.toLocaleString() || 0}</Text>,
-      },
-      {
-        key: 'file-size',
-        label: 'File Size',
-        children: formatBytes(file.file_size),
-      },
-      {
-        key: 'upload-date',
-        label: 'Upload Date',
-        children: formatDate(file.upload_date),
-      },
-      {
-        key: 'status',
-        label: 'Status',
-        children: <Tag color="success">Mapped</Tag>,
-      },
-    ];
-
-    const historyItems: DescriptionsProps['items'] = importHistory
-      ? [
-          ...(importHistory.import_strategy
-            ? [
-                {
-                  key: 'import-strategy',
-                  label: 'Import Strategy',
-                  children: <Tag>{importHistory.import_strategy}</Tag>,
-                  span: 2,
-                } as const,
-              ]
-            : []),
-          {
-            key: 'total-rows',
-            label: 'Total Rows in File',
-            children:
-              importHistory.total_rows_in_file?.toLocaleString() || '-',
-          },
-          {
-            key: 'rows-inserted',
-            label: 'Rows Inserted',
-            children: importHistory.rows_inserted?.toLocaleString() || '-',
-          },
-          ...(importHistory.duplicates_found !== undefined &&
-          importHistory.duplicates_found > 0
-            ? [
-                {
-                  key: 'duplicates-found',
-                  label: 'Duplicates Found',
-                  children: (
-                    <Text type="warning">
-                      {importHistory.duplicates_found.toLocaleString()}
-                    </Text>
-                  ),
-                  span: 2,
-                } as const,
-              ]
-            : []),
-          ...(importHistory.data_validation_errors !== undefined &&
-          importHistory.data_validation_errors > 0
-            ? [
-                {
-                  key: 'validation-errors',
-                  label: 'Validation Errors',
-                  children: (
-                    <Text type="danger">
-                      {importHistory.data_validation_errors.toLocaleString()}
-                    </Text>
-                  ),
-                  span: 2,
-                } as const,
-              ]
-            : []),
-          ...(importHistory.duration_seconds
-            ? [
-                {
-                  key: 'processing-time',
-                  label: 'Processing Time',
-                  children: `${importHistory.duration_seconds.toFixed(2)}s`,
-                  span: 2,
-                } as const,
-              ]
-            : []),
-          {
-            key: 'import-id',
-            label: 'Import ID',
-            children: (
-              <Text code style={{ fontSize: '11px' }}>
-                {importHistory.import_id}
-              </Text>
-            ),
-            span: 2,
-          },
-        ]
-      : [];
-
-    const duplicateRows = duplicateData?.rows ?? [];
-    const duplicateKeys = new Set<string>();
-    duplicateRows.forEach((row) => {
-      Object.keys(row.record || {}).forEach((key) => {
-        if (!key.startsWith('_')) {
-          duplicateKeys.add(key);
-        }
-      });
-    });
-
-    const resolvedDuplicateIds = new Set(
-      duplicateRows
-        .filter((row) => typeof row.id === 'number' && !!row.resolved_at)
-        .map((row) => row.id as number)
-    );
-    const selectableDuplicateIds = duplicateRows
-      .filter((row) => typeof row.id === 'number' && !row.resolved_at)
-      .map((row) => row.id as number);
-
-    const duplicateTableData = duplicateRows.map((row, index) => ({
-      key: row.id ?? `duplicate-${index}`,
-      duplicate_id: row.id,
-      record_number: row.record_number ?? '-',
-      detected_at: row.detected_at,
-      record: row.record || {},
-    }));
-
-    const duplicateTableColumns =
-      duplicateRows.length > 0
-        ? [
-            {
-              title: 'Actions',
-              key: 'actions',
-              fixed: 'left' as const,
-              width: 120,
-              render: (_: unknown, row: (typeof duplicateTableData)[number]) => (
-                <Button
-                  type="link"
-                  icon={<MergeCellsOutlined />}
-                  onClick={() => openMergeModal(row.duplicate_id)}
-                >
-                  Merge
-                </Button>
-              ),
-            },
-            {
-              title: '#',
-              dataIndex: 'record_number',
-              key: 'record_number',
-              width: 70,
-            },
-            ...Array.from(duplicateKeys).map((key) => ({
-              title: key,
-              key,
-              ellipsis: true,
-              width: 180,
-              render: (_: unknown, row: (typeof duplicateTableData)[number]) =>
-                renderDuplicateValue(row.record?.[key]),
-            })),
-            {
-              title: 'Detected At',
-              dataIndex: 'detected_at',
-              key: 'detected_at',
-              width: 200,
-              render: (value: string | null | undefined) =>
-                value ? formatDate(value) : '-',
-            },
-          ]
-        : [];
-
-    const duplicateRowSelection =
-      duplicateTableColumns.length > 0
-        ? {
-            selectedRowKeys: duplicateTableData
-              .filter(
-                (row) =>
-                  typeof row.duplicate_id === 'number' &&
-                  selectedDuplicateRowIds.includes(row.duplicate_id)
-              )
-              .map((row) => row.key),
-            onChange: (
-              _selectedRowKeys: React.Key[],
-              selectedRows: (typeof duplicateTableData)[number][]
-            ) => {
-              const ids = selectedRows
-                .map((row) => row.duplicate_id)
-                .filter((id): id is number => typeof id === 'number');
-              setSelectedDuplicateRowIds(ids);
-            },
-            getCheckboxProps: (record: (typeof duplicateTableData)[number]) => ({
-              disabled:
-                !record.duplicate_id ||
-                resolvedDuplicateIds.has(record.duplicate_id) ||
-                bulkMergeLoading,
-            }),
-          }
-        : undefined;
-
-    const duplicatesTotal = duplicateData?.total ?? importHistory?.duplicates_found ?? 0;
-
-    return (
-      <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Alert
-          message="File Already Mapped"
-          description="This file has been successfully imported into the database. View the details below."
-          type="success"
-          showIcon
-          icon={<CheckCircleOutlined />}
-        />
-
-        {/* Import Summary */}
-        <Card title={<><InfoCircleOutlined /> Import Summary</>} size="small">
-          <Descriptions column={2} bordered size="small" items={summaryItems} />
-        </Card>
-
-        {/* Import Details */}
-        {importHistory && (
-          <Card title={<><DatabaseOutlined /> Import Details</>} size="small" loading={loadingDetails}>
-            <Descriptions
-              column={2}
-              bordered
-              size="small"
-              items={historyItems}
-            />
-          </Card>
-        )}
-
-        {duplicatesTotal > 0 && (
-          <Card
-            title={
-              <>
-                <InfoCircleOutlined /> Duplicate Rows Skipped
-              </>
-            }
-            size="small"
-            loading={loadingDuplicates}
-          >
-            {duplicateTableColumns.length > 0 ? (
-              <>
-                <Space style={{ marginBottom: 12 }} wrap>
-                  <Button
-                    onClick={handleSelectAllDuplicates}
-                    disabled={selectableDuplicateIds.length === 0 || bulkMergeLoading}
-                  >
-                    Select All
-                  </Button>
-                  <Button
-                    onClick={handleClearDuplicateSelection}
-                    disabled={selectedDuplicateRowIds.length === 0 || bulkMergeLoading}
-                  >
-                    Clear Selection
-                  </Button>
-                  <Button
-                    type="primary"
-                    onClick={handleBulkDuplicateMerge}
-                    disabled={selectedDuplicateRowIds.length === 0}
-                    loading={bulkMergeLoading}
-                  >
-                    Map Selected ({selectedDuplicateRowIds.length})
-                  </Button>
-                </Space>
-                <Table
-                  dataSource={duplicateTableData}
-                  columns={duplicateTableColumns}
-                  rowSelection={duplicateRowSelection}
-                  pagination={false}
-                  size="small"
-                  scroll={{ x: 'max-content' }}
-                />
-                <Divider />
-                <Text type="secondary">
-                  Showing {duplicateTableData.length} of {duplicatesTotal}{' '}
-                  duplicate rows
-                </Text>
-              </>
-            ) : (
-              <Text type="secondary">
-                Duplicate rows were detected, but no preview data is available.
-              </Text>
-            )}
-          </Card>
-        )}
-        <Modal
-          open={mergeModalVisible}
-          title={
-            <Space>
-              <MergeCellsOutlined />
-              <span>Merge Duplicate Row</span>
-            </Space>
-          }
-          onCancel={() => {
-            setMergeModalVisible(false);
-            resetMergeState();
-          }}
-          onOk={handleMergeSubmit}
-          okButtonProps={{
-            loading: mergeLoading,
-            disabled: mergeDetailLoading || !mergeDetail || !mergeDetail.existing_row,
-          }}
-          cancelButtonProps={{
-            disabled: mergeLoading,
-          }}
-          width={780}
-        >
-          {mergeDetailLoading ? (
-            <div style={{ textAlign: 'center', padding: '24px 0' }}>
-              <Spin />
-            </div>
-          ) : mergeDetail ? (
-            <>
-              {!mergeDetail.existing_row && (
-                <Alert
-                  type="warning"
-                  message="Matching row not found"
-                  description="We could not find a matching row in the destination table for this duplicate. No merge is possible."
-                  style={{ marginBottom: 16 }}
-                />
-              )}
-              {mergeDetail.existing_row && (
-                <>
-                  <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-                    Matching row identified using uniqueness columns:{' '}
-                    {mergeDetail.uniqueness_columns.join(', ')}
-                  </Text>
-                  <Text strong style={{ marginBottom: 12, display: 'block' }}>
-                    Select which values to apply from the duplicate row:
-                  </Text>
-                  <Table
-                    dataSource={Object.keys(mergeDetail.duplicate.record)
-                      .filter((column) => !column.startsWith('_'))
-                      .map((column) => ({
-                        key: column,
-                        column,
-                        existing: mergeDetail.existing_row?.record?.[column],
-                        incoming: mergeDetail.duplicate.record[column],
-                        selected: mergeSelections[column] ?? false,
-                      }))}
-                    pagination={false}
-                    size="small"
-                    rowKey="column"
-                    columns={[
-                      {
-                        title: 'Column',
-                        dataIndex: 'column',
-                        key: 'column',
-                        width: 160,
-                      },
-                      {
-                        title: 'Existing Value',
-                        dataIndex: 'existing',
-                        key: 'existing',
-                        render: (value: unknown) => renderDuplicateValue(value),
-                      },
-                      {
-                        title: 'Incoming Value',
-                        dataIndex: 'incoming',
-                        key: 'incoming',
-                        render: (value: unknown) => renderDuplicateValue(value),
-                      },
-                      {
-                        title: 'Use Incoming',
-                        key: 'selected',
-                        width: 140,
-                        render: (_: unknown, row: { column: string; selected: boolean }) => (
-                          <Switch
-                            checked={!!mergeSelections[row.column]}
-                            onChange={(checked) => handleMergeSelectionChange(row.column, checked)}
-                          />
-                        ),
-                      },
-                    ]}
-                  />
-                  <Divider />
-                  <TextArea
-                    value={mergeNote}
-                    onChange={(event) => setMergeNote(event.target.value)}
-                    placeholder="Optional note about this merge"
-                    rows={3}
-                  />
-                </>
-              )}
-            </>
-          ) : (
-            <Text type="secondary">Select a duplicate row to merge.</Text>
-          )}
-        </Modal>
-
-        {/* Data Preview */}
-        {tableData && tableData.data.length > 0 && (
-          <Card 
-            title={<><EyeOutlined /> Imported Data Preview</>} 
-            size="small"
-            loading={loadingDetails}
-            extra={
-              <Button
-                type="link"
-                onClick={() =>
-                  file?.mapped_table_name &&
-                  navigate(`/tables/${encodeURIComponent(file.mapped_table_name)}`)
-                }
-                disabled={!file?.mapped_table_name}
-              >
-                View Full Table
-              </Button>
-            }
-          >
-            <Table
-              dataSource={tableData.data}
-              columns={Object.keys(tableData.data[0] || {})
-                .filter((key) => key !== "__rowKey")
-                .map((key) => ({
-                  title: key,
-                  dataIndex: key,
-                  key,
-                  ellipsis: true,
-                  width: 150,
-                }))}
-              pagination={false}
-              scroll={{ x: 'max-content' }}
-              size="small"
-              rowKey="__rowKey"
-            />
-            <Divider />
-            <Text type="secondary">
-              Showing {tableData.data.length} of {tableData.total_rows.toLocaleString()} rows from this import
-            </Text>
-          </Card>
-        )}
-
-        {/* Action Buttons */}
-        <Space>
-          <Button 
-            type="primary" 
-            icon={<DatabaseOutlined />}
-            onClick={() => navigate(`/query`)}
-          >
-            Query This Data
-          </Button>
-          <Button
-            icon={<EyeOutlined />}
-            onClick={() =>
-              file?.mapped_table_name &&
-              navigate(`/tables/${encodeURIComponent(file.mapped_table_name)}`)
-            }
-            disabled={!file?.mapped_table_name}
-          >
-            View Full Table
-          </Button>
-          <Button 
-            icon={<ArrowLeftOutlined />}
-            onClick={() => navigate('/import')}
-          >
-            Back to Import List
-          </Button>
-        </Space>
-      </Space>
-    );
-  };
-
   if (loading) {
     return (
       <div style={{ padding: '24px', textAlign: 'center' }}>
@@ -2697,497 +1761,91 @@ export const ImportMappingPage: React.FC = () => {
     },
   ];
 
-  const suppressArchiveFailureAlert =
-    file?.status === 'failed' && !!archiveFailureSummary?.hasPartialFailure;
 
-  const archiveResultsColumns: ColumnsType<ArchiveFileResult & { key: string }> = [
-    {
-      title: 'Actions',
-      key: 'actions',
-      fixed: 'left',
-      width: 60,
-      render: (_: unknown, record) =>
-        record.uploaded_file_id ? (
-          <Button
-            type="link"
-            size="small"
-            onClick={() => navigate(`/import/${record.uploaded_file_id}`)}
-          >
-            View
-          </Button>
-        ) : null,
-    },
-    {
-      title: 'Archive Path',
-      dataIndex: 'archive_path',
-      key: 'archive_path',
-      width: 250,
-      ellipsis: true,
-      render: (text: string) => <Text code>{text}</Text>,
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      render: (value: ArchiveFileStatus) => {
-        const color =
-          value === 'processed' ? 'green' : value === 'failed' ? 'red' : 'default';
-        return <Tag color={color}>{value}</Tag>;
-      },
-    },
-    {
-      title: 'Table',
-      dataIndex: 'table_name',
-      key: 'table_name',
-      width: 180,
-      ellipsis: true,
-      render: (value?: string | null) => value || '-',
-    },
-    {
-      title: 'Records',
-      dataIndex: 'records_processed',
-      key: 'records_processed',
-      width: 120,
-      render: (value?: number | null) =>
-        typeof value === 'number' ? value.toLocaleString() : '-',
-    },
-    {
-      title: 'Duplicates',
-      dataIndex: 'duplicates_skipped',
-      key: 'duplicates_skipped',
-      width: 120,
-      render: (value?: number | null) =>
-        typeof value === 'number' ? value.toLocaleString() : '-',
-    },
-  ];
-
-  const archiveResultRows = effectiveArchiveResult
-    ? effectiveArchiveResult.results.map((item, index) => ({
-        ...item,
-        key: `${item.archive_path}-${index}`,
-      }))
-    : [];
-
-  const archiveResultsPanel = effectiveArchiveResult ? (
-    <Card title="Archive Results" style={{ marginTop: 24 }}>
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <Statistic title="Processed" value={effectiveArchiveResult.processed_files} />
-        </Col>
-        <Col span={6}>
-          <Statistic title="Failed" value={effectiveArchiveResult.failed_files} />
-        </Col>
-        <Col span={6}>
-          <Statistic title="Skipped" value={effectiveArchiveResult.skipped_files} />
-        </Col>
-        <Col span={6}>
-          <Statistic title="Total Files" value={effectiveArchiveResult.total_files} />
-        </Col>
-      </Row>
-      {archiveAggregates && (
-        <Row gutter={16} style={{ marginBottom: 16 }}>
-          <Col span={8}>
-            <Statistic
-              title="Rows Inserted"
-              value={archiveAggregates.totalRecords}
-            />
-          </Col>
-          <Col span={8}>
-            <Statistic
-              title="Duplicates Skipped"
-              value={archiveAggregates.totalDuplicates}
-            />
-          </Col>
-          <Col span={8}>
-            <Statistic
-              title="Tables Updated"
-              value={archiveAggregates.tablesTouched}
-            />
-          </Col>
-        </Row>
-      )}
-      {effectiveArchiveResult.failed_files > 0 && !suppressArchiveFailureAlert && (
-        <>
-          <Alert
-            type="error"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={`We could not import ${effectiveArchiveResult.failed_files} file${
-              effectiveArchiveResult.failed_files === 1 ? '' : 's'
-            } from this archive.`}
-            description={
-              failedArchiveResults.length > 0
-                ? `First failure: ${failedArchiveResults[0].archive_path} — ${failedArchiveResults[0].message || 'No details reported.'}`
-                : undefined
+  const renderedInstructionField = (
+    <InstructionField
+      llmInstruction={llmInstruction}
+      setLlmInstruction={setLlmInstruction}
+      instructionTitle={instructionTitle}
+      setInstructionTitle={setInstructionTitle}
+      saveInstruction={saveInstruction}
+      setSaveInstruction={setSaveInstruction}
+      instructionOptions={instructionOptions}
+      selectedInstructionId={selectedInstructionId}
+      setSelectedInstructionId={(id) => {
+        setSelectedInstructionId(id);
+        const selected = instructionOptions.find((option) => option.id === id);
+        if (selected) {
+          setLlmInstruction(selected.content);
+          setInstructionTitle(selected.title);
+        }
+      }}
+      loadingInstructions={loadingInstructions}
+      instructionActionLoading={instructionActionLoading}
+      disableActions={disableMappingActions}
+      onUpdateInstruction={async () => {
+        if (!selectedInstructionId) return;
+        const title = instructionTitle.trim() || 'Saved import instruction';
+        setInstructionActionLoading(true);
+        try {
+          const token = localStorage.getItem('refine-auth');
+          await axios.patch(
+            `${API_URL}/llm-instructions/${selectedInstructionId}`,
+            { title, content: llmInstruction },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token && { Authorization: `Bearer ${token}` }),
+              },
             }
-          />
-          <Space style={{ marginBottom: 12 }} wrap>
-            <Button
-              type="primary"
-              onClick={() => handleArchiveResume({ resumeAll: false })}
-              disabled={disableMappingActions || archiveResumeLoading}
-              loading={archiveResumeLoading}
-            >
-              Retry Failed Files
-            </Button>
-            <Button
-              onClick={() => handleArchiveResume({ resumeAll: true })}
-              disabled={disableMappingActions || archiveResumeLoading}
-              loading={archiveResumeLoading}
-            >
-              Reprocess Entire Archive
-            </Button>
-          </Space>
-        </>
-      )}
-      <Table
-        dataSource={archiveResultRows}
-        columns={archiveResultsColumns}
-        pagination={false}
-        size="small"
-        scroll={{ x: 'max-content' }}
-      />
-    </Card>
-  ) : null;
-
-  const autoTabContent = (
-    <div style={{ padding: '24px 0' }}>
-      <Alert
-        message="Automatic Processing"
-        description="The AI will analyze your file, compare it with existing tables, and automatically import the data without asking questions. This is the fastest option."
-        type="info"
-        showIcon
-        style={{ marginBottom: 24 }}
-      />
-      {isArchive && (
-        <Alert
-          message="Archive detected"
-          description="Auto Process Archive will unpack every CSV/XLSX in this ZIP file and run the auto mapper on each one sequentially."
-          type="warning"
-          showIcon
-          style={{ marginBottom: 24 }}
-        />
-      )}
-
-      {error && !result && (
-        <div style={{ marginBottom: 24 }}>
-          <ErrorLogViewer error={error} showRetry={false} />
-        </div>
-      )}
-
-      {!result && (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <div>
-            <Text strong>File: </Text>
-            <Text>{file.file_name}</Text>
-          </div>
-        <div>
-          <Text strong>Size: </Text>
-          <Text>{formatBytes(file.file_size)}</Text>
-        </div>
-        {instructionField}
-        {isExcelFile && (
-          <div style={{ maxWidth: 480 }}>
-            <Text strong>Workbook tabs</Text>
-            <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-              Auto processing will create one import per selected tab using the workbook name plus the sheet name.
-              </Paragraph>
-              <Select
-                mode="multiple"
-                style={{ width: '100%' }}
-                placeholder={sheetNames.length ? 'Select sheets to process' : 'No sheets found'}
-                value={selectedSheets}
-                onChange={(values) => setSelectedSheets(values)}
-                options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
-                disabled={!sheetNames.length}
-              />
-            </div>
-          )}
-            <div>
-            <Space align="start">
-              <Switch checked={skipFileDuplicateCheck} onChange={(checked) => setSkipFileDuplicateCheck(checked)} />
-              <div>
-                <Text strong>Skip duplicate row detection</Text>
-                <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                  By default, duplicate rows are detected and skipped based on unique columns. Enable this to import all rows without checking for duplicates.
-                </Paragraph>
-              </div>
-            </Space>
-          </div>
-          <div>
-            <Space align="start">
-              <Switch checked={useSharedTable} onChange={(checked) => setUseSharedTable(checked)} />
-              <div>
-                <Text strong>Use a single table for this import</Text>
-                <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                  Map {isArchive ? 'every file in this archive' : 'this file'} into one table.
-                </Paragraph>
-                {useSharedTable && (
-                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                    <Select
-                      value={sharedTableMode}
-                      style={{ width: 240 }}
-                      onChange={(value) => {
-                        setSharedTableMode(value as 'existing' | 'new');
-                        setSharedTableName('');
-                      }}
-                      options={[
-                        { value: 'new', label: 'Create new table' },
-                        { value: 'existing', label: 'Use existing table' },
-                      ]}
-                    />
-                    {sharedTableMode === 'new' ? (
-                      <Input
-                        value={sharedTableName}
-                        placeholder="Enter new table name"
-                        onChange={(e) => setSharedTableName(e.target.value)}
-                        style={{ width: 360 }}
-                      />
-                    ) : (
-                      <Select
-                        showSearch
-                        value={sharedTableName || undefined}
-                        placeholder="Select an existing table"
-                        onChange={(value) => setSharedTableName(value)}
-                        loading={loadingTables}
-                        style={{ width: 360 }}
-                        options={existingTables.map((table) => ({
-                          value: table.table_name,
-                          label: `${table.table_name} (${table.row_count.toLocaleString()} rows)`,
-                        }))}
-                        filterOption={(input, option) =>
-                          (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
-                        }
-                      />
-                    )}
-                  </Space>
-                )}
-              </div>
-            </Space>
-          </div>
-
-          {!isArchive && (
-            <Button
-              type="primary"
-              size="large"
-              icon={<ThunderboltOutlined />}
-              onClick={handleAutoProcess}
-              loading={processing}
-              disabled={disableMappingActions}
-              block
-            >
-              {processing ? 'Processing...' : 'Process Now'}
-            </Button>
-          )}
-
-          {isArchive && (
-            <Button
-              type="primary"
-              size="large"
-              icon={<ThunderboltOutlined />}
-              onClick={handleArchiveAutoProcess}
-              loading={archiveProcessing}
-              disabled={disableMappingActions}
-              block
-            >
-              {archiveProcessing ? 'Processing Archive...' : 'Auto Process Archive'}
-            </Button>
-          )}
-        </Space>
-      )}
-
-        {archiveResultsPanel}
-    </div>
+          );
+          messageApi.success('Instruction updated');
+          await fetchInstructions();
+        } catch (err) {
+          console.error('Unable to update instruction', err);
+          messageApi.error('Unable to update instruction');
+        } finally {
+          setInstructionActionLoading(false);
+        }
+      }}
+      onDeleteInstruction={async () => {
+        if (!selectedInstructionId) return;
+        setInstructionActionLoading(true);
+        try {
+          const token = localStorage.getItem('refine-auth');
+          await axios.delete(`${API_URL}/llm-instructions/${selectedInstructionId}`, {
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          });
+          messageApi.success('Instruction deleted');
+          setSelectedInstructionId(null);
+          setLlmInstruction('');
+          setInstructionTitle('');
+          await fetchInstructions();
+        } catch (err) {
+          console.error('Unable to delete instruction', err);
+          messageApi.error('Unable to delete instruction');
+        } finally {
+          setInstructionActionLoading(false);
+        }
+      }}
+    />
   );
 
-  const interactiveTabContent = (
-    <div style={{ padding: '24px 0' }}>
-      <Alert
-        message="Interactive Processing"
-        description="The AI will ask you questions to better understand how to import your data. This gives you more control over the process."
-        type="info"
-        showIcon
-        style={{ marginBottom: 24 }}
-      />
-
-      {error && !result && (
-        <div style={{ marginBottom: 24 }}>
-          <ErrorLogViewer error={error} showRetry={false} />
-        </div>
-      )}
-
-      <div style={{ marginBottom: 16 }}>{instructionField}</div>
-
-      {!result && conversation.length === 0 && (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <div>
-            <Text strong>File: </Text>
-            <Text>{file.file_name}</Text>
-          </div>
-          <div>
-            <Text strong>Size: </Text>
-            <Text>{formatBytes(file.file_size)}</Text>
-          </div>
-          {isExcelFile && sheetNames.length > 0 && (
-            <div style={{ maxWidth: 360 }}>
-              <Text strong>Choose a tab to review</Text>
-              <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                Interactive mode works one sheet at a time. Pick a tab or leave the default to start with the first sheet.
-              </Paragraph>
-              <Select
-                style={{ width: '100%' }}
-                placeholder="Select a sheet"
-                value={interactiveSheet}
-                onChange={(value) => setInteractiveSheet(value)}
-                options={sheetNames.map((sheet) => ({ label: sheet, value: sheet }))}
-              />
-            </div>
-          )}
-
-          {processing ? (
-            <div style={{ textAlign: 'center', padding: '24px 0' }}>
-              <Spin size="large" />
-            </div>
-          ) : (
-            <Button
-              type="primary"
-              size="large"
-              icon={<MessageOutlined />}
-              onClick={() => {
-                const previousError =
-                  file.status === 'failed' && showInteractiveRetry
-                    ? (file.error_message || '').trim()
-                    : '';
-                handleInteractiveStart(previousError ? { previousError } : undefined);
-              }}
-              disabled={disableMappingActions}
-              block
-            >
-              Start Interactive Analysis
-            </Button>
-          )}
-        </Space>
-      )}
-
-      {!result && conversation.length > 0 && (
-        <div>
-          <div
-            style={{
-              maxHeight: '400px',
-              overflowY: 'auto',
-              marginBottom: 16,
-              padding: 16,
-              border: '1px solid #d9d9d9',
-              borderRadius: 4,
-              backgroundColor: '#fafafa',
-            }}
-          >
-            {conversation.map((msg, idx) => (
-              <div
-                key={idx}
-                style={{
-                  marginBottom: 16,
-                  padding: 12,
-                  backgroundColor: msg.role === 'user' ? '#e6f7ff' : '#fff',
-                  borderRadius: 4,
-                  border: '1px solid',
-                  borderColor: msg.role === 'user' ? '#91d5ff' : '#d9d9d9',
-                }}
-              >
-                <Text strong style={{ display: 'block', marginBottom: 8 }}>
-                  {msg.role === 'user' ? 'You:' : 'AI:'}
-                </Text>
-                <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
-                  {msg.content}
-                </Paragraph>
-              </div>
-            ))}
-            {processing && (
-              <div style={{ textAlign: 'center', padding: 16 }}>
-                <Spin />
-              </div>
-            )}
-          </div>
-
-          <Space direction="vertical" size="large" style={{ width: '100%' }}>
-            <Alert
-              type={canExecute ? 'success' : 'info'}
-              message={
-                canExecute
-                  ? 'Mapping confirmed. Execute when ready or ask for additional adjustments below.'
-                  : needsUserInput
-                    ? 'The assistant is waiting for your direction. Ask for changes or confirm when the plan looks right.'
-                    : 'Processing... the assistant will respond shortly.'
-              }
-              showIcon
-            />
-
-            <Button
-              type="primary"
-              size="large"
-              icon={<CheckCircleOutlined />}
-              onClick={handleInteractiveExecute}
-              loading={processing}
-              disabled={!canExecute || processing}
-              block
-            >
-              {processing ? 'Executing...' : 'Execute Import'}
-            </Button>
-
-            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              <Space.Compact style={{ width: '100%' }}>
-                <input
-                  type="text"
-                  value={userInput}
-                  onChange={(e) => setUserInput(e.target.value)}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter' && !processing) {
-                      handleInteractiveSend();
-                    }
-                  }}
-                  placeholder="Ask for changes, confirmations, or next steps..."
-                  disabled={processing || !threadId}
-                  style={{
-                    flex: 1,
-                    padding: '8px 12px',
-                    border: '1px solid #d9d9d9',
-                    borderRadius: '4px 0 0 4px',
-                    fontSize: 14,
-                  }}
-                />
-                <Button
-                  type="primary"
-                  onClick={handleInteractiveSend}
-                  loading={processing}
-                  disabled={
-                    !userInput.trim() || processing || !threadId
-                  }
-                  style={{ borderRadius: '0 4px 4px 0' }}
-                >
-                  Send
-                </Button>
-              </Space.Compact>
-
-              <Space wrap>
-                {quickActions.map(({ label, prompt }) => (
-                  <Button
-                    key={label}
-                    size="small"
-                    type={label === 'Approve Plan' ? 'primary' : 'default'}
-                    disabled={!threadId || processing}
-                    onClick={() => handleQuickAction(prompt)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </Space>
-            </Space>
-          </Space>
-        </div>
-      )}
-    </div>
+  const renderedArchiveResultsPanel = (
+    <ArchiveResultsPanel
+      effectiveArchiveResult={effectiveArchiveResult}
+      archiveAggregates={archiveAggregates}
+      suppressArchiveFailureAlert={file?.status === 'failed' && !!archiveFailureSummary?.hasPartialFailure}
+      failedArchiveResults={failedArchiveResults}
+      disableMappingActions={disableMappingActions}
+      archiveResumeLoading={archiveResumeLoading}
+      onArchiveResume={handleArchiveResume}
+      onNavigate={navigate}
+    />
   );
+
 
   const tabItems = [
     {
@@ -3197,7 +1855,35 @@ export const ImportMappingPage: React.FC = () => {
           <ThunderboltOutlined /> Auto Process
         </span>
       ),
-      children: autoTabContent,
+      children: (
+        <ImportAutoSection
+          file={file}
+          isArchive={isArchive}
+          isExcelFile={isExcelFile}
+          sheetNames={sheetNames}
+          selectedSheets={selectedSheets}
+          setSelectedSheets={setSelectedSheets}
+          skipFileDuplicateCheck={skipFileDuplicateCheck}
+          setSkipFileDuplicateCheck={setSkipFileDuplicateCheck}
+          useSharedTable={useSharedTable}
+          setUseSharedTable={setUseSharedTable}
+          sharedTableName={sharedTableName}
+          setSharedTableName={setSharedTableName}
+          sharedTableMode={sharedTableMode}
+          setSharedTableMode={setSharedTableMode}
+          existingTables={existingTables}
+          loadingTables={loadingTables}
+          processing={processing}
+          archiveProcessing={archiveProcessing}
+          disableMappingActions={disableMappingActions}
+          error={error}
+          result={result}
+          onAutoProcess={handleAutoProcess}
+          onArchiveAutoProcess={handleArchiveAutoProcess}
+          instructionField={renderedInstructionField}
+          archiveResultsPanel={renderedArchiveResultsPanel}
+        />
+      ),
     },
     {
       key: 'interactive',
@@ -3206,7 +1892,40 @@ export const ImportMappingPage: React.FC = () => {
           <MessageOutlined /> Interactive
         </span>
       ),
-      children: interactiveTabContent,
+      children: (
+        <ImportInteractiveSection
+          file={file}
+          isExcelFile={isExcelFile}
+          sheetNames={sheetNames}
+          interactiveSheet={interactiveSheet}
+          setInteractiveSheet={setInteractiveSheet}
+          processing={processing}
+          error={error}
+          result={result}
+          conversation={conversation}
+          userInput={userInput}
+          setUserInput={setUserInput}
+          canExecute={canExecute}
+          needsUserInput={needsUserInput}
+          threadId={threadId}
+          showInteractiveRetry={showInteractiveRetry}
+          onInteractiveStart={handleInteractiveStart}
+          onInteractiveSend={handleInteractiveSend}
+          onInteractiveExecute={handleInteractiveExecute}
+          instructionField={renderedInstructionField}
+          disableMappingActions={disableMappingActions}
+          skipFileDuplicateCheck={skipFileDuplicateCheck}
+          setSkipFileDuplicateCheck={setSkipFileDuplicateCheck}
+          useSharedTable={useSharedTable}
+          setUseSharedTable={setUseSharedTable}
+          sharedTableName={sharedTableName}
+          setSharedTableName={setSharedTableName}
+          sharedTableMode={sharedTableMode}
+          setSharedTableMode={setSharedTableMode}
+          existingTables={existingTables}
+          loadingTables={loadingTables}
+        />
+      ),
     },
   ];
 
@@ -3429,14 +2148,49 @@ export const ImportMappingPage: React.FC = () => {
                 ) : (
                   <Text type="secondary">No error details reported for this job.</Text>
                 )}
-                {isArchiveFile && archiveResultsPanel}
+                {isArchiveFile && renderedArchiveResultsPanel}
               </Collapse.Panel>
             </Collapse>
           </Space>
         </Card>
       ) : file.status === 'mapped' ? (
         <Card title={`Mapped File: ${file.file_name}`}>
-          {renderMappedFileView()}
+          <ImportMappedFileSection
+            file={file}
+            importHistory={importHistory}
+            tableData={tableData}
+            duplicateData={duplicateData}
+            loadingDetails={loadingDetails}
+            loadingDuplicates={loadingDuplicates}
+            isArchiveFile={isArchiveFile}
+            archiveResult={archiveResult}
+            archiveHistorySummaryResult={archiveHistorySummary?.result || null}
+            archiveJobDetails={archiveJobDetails}
+            archiveResumeLoading={archiveResumeLoading}
+            disableMappingActions={disableMappingActions}
+            onArchiveResume={handleArchiveResume}
+            selectedDuplicateRowIds={selectedDuplicateRowIds}
+            bulkMergeLoading={bulkMergeLoading}
+            mergeModalVisible={mergeModalVisible}
+            mergeDetail={mergeDetail}
+            mergeSelections={mergeSelections}
+            mergeNote={mergeNote}
+            mergeDetailLoading={mergeDetailLoading}
+            mergeLoading={mergeLoading}
+            onSelectAllDuplicates={handleSelectAllDuplicates}
+            onClearDuplicateSelection={handleClearDuplicateSelection}
+            onBulkDuplicateMerge={handleBulkDuplicateMerge}
+            onOpenMergeModal={openMergeModal}
+            onMergeSubmit={handleMergeSubmit}
+            onMergeSelectionChange={handleMergeSelectionChange}
+            onMergeModalCancel={() => {
+              setMergeModalVisible(false);
+              resetMergeState();
+            }}
+            onMergeNoteChange={setMergeNote}
+            onNavigate={navigate}
+            onSelectionChange={setSelectedDuplicateRowIds}
+          />
         </Card>
       ) : result ? (
         <Card>
@@ -3494,7 +2248,7 @@ export const ImportMappingPage: React.FC = () => {
           )}
         </Card>
       ) : (
-        <Card title={`Map File: ${file.file_name}`}>
+        <Card title={`Map File: ${file.file_name} (${formatBytes(file.file_size)})`}>
           <Tabs
             activeKey={activeTab}
             onChange={setActiveTab}
