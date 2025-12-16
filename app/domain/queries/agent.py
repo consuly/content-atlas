@@ -456,7 +456,62 @@ def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
                                 f"Column '{order_col}' is in ORDER BY but not in SELECT.\n"
                                 f"Fix: Add '{order_col}' to your SELECT clause or remove DISTINCT.")
         
-        # Check 2: Verify all referenced columns exist in their tables
+        # Check 2: Detect numeric casts on formatted text columns
+        cast_pattern = r'CAST\s*\(\s*(?:REPLACE\s*\([^)]+\)\s*,\s*)?["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s+AS\s+(DECIMAL|NUMERIC|INTEGER|INT|BIGINT|FLOAT|REAL)\s*\)'
+        cast_matches = re.findall(cast_pattern, sql_query, re.IGNORECASE)
+        
+        # Also check for :: casting syntax
+        double_colon_pattern = r'["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s*::\s*(DECIMAL|NUMERIC|INTEGER|INT|BIGINT|FLOAT|REAL)'
+        cast_matches.extend(re.findall(double_colon_pattern, sql_query, re.IGNORECASE))
+        
+        if cast_matches:
+            # Get table references to check column types
+            table_refs_for_cast = re.findall(r'(?:FROM|JOIN)\s+"([^"]+)"', sql_query, re.IGNORECASE)
+            
+            for col_name, target_type in cast_matches:
+                # Skip if already wrapped in REPLACE (user already fixed it)
+                if f'REPLACE("{col_name}"' in sql_query or f"REPLACE('{col_name}'" in sql_query:
+                    continue
+                
+                # Find which table this column belongs to
+                for table_name in table_refs_for_cast:
+                    if table_name not in table_column_types:
+                        continue
+                    
+                    if col_name in table_column_types[table_name]:
+                        col_type = table_column_types[table_name][col_name]
+                        
+                        # Only check TEXT/VARCHAR columns
+                        text_types = ['VARCHAR', 'TEXT', 'CHAR', 'CHARACTER']
+                        if any(text_type in col_type for text_type in text_types):
+                            # Check sample values for formatting
+                            table_info = schema_info["tables"].get(table_name, {})
+                            sample_data = table_info.get("sample_values", {})
+                            sample_values = sample_data.get(col_name, [])
+                            
+                            has_formatting = any(
+                                isinstance(val, str) and (
+                                    ',' in val or '$' in val or '(' in val or '%' in val
+                                )
+                                for val in sample_values if val is not None
+                            )
+                            
+                            if has_formatting:
+                                sample_example = next(
+                                    (str(val) for val in sample_values 
+                                     if val and isinstance(val, str) and (',' in str(val) or '$' in str(val))),
+                                    None
+                                )
+                                
+                                return (False,
+                                    f"VALIDATION ERROR: Attempting to cast formatted number to {target_type.upper()}.\n"
+                                    f"Column '{col_name}' in table '{table_name}' contains formatted values like \"{sample_example}\".\n"
+                                    f"PostgreSQL error: 'invalid input syntax for type numeric'\n"
+                                    f"Fix: Strip formatting characters first:\n"
+                                    f"  CAST(REPLACE(\"{col_name}\", ',', '') AS {target_type.upper()})\n"
+                                    f"Or for currency: CAST(REPLACE(REPLACE(\"{col_name}\", '$', ''), ',', '') AS {target_type.upper()})")
+        
+        # Check 3: Verify all referenced columns exist in their tables
         # Extract table references from FROM and JOIN clauses
         table_refs = re.findall(r'(?:FROM|JOIN)\s+"([^"]+)"', sql_query, re.IGNORECASE)
         
