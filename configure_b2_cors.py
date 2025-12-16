@@ -10,7 +10,7 @@ Usage:
 
 Requirements:
     - B2 CLI installed: pip install b2
-    - B2 credentials configured (B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in .env)
+    - B2 credentials configured (STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY in .env)
 """
 
 import argparse
@@ -26,7 +26,7 @@ def load_env_file():
     env_path = Path(__file__).parent / '.env'
     if not env_path.exists():
         print("❌ Error: .env file not found")
-        print("Please create a .env file with B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY")
+        print("Please create a .env file with STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY")
         sys.exit(1)
     
     env_vars = {}
@@ -242,12 +242,12 @@ Examples:
     
     # Load environment variables
     env_vars = load_env_file()
-    key_id = env_vars.get('B2_APPLICATION_KEY_ID') or env_vars.get('STORAGE_ACCESS_KEY_ID')
-    app_key = env_vars.get('B2_APPLICATION_KEY') or env_vars.get('STORAGE_SECRET_ACCESS_KEY')
+    key_id = env_vars.get('STORAGE_ACCESS_KEY_ID')
+    app_key = env_vars.get('STORAGE_SECRET_ACCESS_KEY')
     
     if not key_id or not app_key:
-        print("❌ Error: B2 credentials not found in .env file")
-        print("Required: B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY")
+        print("❌ Error: Storage credentials not found in .env file")
+        print("Required: STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY")
         sys.exit(1)
     
     # Authorize B2 CLI
