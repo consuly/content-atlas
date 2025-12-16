@@ -124,31 +124,45 @@ When generating SQL queries:
 - Only query user data columns - system metadata columns are for internal use only
 
 CRITICAL PostgreSQL CONSTRAINTS:
-1. **Type Casting for COALESCE and Numeric Operations**: PostgreSQL does NOT automatically cast text to numeric types. You MUST explicitly cast when:
+1. **Numeric Type Selection**: Choose appropriate numeric types based on expected value ranges:
+   - **INTEGER**: For numbers up to ~2.1 billion (2,147,483,647)
+   - **BIGINT**: For large numbers like web traffic, social media metrics, financial amounts (up to 9 quintillion)
+   - **NUMERIC/DECIMAL**: For precise decimal values or very large numbers
+   - **When in doubt, use BIGINT** for any metric that could exceed 2 billion (visits, impressions, revenue, etc.)
+   - Common columns that need BIGINT: traffic counts, website visits, social metrics, large monetary values
+
+2. **Type Casting for COALESCE and Numeric Operations**: PostgreSQL does NOT automatically cast text to numeric types. You MUST explicitly cast when:
    - Using COALESCE with numeric defaults: `COALESCE(CAST("text_column" AS INTEGER), 0)` or `COALESCE("text_column"::INTEGER, 0)`
    - Performing math operations: `CAST("amount_text" AS DECIMAL) * 1.5`
    - Using numeric comparisons in WHERE/ORDER BY: `ORDER BY CAST("count_text" AS INTEGER) DESC`
    - **WRONG**: `COALESCE("assets_under_management", 0)`
    - **RIGHT**: `COALESCE(CAST("assets_under_management" AS DECIMAL), 0)`
-   - **RIGHT**: `COALESCE("total_investments_count"::INTEGER, 0)`
+   - **RIGHT**: `COALESCE("total_investments_count"::BIGINT, 0)` (use BIGINT for large counts)
    - Always check the schema - if a column is VARCHAR/TEXT but contains numbers, you MUST cast it
 
-2. **SELECT DISTINCT + ORDER BY**: When using SELECT DISTINCT, ALL expressions in ORDER BY MUST appear in the SELECT clause
+3. **SELECT DISTINCT + ORDER BY**: When using SELECT DISTINCT, ALL expressions in ORDER BY MUST appear in the SELECT clause
    - WRONG: SELECT DISTINCT "name" FROM table ORDER BY "age"
    - RIGHT: SELECT DISTINCT "name", "age" FROM table ORDER BY "age"
    - Alternative: Use subqueries or remove DISTINCT if you need to order by non-selected columns
 
-3. **Column Name Verification**: ALWAYS verify column names exist in the schema before generating SQL
+4. **Column Name Verification**: ALWAYS verify column names exist in the schema before generating SQL
    - Use get_database_schema_tool to see exact column names
    - Table names may contain hyphens (e.g., "clients-list") - use double quotes
    - Column names are case-sensitive in PostgreSQL when quoted
    - If a column doesn't exist, check the schema for similar names
 
-4. **Common Mistakes to Avoid**:
+5. **Learning from Errors**: If a query fails with a PostgreSQL error:
+   - **"integer out of range"**: The value exceeds INTEGER limit - use BIGINT instead
+   - **"invalid input syntax for type numeric"**: Text has formatting (commas, $, etc.) - use REPLACE() to strip formatting before CAST
+   - **"column does not exist"**: Verify exact column name from schema with get_table_schema_tool
+   - Analyze the error message, identify the fix, and generate a corrected query
+
+6. **Common Mistakes to Avoid**:
    - Don't assume column names - check the schema first
    - Don't mix DISTINCT with complex ORDER BY without including ORDER BY columns in SELECT
    - Don't forget to quote table/column names with special characters
    - Don't use text columns in numeric operations without CAST() - this causes "COALESCE types text and integer cannot be matched" errors
+   - Don't use INTEGER for large numeric values (>2 billion) - use BIGINT
 
 SECURITY:
 - NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
@@ -722,9 +736,10 @@ def query_database_with_agent(user_prompt: str, thread_id: Optional[str] = None)
         rows_returned = None
         final_response = ""
 
-        attempts = 3 if force_sql else 1
-
-        for attempt in range(attempts):
+        # Allow up to 3 attempts total for error recovery
+        max_attempts = 3 if force_sql else 2  # Even for non-SQL queries, allow one retry for errors
+        
+        for attempt in range(max_attempts):
             # Run the agent with the config to enable memory
             try:
                 result = agent.invoke({"messages": messages}, config)
@@ -740,25 +755,34 @@ def query_database_with_agent(user_prompt: str, thread_id: Optional[str] = None)
 
             executed_sql, csv_data, execution_time, rows_returned, final_response = _extract_agent_outputs(result)
 
-            if force_sql:
-                retry_instruction = None
+            # Check if the query resulted in a PostgreSQL error
+            retry_instruction = None
+            
+            # First priority: Check for database execution errors and provide recovery guidance
+            if final_response.startswith("ERROR"):
+                error_recovery = _detect_postgresql_error(final_response)
+                if error_recovery and attempt < max_attempts - 1:
+                    retry_instruction = error_recovery
+            
+            # Second priority: For SQL-required prompts, ensure SQL was executed
+            elif force_sql:
                 if not executed_sql:
                     retry_instruction = FORCE_SQL_FOLLOW_UP_MESSAGE
                 elif _sql_targets_system_tables(executed_sql) or _csv_looks_like_metadata(csv_data):
                     retry_instruction = FORCE_SQL_SYSTEM_TABLE_MESSAGE
 
-                if retry_instruction:
-                    executed_sql = None
-                    csv_data = None
-                    execution_time = None
-                    rows_returned = None
-                    final_response = ""
+            # If we need to retry, reset state and add retry instruction
+            if retry_instruction and attempt < max_attempts - 1:
+                executed_sql = None
+                csv_data = None
+                execution_time = None
+                rows_returned = None
+                final_response = ""
+                messages.append(HumanMessage(content=retry_instruction))
+                continue
 
-                    if attempt < attempts - 1:
-                        messages.append(HumanMessage(content=retry_instruction))
-                        continue
-
-            if executed_sql or not force_sql:
+            # Success - break out of retry loop
+            if executed_sql or not force_sql or attempt == max_attempts - 1:
                 break
 
         if force_sql and not executed_sql:
@@ -810,6 +834,74 @@ def _normalize_tool_content(content: Any) -> str:
                 text_blocks.append(block.get("text", ""))
         return "\n".join(text_blocks)
     return str(content)
+
+
+def _detect_postgresql_error(error_message: str) -> Optional[str]:
+    """
+    Detect common PostgreSQL errors and provide actionable recovery instructions.
+    
+    Returns:
+        Optional[str]: Recovery instruction for the LLM, or None if not a known error pattern
+    """
+    if not error_message or not error_message.startswith("ERROR"):
+        return None
+    
+    error_lower = error_message.lower()
+    
+    # Pattern 1: Integer out of range
+    if "integer out of range" in error_lower:
+        return (
+            "The query failed because a value exceeds the INTEGER type limit (2,147,483,647).\n"
+            "Fix: Replace CAST(column AS INTEGER) with CAST(column AS BIGINT) in your query.\n"
+            "BIGINT can handle much larger numbers (up to 9 quintillion).\n"
+            "Please regenerate the query using BIGINT instead of INTEGER for numeric casts."
+        )
+    
+    # Pattern 2: Invalid input syntax for numeric (formatted numbers)
+    if "invalid input syntax for type" in error_lower and ("numeric" in error_lower or "integer" in error_lower):
+        return (
+            "The query failed because the column contains formatted text (e.g., '1,234' or '$5,000').\n"
+            "Fix: Strip formatting characters before casting:\n"
+            "  CAST(REPLACE(REPLACE(column, ',', ''), '$', '') AS NUMERIC)\n"
+            "Please regenerate the query with proper text formatting removal."
+        )
+    
+    # Pattern 3: Column does not exist
+    if "column" in error_lower and "does not exist" in error_lower:
+        # Extract column name if possible
+        col_match = re.search(r'column "([^"]+)" does not exist', error_message, re.IGNORECASE)
+        col_name = col_match.group(1) if col_match else "unknown"
+        return (
+            f"The query failed because column '{col_name}' does not exist in the table.\n"
+            "Fix: Use get_table_schema_tool to verify the exact column names, then regenerate the query.\n"
+            "Column names are case-sensitive and may have different spellings than expected."
+        )
+    
+    # Pattern 4: Type mismatch in COALESCE
+    if "coalesce types" in error_lower and "cannot be matched" in error_lower:
+        return (
+            "The query failed due to type mismatch in COALESCE.\n"
+            "Fix: Add explicit casting: COALESCE(CAST(column AS INTEGER), 0)\n"
+            "Please regenerate the query with proper type casting."
+        )
+    
+    # Pattern 5: Division by zero
+    if "division by zero" in error_lower:
+        return (
+            "The query failed due to division by zero.\n"
+            "Fix: Use NULLIF to avoid division by zero: column1 / NULLIF(column2, 0)\n"
+            "Please regenerate the query with zero-division protection."
+        )
+    
+    # Pattern 6: Syntax errors
+    if "syntax error" in error_lower:
+        return (
+            "The query has a SQL syntax error.\n"
+            "Fix: Review the SQL syntax, check for missing commas, parentheses, or keywords.\n"
+            "Please regenerate the query with correct SQL syntax."
+        )
+    
+    return None
 
 
 def _sql_targets_system_tables(sql: str) -> bool:
