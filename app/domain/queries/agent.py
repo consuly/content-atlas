@@ -111,6 +111,23 @@ When generating SQL queries:
 - NEVER select or reference system columns that start with underscore (_row_id, _import_id, _imported_at, _source_row_number, _corrections_applied)
 - Only query user data columns - system metadata columns are for internal use only
 
+CRITICAL PostgreSQL CONSTRAINTS:
+1. **SELECT DISTINCT + ORDER BY**: When using SELECT DISTINCT, ALL expressions in ORDER BY MUST appear in the SELECT clause
+   - WRONG: SELECT DISTINCT "name" FROM table ORDER BY "age"
+   - RIGHT: SELECT DISTINCT "name", "age" FROM table ORDER BY "age"
+   - Alternative: Use subqueries or remove DISTINCT if you need to order by non-selected columns
+
+2. **Column Name Verification**: ALWAYS verify column names exist in the schema before generating SQL
+   - Use get_database_schema_tool to see exact column names
+   - Table names may contain hyphens (e.g., "clients-list") - use double quotes
+   - Column names are case-sensitive in PostgreSQL when quoted
+   - If a column doesn't exist, check the schema for similar names
+
+3. **Common Mistakes to Avoid**:
+   - Don't assume column names - check the schema first
+   - Don't mix DISTINCT with complex ORDER BY without including ORDER BY columns in SELECT
+   - Don't forget to quote table/column names with special characters
+
 SECURITY:
 - NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
 - NEVER access, list, or mention system tables (users, api_keys, file_imports, import_history, import_duplicates, import_jobs, mapping_errors, table_metadata, uploaded_files, query_messages, query_threads); restrict all queries to customer data tables only
@@ -277,6 +294,119 @@ def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     }
 
 
+def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
+    """
+    Validate SQL query against the database schema.
+    
+    Returns:
+        tuple[bool, Optional[str]]: (is_valid, error_message)
+        - If valid: (True, None)
+        - If invalid: (False, "descriptive error message")
+    """
+    try:
+        # Get current database schema
+        schema_info = get_database_schema()
+        table_columns: Dict[str, List[str]] = {}
+        
+        for table_name, table_info in schema_info["tables"].items():
+            table_columns[table_name] = [col["name"] for col in table_info["columns"]]
+        
+        # Parse SQL to extract table and column references
+        sql_upper = sql_query.upper()
+        sql_normalized = sql_query.replace('"', '').replace("'", "")
+        
+        # Check 1: Detect SELECT DISTINCT + ORDER BY mismatch
+        if "SELECT DISTINCT" in sql_upper and "ORDER BY" in sql_upper:
+            # Extract SELECT columns
+            select_match = re.search(r'SELECT\s+DISTINCT\s+(.*?)\s+FROM', sql_query, re.IGNORECASE | re.DOTALL)
+            if select_match:
+                select_clause = select_match.group(1)
+                # Remove quoted identifiers and aliases for comparison
+                select_cols = re.findall(r'"([^"]+)"', select_clause)
+                
+                # Extract ORDER BY expressions
+                order_match = re.search(r'ORDER\s+BY\s+(.*?)(?:LIMIT|$)', sql_query, re.IGNORECASE | re.DOTALL)
+                if order_match:
+                    order_clause = order_match.group(1).strip()
+                    
+                    # Check for CASE expressions in ORDER BY
+                    if "CASE" in order_clause.upper():
+                        # Extract column references from CASE expression
+                        case_cols = re.findall(r'"([^"]+)"', order_clause)
+                        for case_col in case_cols:
+                            if case_col not in select_cols:
+                                return (False, 
+                                    f"VALIDATION ERROR: When using SELECT DISTINCT, all columns in ORDER BY must appear in SELECT list.\n"
+                                    f"Column '{case_col}' is referenced in ORDER BY but not in SELECT.\n"
+                                    f"Fix: Either add '{case_col}' to your SELECT clause, or remove DISTINCT.")
+                    
+                    # Check for direct column references in ORDER BY
+                    order_cols = re.findall(r'"([^"]+)"', order_clause)
+                    for order_col in order_cols:
+                        if order_col not in select_cols and not any(order_col in col for col in select_cols):
+                            return (False,
+                                f"VALIDATION ERROR: When using SELECT DISTINCT, all columns in ORDER BY must appear in SELECT list.\n"
+                                f"Column '{order_col}' is in ORDER BY but not in SELECT.\n"
+                                f"Fix: Add '{order_col}' to your SELECT clause or remove DISTINCT.")
+        
+        # Check 2: Verify all referenced columns exist in their tables
+        # Extract table references from FROM and JOIN clauses
+        table_refs = re.findall(r'(?:FROM|JOIN)\s+"([^"]+)"', sql_query, re.IGNORECASE)
+        
+        for table_ref in table_refs:
+            if table_ref not in table_columns:
+                available_tables = ", ".join(list(table_columns.keys())[:5])
+                return (False,
+                    f"VALIDATION ERROR: Table '{table_ref}' does not exist in the database.\n"
+                    f"Available tables include: {available_tables}\n"
+                    f"Fix: Use get_database_schema_tool to see all available tables.")
+            
+            # Extract column references for this table
+            # Look for patterns like "table"."column" or just "column" in SELECT/WHERE
+            table_col_pattern = rf'"{table_ref}"\."([^"]+)"'
+            table_specific_cols = re.findall(table_col_pattern, sql_query, re.IGNORECASE)
+            
+            for col in table_specific_cols:
+                if col not in table_columns[table_ref]:
+                    available_cols = ", ".join(table_columns[table_ref][:10])
+                    return (False,
+                        f"VALIDATION ERROR: Column '{col}' does not exist in table '{table_ref}'.\n"
+                        f"Available columns: {available_cols}\n"
+                        f"Fix: Check the schema with get_database_schema_tool and use the correct column name.")
+        
+        # Check 3: For single-table queries, validate all column references
+        if len(table_refs) == 1:
+            table_name = table_refs[0]
+            # Extract all quoted column references
+            all_cols = re.findall(r'"([^"]+)"', sql_query, re.IGNORECASE)
+            # Remove the table name itself
+            all_cols = [col for col in all_cols if col != table_name]
+            
+            for col in all_cols:
+                # Skip if it's a known keyword or function result
+                if col.upper() in ('ASC', 'DESC', 'NULLS', 'LAST', 'FIRST'):
+                    continue
+                
+                if col not in table_columns[table_name]:
+                    # Check for close matches
+                    similar_cols = [c for c in table_columns[table_name] 
+                                   if c.lower().startswith(col.lower()[:3])]
+                    suggestion = f" Did you mean: {', '.join(similar_cols[:3])}?" if similar_cols else ""
+                    available_cols = ", ".join(table_columns[table_name][:10])
+                    
+                    return (False,
+                        f"VALIDATION ERROR: Column '{col}' does not exist in table '{table_name}'.{suggestion}\n"
+                        f"Available columns: {available_cols}\n"
+                        f"Fix: Use get_database_schema_tool to verify the exact column names.")
+        
+        return (True, None)
+        
+    except Exception as e:
+        # If validation fails due to an error, allow the query to proceed
+        # (fail open rather than fail closed for validation)
+        return (True, None)
+
+
 @tool
 def execute_sql_query(sql_query: str) -> str:
     """
@@ -289,6 +419,11 @@ def execute_sql_query(sql_query: str) -> str:
         # Security validation
         if not sql_query.strip().upper().startswith('SELECT'):
             return "ERROR: Only SELECT queries are allowed for security reasons."
+        
+        # Validate SQL against schema (Phase 2: Pre-execution validation)
+        is_valid, validation_error = validate_sql_against_schema(sql_query)
+        if not is_valid:
+            return validation_error
 
         # Check for protected system tables
         sql_upper = sql_query.upper()

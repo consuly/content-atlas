@@ -157,9 +157,11 @@ If you see this warning, it means your B2 credentials are not set in the `.env` 
 To fix:
 1. Add B2 credentials to `.env`:
    ```
-   B2_APPLICATION_KEY_ID=your_key_id
-   B2_APPLICATION_KEY=your_key
-   B2_BUCKET_NAME=your_bucket
+   STORAGE_ACCESS_KEY_ID=your_key_id
+   STORAGE_SECRET_ACCESS_KEY=your_key
+   STORAGE_BUCKET_NAME=your_bucket
+   STORAGE_ENDPOINT_URL=https://s3.us-west-004.backblazeb2.com
+   STORAGE_PROVIDER=b2
    ```
 
 ### "Production environment detected" Error
