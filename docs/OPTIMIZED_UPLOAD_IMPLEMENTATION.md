@@ -208,7 +208,7 @@ if (checkResponse.data.can_upload) {
 
 ### "B2 authorization failed"
 **Cause**: B2 credentials not configured
-**Solution**: Check `.env` file has B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME
+**Solution**: Check `.env` file has STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY, STORAGE_BUCKET_NAME, STORAGE_ENDPOINT_URL, STORAGE_PROVIDER
 
 ## Questions?
 

@@ -98,9 +98,11 @@ Download a file from Backblaze B2 and map data to the database.
 ```
 
 **Environment Variables Required:**
-- `B2_APPLICATION_KEY_ID`: Your B2 application key ID
-- `B2_APPLICATION_KEY`: Your B2 application key
-- `B2_BUCKET_NAME`: The name of your B2 bucket
+- `STORAGE_ACCESS_KEY_ID`: Your storage access key ID (B2 Application Key ID, AWS Access Key, etc.)
+- `STORAGE_SECRET_ACCESS_KEY`: Your storage secret access key (B2 Application Key, AWS Secret Key, etc.)
+- `STORAGE_BUCKET_NAME`: The name of your storage bucket
+- `STORAGE_ENDPOINT_URL`: The storage endpoint URL
+- `STORAGE_PROVIDER`: The storage provider type (e.g., "b2", "s3", "minio")
 
 **Response:**
 ```json

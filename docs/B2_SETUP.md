@@ -181,9 +181,12 @@ DATABASE_URL=postgresql://user:password@localhost:5432/data_mapper
 SECRET_KEY=your-secret-key-change-in-production
 
 # Backblaze B2 Configuration
-B2_APPLICATION_KEY_ID=your_key_id_here
-B2_APPLICATION_KEY=your_application_key_here
-B2_BUCKET_NAME=your-bucket-name
+STORAGE_PROVIDER=b2
+STORAGE_ENDPOINT_URL=https://s3.us-west-004.backblazeb2.com
+STORAGE_ACCESS_KEY_ID=your_key_id_here
+STORAGE_SECRET_ACCESS_KEY=your_application_key_here
+STORAGE_BUCKET_NAME=your-bucket-name
+STORAGE_REGION=us-west-004
 
 # LangChain API Keys
 ANTHROPIC_API_KEY=your_anthropic_key_here

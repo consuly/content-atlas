@@ -259,8 +259,26 @@ def get_database_schema(table_names: Optional[List[str]] = None) -> Dict[str, An
 def format_schema_for_prompt(schema_info: Dict[str, Any]) -> str:
     """Format database schema information into a readable prompt context."""
     lines = ["## Database Schema Overview\n"]
-
-    lines.append(f"Tables Included: {len(schema_info['tables'])}\n")
+    lines.append(f"Total Tables: {len(schema_info['tables'])}\n")
+    
+    # Phase 3: Add quick reference table→columns mapping at the top
+    lines.append("### Quick Reference - Available Tables and Columns")
+    lines.append("```")
+    for table_name, table_info in schema_info["tables"].items():
+        column_names = [col["name"] for col in table_info["columns"]]
+        columns_str = ", ".join(column_names[:10])  # Show first 10 columns
+        if len(column_names) > 10:
+            columns_str += f" ... ({len(column_names)} total)"
+        lines.append(f'"{table_name}": {columns_str}')
+    lines.append("```\n")
+    
+    # Add warning about table names with special characters
+    special_char_tables = [t for t in schema_info["tables"].keys() if '-' in t or ' ' in t]
+    if special_char_tables:
+        lines.append("⚠️ **IMPORTANT**: Some table names contain hyphens or spaces. Always use double quotes:")
+        for t in special_char_tables[:5]:
+            lines.append(f'  - Use: "{t}" (with quotes)')
+        lines.append(""
 
     for table_name, table_info in schema_info["tables"].items():
         lines.append(f"### Table: {table_name}")

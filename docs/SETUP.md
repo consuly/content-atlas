@@ -111,9 +111,12 @@ DB_PASSWORD=password
 Required only if using B2 storage endpoints:
 
 ```bash
-B2_APPLICATION_KEY_ID=your_key_id_here
-B2_APPLICATION_KEY=your_application_key_here
-B2_BUCKET_NAME=your_bucket_name_here
+STORAGE_PROVIDER=b2
+STORAGE_ENDPOINT_URL=https://s3.us-west-004.backblazeb2.com
+STORAGE_ACCESS_KEY_ID=your_key_id_here
+STORAGE_SECRET_ACCESS_KEY=your_application_key_here
+STORAGE_BUCKET_NAME=your_bucket_name_here
+STORAGE_REGION=us-west-004
 ```
 
 #### Upload Configuration (Optional)
