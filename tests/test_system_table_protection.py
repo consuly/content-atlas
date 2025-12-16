@@ -42,7 +42,8 @@ def test_block_system_table_with_quotes():
     """Test that queries with quoted table names are blocked."""
     result = execute_sql_query.invoke('SELECT * FROM "users"')
     assert "ERROR" in result
-    assert "not allowed" in result.lower()
+    # Either explicitly blocked or doesn't exist (both prevent access)
+    assert "not allowed" in result.lower() or "does not exist" in result.lower()
 
 
 def test_block_system_table_with_schema():

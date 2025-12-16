@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import {
   Alert,
   Space,
@@ -16,6 +16,7 @@ import {
   CheckCircleOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
+import { ColorModeContext } from '../../../contexts/color-mode/context';
 import { ErrorLogViewer } from '../../../components/error-log-viewer';
 import { UploadedFile, ProcessingResult } from './types';
 
@@ -88,6 +89,8 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
   existingTables,
   loadingTables,
 }) => {
+  const { mode } = useContext(ColorModeContext);
+  
   return (
     <div style={{ padding: '24px 0' }}>
       {error && !result && (
@@ -147,7 +150,7 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
             </Row>
             
             {useSharedTable && (
-              <div style={{ background: '#fafafa', padding: 16, borderRadius: 8 }}>
+              <div style={{ background: mode === 'dark' ? '#1a2332' : '#fafafa', padding: 16, borderRadius: 8 }}>
                 <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                   <Text strong>Target Table Settings</Text>
                   <Space>
@@ -229,9 +232,9 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
               overflowY: 'auto',
               marginBottom: 16,
               padding: 16,
-              border: '1px solid #d9d9d9',
+              border: mode === 'dark' ? '1px solid #263040' : '1px solid #d9d9d9',
               borderRadius: 4,
-              backgroundColor: '#fafafa',
+              backgroundColor: mode === 'dark' ? '#0b1220' : '#fafafa',
             }}
           >
             {conversation.map((msg, idx) => (
@@ -240,10 +243,24 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
                 style={{
                   marginBottom: 16,
                   padding: 12,
-                  backgroundColor: msg.role === 'user' ? '#e6f7ff' : '#fff',
+                  backgroundColor:
+                    msg.role === 'user'
+                      ? mode === 'dark'
+                        ? '#1e3a5f'
+                        : '#e6f7ff'
+                      : mode === 'dark'
+                        ? '#1a2332'
+                        : '#fff',
                   borderRadius: 4,
                   border: '1px solid',
-                  borderColor: msg.role === 'user' ? '#91d5ff' : '#d9d9d9',
+                  borderColor:
+                    msg.role === 'user'
+                      ? mode === 'dark'
+                        ? '#2563eb'
+                        : '#91d5ff'
+                      : mode === 'dark'
+                        ? '#263040'
+                        : '#d9d9d9',
                 }}
               >
                 <Text strong style={{ display: 'block', marginBottom: 8 }}>

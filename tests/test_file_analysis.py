@@ -63,9 +63,9 @@ def test_analyze_file_endpoint_exists(require_llm):
 
 def test_analyze_storage_file_endpoint_exists():
     """Test that /analyze-b2-file endpoint exists."""
-    # Mock both B2 download and analysis
-    with patch('app.main.download_file_from_storage') as mock_download, \
-         patch('app.main.analyze_file_for_import') as mock_analyze:
+    # Mock both storage download and analysis - patch where it's imported in routes
+    with patch('app.api.routers.analysis.routes._download_file_from_storage') as mock_download, \
+         patch('app.api.routers.analysis.routes._analyze_file_for_import') as mock_analyze:
         
         mock_download.return_value = b"name,email\nJohn,john@example.com\n"
         mock_analyze.return_value = {

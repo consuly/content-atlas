@@ -36,8 +36,8 @@ def fake_storage_storage(monkeypatch):
 
     monkeypatch.setattr("app.api.routers.uploads.upload_file_to_storage", fake_upload)
     monkeypatch.setattr("app.api.routers.uploads.delete_file_from_storage", fake_delete)
-    monkeypatch.setattr("app.integrations.b2.upload_file_to_storage", fake_upload)
-    monkeypatch.setattr("app.integrations.b2.download_file_from_storage", fake_download)
+    monkeypatch.setattr("app.integrations.storage.upload_file", fake_upload)
+    monkeypatch.setattr("app.integrations.storage.download_file", fake_download)
     monkeypatch.setattr("app.main.download_file_from_storage", fake_download, raising=False)
     return storage
 

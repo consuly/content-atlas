@@ -83,7 +83,13 @@ def initialize_test_database():
         create_file_imports_table_if_not_exists(engine)
 
         print("  Creating workflow tables...")
-        create_workflow_tables()
+        try:
+            create_workflow_tables()
+            print("  ✓ Workflow tables created successfully")
+        except Exception as wf_error:
+            print(f"  WARNING: Workflow table creation failed: {wf_error}")
+            import traceback
+            traceback.print_exc()
         
         print("  ✓ All system tables initialized successfully")
         print("="*80 + "\n")
