@@ -156,7 +156,7 @@ def test_analyze_failed_analysis(mock_failed_analysis):
     csv_content = b"name,email\nJohn,john@example.com\n"
     files = {"file": ("test.csv", io.BytesIO(csv_content), "text/csv")}
     
-    with patch('app.main.analyze_file_for_import') as mock_analyze:
+    with patch('app.api.routers.analysis.routes._analyze_file_for_import') as mock_analyze:
         mock_analyze.return_value = mock_failed_analysis
         
         response = client.post(
@@ -190,7 +190,7 @@ def test_analyze_file_honors_forced_table(monkeypatch):
 
     captured = {}
 
-    def fake_execute(file_content, file_name, all_records, llm_decision):
+    def fake_execute(file_content, file_name, all_records, llm_decision, source_path=None):
         captured["llm_decision"] = llm_decision
         assert llm_decision["target_table"] == forced_table
         assert llm_decision["strategy"] == "ADAPT_DATA"  # switched because mode=existing
@@ -202,8 +202,8 @@ def test_analyze_file_honors_forced_table(monkeypatch):
             "duplicates_skipped": 0,
         }
 
-    monkeypatch.setattr("app.api.routers.analysis._get_analyze_file_for_import", lambda: fake_analyze)
-    monkeypatch.setattr("app.integrations.auto_import.execute_llm_import_decision", fake_execute)
+    monkeypatch.setattr("app.api.routers.analysis.routes._get_analyze_file_for_import", lambda: fake_analyze)
+    monkeypatch.setattr("app.api.routers.analysis.routes._get_execute_llm_import_decision", lambda: fake_execute)
 
     files = {"file": ("simple.csv", io.BytesIO(b"name\nalpha\nbeta\n"), "text/csv")}
     response = client.post(
@@ -220,7 +220,8 @@ def test_analyze_file_honors_forced_table(monkeypatch):
 
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data["success"] is True
+    assert data["success"] is True, f"Response not successful: {data}"
+    assert data["auto_execution_result"] is not None, f"auto_execution_result is None. Full response: {data}"
     assert data["auto_execution_result"]["table_name"] == forced_table
     assert captured["llm_decision"]["target_table"] == forced_table
     assert captured["llm_decision"]["strategy"] == "ADAPT_DATA"
@@ -501,7 +502,7 @@ def test_analyze_response_structure(require_llm):
 @pytest.mark.b2
 def test_storage_analyze_response_structure(require_llm):
     """Test B2 analysis response structure with the real LLM."""
-    with patch('app.main.download_file_from_storage') as mock_download:
+    with patch('app.api.routers.analysis.routes._download_file_from_storage') as mock_download:
         mock_download.return_value = b"name,email\nJohn,john@example.com\n"
         
         response = client.post(

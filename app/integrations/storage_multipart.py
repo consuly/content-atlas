@@ -334,3 +334,23 @@ def get_optimal_part_size(file_size: int) -> int:
     part_size = ((part_size + 1024 * 1024 - 1) // (1024 * 1024)) * (1024 * 1024)
     
     return part_size
+
+
+def download_file(file_path: str) -> bytes:
+    """
+    Download a file from S3-compatible storage.
+    
+    This function delegates to the main storage module for consistency.
+    Provided here for convenience so users can import from storage_multipart.
+    
+    Args:
+        file_path: The full path of the file in storage (e.g., "uploads/file.csv")
+    
+    Returns:
+        File content as bytes
+    
+    Raises:
+        StorageDownloadError: If download fails
+    """
+    from app.integrations.storage import download_file as storage_download
+    return storage_download(file_path)

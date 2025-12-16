@@ -86,10 +86,11 @@ def initialize_test_database():
         try:
             create_workflow_tables()
             print("  ✓ Workflow tables created successfully")
-        except Exception as wf_error:
-            print(f"  WARNING: Workflow table creation failed: {wf_error}")
+        except Exception as workflow_error:
+            print(f"  ✗ WORKFLOW TABLE CREATION FAILED: {workflow_error}")
             import traceback
             traceback.print_exc()
+            raise
         
         print("  ✓ All system tables initialized successfully")
         print("="*80 + "\n")

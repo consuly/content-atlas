@@ -99,7 +99,8 @@ def fake_storage_storage(monkeypatch):
 
     def fake_download(file_path: str) -> bytes:
         if file_path not in storage:
-            raise FileNotFoundError(file_path)
+            from app.integrations.storage import StorageDownloadError
+            raise StorageDownloadError(f"File not found: {file_path}")
         return storage[file_path]
 
     def fake_delete(file_path: str) -> bool:
@@ -110,7 +111,8 @@ def fake_storage_storage(monkeypatch):
     monkeypatch.setattr("app.api.routers.uploads.delete_file_from_storage", fake_delete)
     monkeypatch.setattr("app.integrations.storage.upload_file", fake_upload)
     monkeypatch.setattr("app.integrations.storage.download_file", fake_download)
-    monkeypatch.setattr("app.main.download_file_from_storage", fake_download, raising=False)
+    monkeypatch.setattr("app.integrations.storage_multipart.download_file", fake_download)
+    monkeypatch.setattr("app.api.routers.analysis.routes._download_file_from_storage", fake_download)
     return storage
 
 
