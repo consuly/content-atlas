@@ -1436,6 +1436,7 @@ class InteractiveSessionState:
     sheet_name: Optional[str] = None
     llm_instruction: Optional[str] = None
     llm_instruction_id: Optional[str] = None
+    skip_file_duplicate_check: bool = False
 
     def metadata_copy(self) -> Dict[str, Any]:
         """Return a safe copy of file metadata for the agent to mutate."""
@@ -1543,6 +1544,10 @@ def _run_interactive_session_step(
     llm_response = analysis_result["response"]
     session.conversation.append({"role": "assistant", "content": llm_response})
     session.llm_decision = analysis_result.get("llm_decision")
+    
+    if session.llm_decision and session.skip_file_duplicate_check:
+        session.llm_decision["skip_file_duplicate_check"] = True
+
     session.status = "ready_to_execute" if session.llm_decision else "awaiting_user"
     session.last_error = None if session.llm_decision else session.last_error
 
@@ -2892,6 +2897,20 @@ async def analyze_file_interactive_endpoint(
         if target_sheet_name:
             file_metadata["sheet_name"] = target_sheet_name
 
+        if request.target_table_name:
+            file_metadata["forced_target_table"] = _normalize_forced_table_name(request.target_table_name)
+        
+        if request.target_table_mode:
+            normalized_mode = request.target_table_mode.strip().lower()
+            if normalized_mode in {"existing", "new"}:
+                file_metadata["forced_target_table_mode"] = normalized_mode
+            elif request.target_table_name:
+                 # Default to existing if name provided but mode is missing/invalid
+                 file_metadata["forced_target_table_mode"] = "existing"
+        
+        if request.target_table_name and "forced_target_table_mode" not in file_metadata:
+             file_metadata["forced_target_table_mode"] = "existing"
+
         thread_id = str(uuid.uuid4())
         session = InteractiveSessionState(
             file_id=request.file_id,
@@ -2903,6 +2922,7 @@ async def analyze_file_interactive_endpoint(
             sheet_name=target_sheet_name,
             llm_instruction=resolved_instruction,
             llm_instruction_id=saved_instruction_id or request.llm_instruction_id,
+            skip_file_duplicate_check=request.skip_file_duplicate_check,
         )
 
         if request.previous_error_message:
