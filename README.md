@@ -161,9 +161,11 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for production deployment.
 - The first account created through the `/register` page becomes the admin. Automatic bootstrap via `ADMIN_*` variables has been removed; create the initial admin interactively when the app first loads.
 
 ### Optional (for B2 integration)
-- `B2_APPLICATION_KEY_ID` - Backblaze B2 key ID
-- `B2_APPLICATION_KEY` - Backblaze B2 application key
-- `B2_BUCKET_NAME` - B2 bucket name
+- `STORAGE_ACCESS_KEY_ID` - Storage access key ID (B2 Application Key ID, AWS Access Key, etc.)
+- `STORAGE_SECRET_ACCESS_KEY` - Storage secret access key (B2 Application Key, AWS Secret Key, etc.)
+- `STORAGE_BUCKET_NAME` - Storage bucket name
+- `STORAGE_ENDPOINT_URL` - Storage endpoint URL (required for B2, MinIO; optional for AWS S3)
+- `STORAGE_PROVIDER` - Storage provider type (e.g., "b2", "s3", "minio")
 
 ### Optional (for console)
 - `ANTHROPIC_API_KEY` - Anthropic API key for natural language queries

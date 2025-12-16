@@ -118,7 +118,7 @@ export const AuthLayout = ({
                   <p className="text-xs font-semibold uppercase tracking-[0.28em] text-brand-500">
                     Content Atlas
                   </p>
-                  <h2 className="text-2xl font-bold text-black/90">
+                  <h2 className="text-2xl font-bold text-black/90 dark:text-white/90">
                     {formTitle}
                   </h2>
                   <p className="text-sm text-slate-400">{formSubtitle}</p>

@@ -109,9 +109,11 @@ MAX_UPLOAD_SIZE_MB = 100  // Maximum file size
 
 ### B2 Settings (`.env`)
 ```
-B2_APPLICATION_KEY_ID=your_key_id
-B2_APPLICATION_KEY=your_key
-B2_BUCKET_NAME=your_bucket
+STORAGE_ACCESS_KEY_ID=your_key_id
+STORAGE_SECRET_ACCESS_KEY=your_key
+STORAGE_BUCKET_NAME=your_bucket
+STORAGE_ENDPOINT_URL=https://s3.us-west-004.backblazeb2.com
+STORAGE_PROVIDER=b2
 ```
 
 ## Future Enhancements

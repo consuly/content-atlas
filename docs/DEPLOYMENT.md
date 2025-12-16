@@ -106,9 +106,12 @@ docker run -d \
   --name data-mapper-api \
   -p 8000:8000 \
   -e DATABASE_URL="postgresql://user:pass@db-host:5432/datamapper" \
-  -e B2_APPLICATION_KEY_ID="your_key_id" \
-  -e B2_APPLICATION_KEY="your_key" \
-  -e B2_BUCKET_NAME="your_bucket" \
+  -e STORAGE_PROVIDER="b2" \
+  -e STORAGE_ENDPOINT_URL="https://s3.us-west-004.backblazeb2.com" \
+  -e STORAGE_ACCESS_KEY_ID="your_key_id" \
+  -e STORAGE_SECRET_ACCESS_KEY="your_key" \
+  -e STORAGE_BUCKET_NAME="your_bucket" \
+  -e STORAGE_REGION="us-west-004" \
   data-mapper:latest
 ```
 
