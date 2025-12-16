@@ -124,21 +124,31 @@ When generating SQL queries:
 - Only query user data columns - system metadata columns are for internal use only
 
 CRITICAL PostgreSQL CONSTRAINTS:
-1. **SELECT DISTINCT + ORDER BY**: When using SELECT DISTINCT, ALL expressions in ORDER BY MUST appear in the SELECT clause
+1. **Type Casting for COALESCE and Numeric Operations**: PostgreSQL does NOT automatically cast text to numeric types. You MUST explicitly cast when:
+   - Using COALESCE with numeric defaults: `COALESCE(CAST("text_column" AS INTEGER), 0)` or `COALESCE("text_column"::INTEGER, 0)`
+   - Performing math operations: `CAST("amount_text" AS DECIMAL) * 1.5`
+   - Using numeric comparisons in WHERE/ORDER BY: `ORDER BY CAST("count_text" AS INTEGER) DESC`
+   - **WRONG**: `COALESCE("assets_under_management", 0)`
+   - **RIGHT**: `COALESCE(CAST("assets_under_management" AS DECIMAL), 0)`
+   - **RIGHT**: `COALESCE("total_investments_count"::INTEGER, 0)`
+   - Always check the schema - if a column is VARCHAR/TEXT but contains numbers, you MUST cast it
+
+2. **SELECT DISTINCT + ORDER BY**: When using SELECT DISTINCT, ALL expressions in ORDER BY MUST appear in the SELECT clause
    - WRONG: SELECT DISTINCT "name" FROM table ORDER BY "age"
    - RIGHT: SELECT DISTINCT "name", "age" FROM table ORDER BY "age"
    - Alternative: Use subqueries or remove DISTINCT if you need to order by non-selected columns
 
-2. **Column Name Verification**: ALWAYS verify column names exist in the schema before generating SQL
+3. **Column Name Verification**: ALWAYS verify column names exist in the schema before generating SQL
    - Use get_database_schema_tool to see exact column names
    - Table names may contain hyphens (e.g., "clients-list") - use double quotes
    - Column names are case-sensitive in PostgreSQL when quoted
    - If a column doesn't exist, check the schema for similar names
 
-3. **Common Mistakes to Avoid**:
+4. **Common Mistakes to Avoid**:
    - Don't assume column names - check the schema first
    - Don't mix DISTINCT with complex ORDER BY without including ORDER BY columns in SELECT
    - Don't forget to quote table/column names with special characters
+   - Don't use text columns in numeric operations without CAST() - this causes "COALESCE types text and integer cannot be matched" errors
 
 SECURITY:
 - NEVER execute DELETE, DROP, UPDATE, INSERT, or other destructive operations
@@ -375,13 +385,42 @@ def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
         # Get current database schema
         schema_info = get_database_schema()
         table_columns: Dict[str, List[str]] = {}
+        table_column_types: Dict[str, Dict[str, str]] = {}
         
         for table_name, table_info in schema_info["tables"].items():
             table_columns[table_name] = [col["name"] for col in table_info["columns"]]
+            # Store column types for validation
+            table_column_types[table_name] = {
+                col["name"]: col["type"].upper() for col in table_info["columns"]
+            }
         
         # Parse SQL to extract table and column references
         sql_upper = sql_query.upper()
         sql_normalized = sql_query.replace('"', '').replace("'", "")
+        
+        # Check 0: Detect COALESCE with type mismatches (TEXT with numeric defaults)
+        coalesce_pattern = r'COALESCE\s*\(\s*"([^"]+)"\s*,\s*(\d+)\s*\)'
+        coalesce_matches = re.findall(coalesce_pattern, sql_query, re.IGNORECASE)
+        
+        if coalesce_matches:
+            # Extract table references to check column types
+            table_refs = re.findall(r'(?:FROM|JOIN)\s+"([^"]+)"', sql_query, re.IGNORECASE)
+            
+            for col_name, default_value in coalesce_matches:
+                # Check if this column exists in any of the referenced tables
+                for table_name in table_refs:
+                    if table_name in table_column_types and col_name in table_column_types[table_name]:
+                        col_type = table_column_types[table_name][col_name]
+                        
+                        # Check if it's a text type being coalesced with a number
+                        text_types = ['VARCHAR', 'TEXT', 'CHAR', 'CHARACTER']
+                        if any(text_type in col_type for text_type in text_types):
+                            return (False,
+                                f"VALIDATION ERROR: Type mismatch in COALESCE expression.\n"
+                                f"Column '{col_name}' is type {col_type} but you're using numeric default {default_value}.\n"
+                                f"PostgreSQL error: 'COALESCE types text and integer cannot be matched'\n"
+                                f"Fix: Use explicit casting: COALESCE(CAST(\"{col_name}\" AS INTEGER), {default_value}) "
+                                f"or COALESCE(\"{col_name}\"::INTEGER, {default_value})")
         
         # Check 1: Detect SELECT DISTINCT + ORDER BY mismatch
         if "SELECT DISTINCT" in sql_upper and "ORDER BY" in sql_upper:
