@@ -238,8 +238,8 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
             },
         }
 
-    # Patch the analyzer function that _get_analyze_file_for_import looks for
-    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
+    # Patch the analyzer function that _get_analyze_file_for_import returns
+    monkeypatch.setattr("app.domain.queries.analyzer.analyze_file_for_import", fake_analyze)
 
     captured = {}
 
@@ -313,8 +313,8 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_s
             },
         }
 
-    # Patch the analyzer function that _get_analyze_file_for_import looks for
-    monkeypatch.setattr("app.main.analyze_file_for_import", fake_analyze)
+    # Patch the analyzer function that _get_analyze_file_for_import returns
+    monkeypatch.setattr("app.domain.queries.analyzer.analyze_file_for_import", fake_analyze)
 
     def fake_execute(**_kwargs):
         execution_calls["count"] += 1

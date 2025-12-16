@@ -24,7 +24,12 @@ def create_workflow_tables():
     
     with engine.begin() as conn:
         # Ensure pgcrypto extension exists for gen_random_uuid() (PostgreSQL < 13)
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        # For PostgreSQL 13+, gen_random_uuid() is built-in
+        try:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        except Exception:
+            # Extension might already exist or we're on PG 13+ where it's not needed
+            pass
         
         # Workflows table
         conn.execute(text("""
