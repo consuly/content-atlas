@@ -88,6 +88,11 @@ SQL_REQUEST_KEYWORDS = {
     "customers",
     "advertisers",
     "campaign",
+    "merge",
+    "combine",
+    "union",
+    "records from",
+    "rows from",
 }
 
 
@@ -122,6 +127,43 @@ When generating SQL queries:
 - Generate efficient queries following database best practices
 - NEVER select or reference system columns that start with underscore (_row_id, _import_id, _imported_at, _source_row_number, _corrections_applied)
 - Only query user data columns - system metadata columns are for internal use only
+
+COMBINING DATA FROM MULTIPLE TABLES:
+**When to use JOIN vs UNION:**
+- Use **JOIN** when tables are related via foreign keys or shared identifiers (e.g., orders → customers)
+- Use **UNION/UNION ALL** when combining similar records from independent tables (e.g., merging contact lists, combining data from different sources)
+
+**UNION Pattern for Merging Records:**
+When a user requests "X records from table A AND Y records from table B" or wants to combine/merge data from multiple tables:
+1. Identify common columns across tables (or use aliases to standardize column names)
+2. Create separate SELECT statements for each table with appropriate WHERE/LIMIT clauses
+3. Combine using UNION ALL (preserves all records including duplicates) or UNION (removes duplicates)
+4. Wrap each SELECT in parentheses for clarity
+
+**Example - Merging 100 records from each table:**
+```sql
+(SELECT "name", "email", "company", "phone" FROM "clients-list" 
+ WHERE "email" IS NOT NULL LIMIT 100)
+UNION ALL
+(SELECT "name", "email", "company", "phone" FROM "competitors-list" 
+ WHERE "email" IS NOT NULL LIMIT 100);
+```
+
+**Example - Combining with column aliasing when names differ:**
+```sql
+(SELECT "contact_name" AS "name", "email_address" AS "email", "org" AS "company" 
+ FROM "table-a" LIMIT 500)
+UNION ALL
+(SELECT "full_name" AS "name", "email" AS "email", "company_name" AS "company" 
+ FROM "table-b" LIMIT 500);
+```
+
+**Key Rules for UNION:**
+- All SELECT statements must have the same number of columns
+- Columns must be in the same order
+- Column data types must be compatible
+- Use UNION ALL unless you specifically need to remove duplicates (UNION is slower)
+- If column names differ, use AS aliases to standardize the output
 
 CRITICAL PostgreSQL CONSTRAINTS:
 1. **Numeric Type Selection**: Choose appropriate numeric types based on expected value ranges:
