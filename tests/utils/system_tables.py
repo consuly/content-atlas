@@ -13,6 +13,7 @@ from app.domain.imports.jobs import ensure_import_jobs_table
 from app.domain.uploads.uploaded_files import create_uploaded_files_table
 from app.db.models import create_file_imports_table_if_not_exists
 from app.db.session import get_engine
+from app.domain.workflows.models import create_workflow_tables
 
 
 def ensure_system_tables_ready(engine: Optional[Engine] = None) -> Engine:
@@ -30,6 +31,6 @@ def ensure_system_tables_ready(engine: Optional[Engine] = None) -> Engine:
     create_uploaded_files_table()
     ensure_import_jobs_table()
     create_file_imports_table_if_not_exists(engine)
+    create_workflow_tables()
 
     return engine
-

@@ -22,15 +22,19 @@ def create_workflow_tables():
     """Create all workflow-related tables if they don't exist."""
     engine = get_engine()
     
-    with engine.begin() as conn:
-        # Ensure pgcrypto extension exists for gen_random_uuid() (PostgreSQL < 13)
-        # For PostgreSQL 13+, gen_random_uuid() is built-in
-        try:
+    # Try to create extension in a separate transaction
+    # This prevents its failure from aborting the table creation transaction
+    try:
+        with engine.begin() as conn:
+            # Ensure pgcrypto extension exists for gen_random_uuid() (PostgreSQL < 13)
+            # For PostgreSQL 13+, gen_random_uuid() is built-in
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-        except Exception:
-            # Extension might already exist or we're on PG 13+ where it's not needed
-            pass
-        
+    except Exception as e:
+        # Extension might already exist, permission denied, or not needed
+        # We proceed - if gen_random_uuid() fails later, it will raise then
+        logger.debug(f"Note: Could not create pgcrypto extension: {e}")
+    
+    with engine.begin() as conn:
         # Workflows table
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS workflows (
