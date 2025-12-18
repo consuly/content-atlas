@@ -273,6 +273,81 @@ class TestValidationErrorMessages:
         assert "get_database_schema_tool" in error
 
 
+class TestUnionLimitValidation:
+    """Test UNION + LIMIT syntax validation."""
+    
+    def test_valid_union_with_parentheses_and_limit(self, setup_test_table):
+        """Valid: UNION with each SELECT wrapped in parentheses when using LIMIT."""
+        sql = """
+            (SELECT "name", "age" FROM "test-validation-table" 
+             WHERE "department" = 'Engineering' LIMIT 100)
+            UNION ALL
+            (SELECT "name", "age" FROM "test-validation-table" 
+             WHERE "department" = 'Marketing' LIMIT 100)
+        """
+        is_valid, error = validate_sql_against_schema(sql)
+        assert is_valid is True
+        assert error is None
+    
+    def test_valid_union_without_limit(self, setup_test_table):
+        """Valid: UNION without LIMIT doesn't require parentheses."""
+        sql = """
+            SELECT "name", "age" FROM "test-validation-table" 
+            WHERE "department" = 'Engineering'
+            UNION ALL
+            SELECT "name", "age" FROM "test-validation-table" 
+            WHERE "department" = 'Marketing'
+        """
+        is_valid, error = validate_sql_against_schema(sql)
+        assert is_valid is True
+        assert error is None
+    
+    def test_invalid_union_with_limit_no_parentheses(self, setup_test_table):
+        """Invalid: LIMIT before UNION without parentheses causes syntax error."""
+        sql = """
+            SELECT "name", "age" FROM "test-validation-table" 
+            WHERE "department" = 'Engineering'
+            LIMIT 100
+            UNION ALL
+            SELECT "name", "age" FROM "test-validation-table" 
+            WHERE "department" = 'Marketing'
+            LIMIT 100
+        """
+        is_valid, error = validate_sql_against_schema(sql)
+        assert is_valid is False
+        assert "VALIDATION ERROR" in error
+        assert "LIMIT" in error
+        assert "UNION" in error
+        assert "parentheses" in error
+    
+    def test_valid_union_with_final_limit_only(self, setup_test_table):
+        """Valid: LIMIT only at the end of combined query (no parentheses needed)."""
+        sql = """
+            SELECT "name", "age" FROM "test-validation-table" 
+            WHERE "department" = 'Engineering'
+            UNION ALL
+            SELECT "name", "age" FROM "test-validation-table" 
+            WHERE "department" = 'Marketing'
+            LIMIT 200
+        """
+        is_valid, error = validate_sql_against_schema(sql)
+        assert is_valid is True
+        assert error is None
+    
+    def test_error_message_explains_union_limit_fix(self, setup_test_table):
+        """Error message should explain how to fix UNION + LIMIT syntax."""
+        sql = """
+            SELECT "name" FROM "test-validation-table" LIMIT 50
+            UNION ALL
+            SELECT "name" FROM "test-validation-table" LIMIT 50
+        """
+        is_valid, error = validate_sql_against_schema(sql)
+        assert is_valid is False
+        assert "Fix:" in error
+        assert "parentheses" in error.lower()
+        assert "SELECT ... LIMIT" in error or "each SELECT" in error
+
+
 class TestEdgeCases:
     """Test edge cases and boundary conditions."""
     

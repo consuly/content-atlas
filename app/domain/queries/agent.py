@@ -164,6 +164,10 @@ UNION ALL
 - Column data types must be compatible
 - Use UNION ALL unless you specifically need to remove duplicates (UNION is slower)
 - If column names differ, use AS aliases to standardize the output
+- **CRITICAL: When using LIMIT with UNION, you MUST wrap each SELECT in parentheses**
+  - WRONG: `SELECT ... LIMIT 100 UNION ALL SELECT ... LIMIT 100` ❌ (syntax error!)
+  - RIGHT: `(SELECT ... LIMIT 100) UNION ALL (SELECT ... LIMIT 100)` ✅
+  - PostgreSQL requires parentheses when LIMIT appears before UNION/UNION ALL
 
 CRITICAL PostgreSQL CONSTRAINTS:
 1. **Numeric Type Selection**: Choose appropriate numeric types based on expected value ranges:
@@ -478,7 +482,22 @@ def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
                                 f"Fix: Use explicit casting: COALESCE(CAST(\"{col_name}\" AS INTEGER), {default_value}) "
                                 f"or COALESCE(\"{col_name}\"::INTEGER, {default_value})")
         
-        # Check 1: Detect SELECT DISTINCT + ORDER BY mismatch
+        # Check 1: Detect LIMIT before UNION without parentheses
+        if 'UNION' in sql_upper:
+            # Pattern: LIMIT <number> followed by UNION without closing parenthesis
+            limit_union_pattern = r'LIMIT\s+\d+\s+UNION'
+            if re.search(limit_union_pattern, sql_upper):
+                # Check if this LIMIT is inside parentheses (which would be correct)
+                # Look for patterns like: ) UNION or proper wrapping
+                if not re.search(r'\)\s*UNION', sql_query, re.IGNORECASE):
+                    return (False,
+                        "VALIDATION ERROR: LIMIT clause before UNION requires parentheses around each SELECT statement.\n"
+                        "PostgreSQL syntax error: When using LIMIT with UNION, each SELECT must be wrapped in parentheses.\n"
+                        "Fix: Change from 'SELECT ... LIMIT 100 UNION ALL SELECT ... LIMIT 100'\n"
+                        "     to '(SELECT ... LIMIT 100) UNION ALL (SELECT ... LIMIT 100)'\n"
+                        "Each SELECT statement should be enclosed in parentheses when using LIMIT with UNION.")
+        
+        # Check 2: Detect SELECT DISTINCT + ORDER BY mismatch
         if "SELECT DISTINCT" in sql_upper and "ORDER BY" in sql_upper:
             # Extract SELECT columns
             select_match = re.search(r'SELECT\s+DISTINCT\s+(.*?)\s+FROM', sql_query, re.IGNORECASE | re.DOTALL)
@@ -512,7 +531,7 @@ def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
                                 f"Column '{order_col}' is in ORDER BY but not in SELECT.\n"
                                 f"Fix: Add '{order_col}' to your SELECT clause or remove DISTINCT.")
         
-        # Check 2: Detect numeric casts on formatted text columns
+        # Check 3: Detect numeric casts on formatted text columns
         cast_pattern = r'CAST\s*\(\s*(?:REPLACE\s*\([^)]+\)\s*,\s*)?["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s+AS\s+(DECIMAL|NUMERIC|INTEGER|INT|BIGINT|FLOAT|REAL)\s*\)'
         cast_matches = re.findall(cast_pattern, sql_query, re.IGNORECASE)
         
@@ -567,7 +586,7 @@ def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
                                     f"  CAST(REPLACE(\"{col_name}\", ',', '') AS {target_type.upper()})\n"
                                     f"Or for currency: CAST(REPLACE(REPLACE(\"{col_name}\", '$', ''), ',', '') AS {target_type.upper()})")
         
-        # Check 3: Verify all referenced columns exist in their tables
+        # Check 4: Verify all referenced columns exist in their tables
         # Extract table references from FROM and JOIN clauses
         table_refs = re.findall(r'(?:FROM|JOIN)\s+"([^"]+)"', sql_query, re.IGNORECASE)
         
@@ -592,7 +611,7 @@ def validate_sql_against_schema(sql_query: str) -> tuple[bool, Optional[str]]:
                         f"Available columns: {available_cols}\n"
                         f"Fix: Check the schema with get_database_schema_tool and use the correct column name.")
         
-        # Check 3: For single-table queries, validate all column references
+        # Check 5: For single-table queries, validate all column references
         if len(table_refs) == 1:
             table_name = table_refs[0]
             # Extract all quoted column references
