@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     enable_marketing_fixture_shortcuts: bool = True
     enable_auto_retry_failed_imports: bool = True
 
+    # Query settings (for natural language query agent)
+    query_row_limit: int = 2500           # Max rows for agent queries
+    query_timeout_seconds: int = 60       # Agent query timeout in seconds
+
+    # Export settings (for large file downloads via /api/export/query)
+    export_row_limit: int = 100000        # Max rows for export endpoint
+    export_timeout_seconds: int = 120     # Export query timeout in seconds
+
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 

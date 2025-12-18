@@ -680,13 +680,14 @@ def execute_sql_query(sql_query: str) -> str:
         start_time = time.time()
         with engine.connect() as conn:
             # Set timeout and limit results
-            conn.execute(text("SET statement_timeout = '30000'"))  # 30 second timeout
+            timeout_ms = settings.query_timeout_seconds * 1000
+            conn.execute(text(f"SET statement_timeout = '{timeout_ms}'"))
 
             result = conn.execute(text(sql_query))
             columns = result.keys()
 
-            # Limit to 1000 rows for performance
-            rows = result.fetchmany(1000)
+            # Limit rows based on configuration
+            rows = result.fetchmany(settings.query_row_limit)
             execution_time = time.time() - start_time
 
             if not rows:
