@@ -84,7 +84,7 @@ def generate_sql_from_prompt(
         # Get database schema (with optional table filtering)
         if table_hints:
             # Filter to only specified tables
-            available_tables = get_table_names()
+            available_tables = [t["name"] for t in get_table_names()]
             filtered_tables = [t for t in table_hints if t in available_tables]
             if not filtered_tables:
                 return {
