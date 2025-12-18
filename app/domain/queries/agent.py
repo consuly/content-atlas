@@ -335,14 +335,13 @@ def _message_has_tool_use(msg: Any) -> bool:
     return bool(tool_calls)
 
 
-@before_model
-def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+def _trim_messages_impl(messages: List[Any]) -> tuple[int, Any] | None:
     """
-    Keep only recent messages while preserving tool_use/tool_result pairs.
-    Also implements token-based trimming to prevent context overflow.
-    """
-    messages = state["messages"]
+    Core implementation of message trimming logic.
+    Returns (cut_index, first_message) or None if no trimming needed.
     
+    This is separated from the middleware decorator to allow for unit testing.
+    """
     # Keep at least 6 messages to avoid trimming too aggressively if small
     if len(messages) <= 6:
         return None  # No changes needed
@@ -396,31 +395,89 @@ def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         # Use the more aggressive cut index
         cut_index = max(cut_index, new_cut_index)
 
-    # Walk forward from cut_index to find a safe boundary (don't split tool use/result)
+    # CRITICAL FIX: Walk forward from cut_index to find a safe boundary
+    # We must ensure we never orphan a tool_result without its tool_use
     while cut_index < len(messages):
         msg = messages[cut_index]
         
+        # If the message at cut_index is a tool_result, we need to find its tool_use
         if _message_has_tool_result(msg):
-            # Look backwards for the tool_use message
-            search_index = cut_index - 1
-            while search_index >= 1:
+            # Walk backwards to find the corresponding tool_use message
+            found_tool_use = False
+            for search_index in range(cut_index - 1, 0, -1):
                 if _message_has_tool_use(messages[search_index]):
-                    # Found the tool_use - cut before it
+                    # Found the tool_use - we must cut BEFORE it to keep the pair together
                     cut_index = search_index
+                    found_tool_use = True
                     break
-                search_index -= 1
             
-            if search_index < 1:
+            # If we couldn't find a tool_use (shouldn't happen), skip this message
+            if not found_tool_use:
                 cut_index += 1
                 continue
         
-        # This is a safe cut point
-        break
+        # If the message at cut_index is a tool_use, check if there's a tool_result after it
+        elif _message_has_tool_use(msg):
+            # Look forward to see if there's a corresponding tool_result
+            has_tool_result_after = False
+            for search_index in range(cut_index + 1, len(messages)):
+                if _message_has_tool_result(messages[search_index]):
+                    has_tool_result_after = True
+                    break
+                # Stop searching if we hit another tool_use or the end
+                if _message_has_tool_use(messages[search_index]):
+                    break
+            
+            # If there's a tool_result after this tool_use, both will be kept together
+            # (since we keep from cut_index onwards), so this is a safe cut point
+            if has_tool_result_after:
+                break
+            # If no tool_result follows, we can also cut here safely  
+            break
+        else:
+            # This message is neither tool_use nor tool_result, so it's a safe cut point
+            break
+        
+        # Move to the next potential cut point
+        cut_index += 1
+        
+        # Safety check: don't go past the messages
+        if cut_index >= len(messages) - 1:
+            break
     
     # Ensure we don't cut too much (keep at least 3 messages after first)
     if len(messages) - cut_index < 3:
         cut_index = max(1, len(messages) - 3)
+        
+        # ADDITIONAL SAFETY: After adjusting to keep at least 3 messages,
+        # verify we didn't create an orphaned tool_result
+        while cut_index < len(messages) - 3:
+            if _message_has_tool_result(messages[cut_index]):
+                # Find its tool_use and include it
+                for search_index in range(cut_index - 1, 0, -1):
+                    if _message_has_tool_use(messages[search_index]):
+                        cut_index = search_index
+                        break
+                break
+            else:
+                break
     
+    return (cut_index, first_msg)
+
+
+@before_model
+def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """
+    Keep only recent messages while preserving tool_use/tool_result pairs.
+    Also implements token-based trimming to prevent context overflow.
+    """
+    messages = state["messages"]
+    
+    result = _trim_messages_impl(messages)
+    if result is None:
+        return None
+    
+    cut_index, first_msg = result
     recent_messages = messages[cut_index:]
     new_messages = [first_msg] + recent_messages
     
