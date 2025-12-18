@@ -314,6 +314,21 @@ class QueryDatabaseResponse(BaseModel):
     error: Optional[str] = None
 
 
+class GenerateSQLRequest(BaseModel):
+    """Request to generate SQL from natural language prompt"""
+    prompt: str = Field(..., description="Natural language description of the desired query")
+    table_hints: Optional[List[str]] = Field(None, description="Optional list of table names to focus schema context on")
+
+
+class GenerateSQLResponse(BaseModel):
+    """Response from SQL generation"""
+    success: bool
+    sql_query: Optional[str] = Field(None, description="Generated SQL query")
+    tables_referenced: Optional[List[str]] = Field(None, description="List of tables used in the query")
+    explanation: Optional[str] = Field(None, description="Brief explanation of what the query does")
+    error: Optional[str] = Field(None, description="Error message if generation failed")
+
+
 class QueryConversationMessage(BaseModel):
     role: str
     content: str

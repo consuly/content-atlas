@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db, get_engine
 from app.api.schemas.shared import (
     QueryDatabaseRequest, QueryDatabaseResponse,
+    GenerateSQLRequest, GenerateSQLResponse,
     TablesListResponse, TableInfo, TableSchemaResponse, ColumnInfo,
     is_reserved_system_table,
 )
 from app.core.api_key_auth import ApiKey, get_api_key_from_header
 from app.domain.queries.agent import query_database_with_agent
+from app.domain.queries.sql_generator import generate_sql_from_prompt
 
 router = APIRouter(prefix="/api/v1", tags=["public-api"])
 
@@ -63,6 +65,78 @@ async def public_query_database_endpoint(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+@router.post(
+    "/generate-sql",
+    response_model=GenerateSQLResponse,
+    summary="Generate SQL from Natural Language",
+    description="Lightweight endpoint that converts natural language to SQL without executing it. Designed for the probe phase of large export workflows."
+)
+async def public_generate_sql_endpoint(
+    request: GenerateSQLRequest,
+    api_key: ApiKey = Depends(get_api_key_from_header),
+    db: Session = Depends(get_db)
+):
+    """
+    **Generate SQL from natural language prompt without execution.**
+    
+    This endpoint is optimized for speed and uses a single LLM call to convert
+    natural language descriptions into SQL queries. Unlike `/api/v1/query`, it
+    does NOT execute the query or maintain conversation history.
+    
+    **Use Cases:**
+    - Probe phase for large exports (convert NL → SQL, then use `/api/export/query`)
+    - SQL preview/validation before execution
+    - Batch SQL generation
+    
+    **Performance:**
+    - Single LLM call: 5-15 seconds (vs 60-120s for full agent)
+    - No database execution overhead
+    - No conversation state
+
+    **Authentication:**
+    Requires `X-API-Key` header.
+
+    **Request Body:**
+    ```json
+    {
+        "prompt": "Get top 10000 clients with email and company",
+        "table_hints": ["clients-list"]  // optional - narrows schema context
+    }
+    ```
+
+    **Response:**
+    ```json
+    {
+        "success": true,
+        "sql_query": "SELECT email, company_name FROM \"clients-list\" LIMIT 10000",
+        "tables_referenced": ["clients-list"],
+        "explanation": "Selecting email and company columns from clients table"
+    }
+    ```
+    
+    **Errors:**
+    - `400`: Invalid request or unsafe SQL generated
+    - `500`: LLM or system error
+    """
+    try:
+        # Generate SQL using the lightweight generator
+        result = generate_sql_from_prompt(
+            prompt=request.prompt,
+            table_hints=request.table_hints
+        )
+        
+        return GenerateSQLResponse(
+            success=result["success"],
+            sql_query=result.get("sql_query"),
+            tables_referenced=result.get("tables_referenced"),
+            explanation=result.get("explanation"),
+            error=result.get("error")
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SQL generation failed: {str(e)}")
 
 
 @router.get(
