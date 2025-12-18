@@ -46,7 +46,12 @@ def fake_storage_storage(monkeypatch):
     storage: Dict[str, bytes] = {}
 
     def fake_upload(file_content: bytes, file_name: str, folder: str = "uploads"):
-        path = f"{folder}/{file_name}"
+        # Ensure we don't double-prefix if folder is already in file_name or vice versa
+        if file_name.startswith(folder):
+            path = file_name
+        else:
+            path = f"{folder}/{file_name}"
+        print(f"FAKE UPLOAD: name={file_name}, folder={folder}, path={path}")
         storage[path] = bytes(file_content)
         return {
             "file_id": file_name,
@@ -56,6 +61,7 @@ def fake_storage_storage(monkeypatch):
         }
 
     def fake_download(file_path: str) -> bytes:
+        print(f"FAKE DOWNLOAD: path={file_path}, available={list(storage.keys())}")
         if file_path not in storage:
             from app.integrations.storage import StorageDownloadError
             raise StorageDownloadError(f"File not found: {file_path}")
@@ -70,6 +76,7 @@ def fake_storage_storage(monkeypatch):
     monkeypatch.setattr("app.integrations.storage.upload_file", fake_upload)
     monkeypatch.setattr("app.integrations.storage.download_file", fake_download)
     monkeypatch.setattr("app.integrations.storage_multipart.download_file", fake_download)
+    monkeypatch.setattr("app.api.routers.analysis.routes.upload_file_to_storage", fake_upload)
     monkeypatch.setattr("app.api.routers.analysis.routes._download_file_from_storage", fake_download)
     return storage
 
@@ -282,7 +289,7 @@ def _upsert_clients(store: Dict[str, Dict], records):
 
 @pytest.mark.not_b2
 def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, in_memory_state):
-    analysis_module = __import__("app.api.routers.analysis", fromlist=[""])
+    import app.api.routers.analysis.routes as analysis_module
 
     target_table = "clients_workbook"
     records_store: Dict[str, Dict] = {}
@@ -291,7 +298,7 @@ def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, 
         analysis_module, "_get_analyze_file_for_import", lambda: lambda **_kwargs: _fake_analyze_response(target_table)
     )
 
-    def fake_execute(file_content: bytes, file_name: str, all_records, llm_decision: dict):
+    def fake_execute(file_content: bytes, file_name: str, all_records, llm_decision: dict, **kwargs):
         df = pd.read_csv(io.BytesIO(file_content))
         columns = {col.lower(): col for col in df.columns}
         df.rename(
