@@ -58,17 +58,22 @@ A Python FastAPI application that accepts documents (CSV, Excel, JSON, XML) with
 ## Documentation
 
 ### Getting Started
-- 📖 [Setup Guide](docs/SETUP.md) - Detailed installation and configuration
+- 📖 [Server Deployment Guide](docs/SERVER_SETUP.md) - Step-by-step guide for new servers
+- 🛠️ [Local Setup Guide](docs/SETUP.md) - Development installation and configuration
 - 🏗️ [Architecture Overview](docs/ARCHITECTURE.md) - System design and components
 - 🧪 [Testing Guide](docs/TESTING.md) - Testing strategies and examples
 
 ### API Documentation
 - 🔌 [API Reference](docs/API_REFERENCE.md) - Complete endpoint documentation
+- 🛠️ [Integration Guide](docs/INTEGRATION_GUIDE.md) - SDKs and code examples
+- 📊 [Data Models & Schema](docs/DATA_MODELS.md) - Formats, types, and validation
 - 🔄 [Duplicate Detection](docs/DUPLICATE_DETECTION.md) - Duplicate detection system
 - ⚡ [Parallel Processing](docs/PARALLEL_PROCESSING.md) - Large file processing
 
 ### Operations
 - 🚀 [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
+- ⚙️ [Operational Guide](docs/OPERATIONAL_GUIDE.md) - Large files, retries, and best practices
+- 🔧 [Troubleshooting](docs/TROUBLESHOOTING.md) - Error codes and common issues
 - 💻 [Console Interface](docs/CONSOLE.md) - Natural language query console
 - 🔄 [Database Reset](docs/DATABASE_RESET.md) - Reset database for testing
 

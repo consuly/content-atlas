@@ -21,10 +21,11 @@ This guide covers deploying the Data Mapper API in production environments using
 
 ### Deployment Options
 
-1. **Docker Compose** (Recommended): Complete stack with database
-2. **Docker Container**: API only, external database
-3. **Kubernetes**: Scalable container orchestration
-4. **Cloud Platforms**: AWS, GCP, Azure deployment
+1. **New Server Setup**: Use the [Server Deployment Guide](SERVER_SETUP.md) for a step-by-step tutorial.
+2. **Docker Compose** (Recommended): Complete stack with database
+3. **Docker Container**: API only, external database
+4. **Kubernetes**: Scalable container orchestration
+5. **Cloud Platforms**: AWS, GCP, Azure deployment
 
 ---
 
