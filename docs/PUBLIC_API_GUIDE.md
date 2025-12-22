@@ -108,6 +108,28 @@ Translates a natural language prompt into SQL, executes it, and returns both a c
 - If the user prompt clearly asks for specific data (keywords such as “list”, “count”, “top”), the agent forces at least one `SELECT` query; otherwise it may provide strategic guidance without executing SQL.
 - Follow-up prompts like “limit to California” or “what was the previous total?” should reuse the same `thread_id` to keep the context.
 
+### `POST /api/v1/generate-sql`
+Lightweight endpoint that converts natural language to SQL without executing it. Designed for the probe phase of large export workflows or validation.
+
+**Request body**
+```json
+{
+  "prompt": "Get top 10000 clients with email and company",
+  "table_hints": ["clients-list"]
+}
+```
+
+**Response body**
+```json
+{
+  "success": true,
+  "sql_query": "SELECT email, company_name FROM \"clients-list\" LIMIT 10000",
+  "tables_referenced": ["clients-list"],
+  "explanation": "Selecting email and company columns from clients table",
+  "error": null
+}
+```
+
 ---
 
 ## Handling Large Result Sets (10 000 Row Requirement)

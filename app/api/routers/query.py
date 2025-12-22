@@ -37,7 +37,7 @@ def _is_missing_query_table_error(exc: Exception) -> bool:
     return "query_threads" in message and ("does not exist" in message or "UndefinedTable" in message)
 
 
-@router.post("/query-database", response_model=QueryDatabaseResponse)
+@router.post("/query-database", response_model=QueryDatabaseResponse, include_in_schema=False)
 @router_v1.post("/query-database", response_model=QueryDatabaseResponse)
 async def query_database_endpoint(request: QueryDatabaseRequest):
     """
