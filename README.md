@@ -1,114 +1,97 @@
-# Data Mapper API
+# ContentAtlas by Consuly.ai
 
-A Python FastAPI application that accepts documents (CSV, Excel, JSON, XML) with mapping configurations and maps the data to a PostgreSQL database according to the specified schema.
+**Consolidate your business data from multiple sources into one powerful, queryable database.**
 
-## Features
+ContentAtlas is a data consolidation platform designed for SMBs to import data from CSV, Excel, JSON, and XML files into PostgreSQL, then query it using natural language powered by AI.
 
-- 📁 **Multi-Format Support**: CSV, Excel, JSON, and XML file processing
-- 🗄️ **Dynamic Schema Creation**: Automatically creates database tables based on configuration
-- 🔄 **Flexible Data Mapping**: Configurable field mappings with transformation rules
-- 🚀 **High Performance**: Chunked processing with parallel duplicate checking for large files
-- ☁️ **Cloud Integration**: Direct integration with Backblaze B2 storage
-- 🔍 **Smart Duplicate Detection**: File-level and row-level duplicate checking
-- 💬 **Natural Language Queries**: AI-powered console for database queries
-- ⚡ **Async Processing**: Background task processing for long-running operations
-- 📊 **RESTful API**: Complete REST API with automatic documentation
+🌐 **Official Website:** [atlas.consuly.ai](https://atlas.consuly.ai)
 
-## Quick Start
+---
+
+## What is ContentAtlas?
+
+ContentAtlas solves the problem of scattered business data across multiple spreadsheets and systems. It helps you:
+
+- **Consolidate data** from various sources into a single PostgreSQL database
+- **Query naturally** using AI - ask questions in plain English, get exact answers
+- **Eliminate duplicates** with intelligent file and row-level duplicate detection
+- **Process at scale** with support for large files and cloud storage integration
+
+Built for small and medium businesses that need data insights without complex data engineering.
+
+---
+
+## ✨ Key Features
+
+- 📁 **Multi-Format Import** - CSV, Excel, JSON, and XML file support
+- 🤖 **AI-Powered Queries** - Ask questions in natural language, get precise SQL results
+- 🔍 **Smart Duplicate Detection** - Prevent duplicate imports at file and row levels
+- ☁️ **Cloud Storage** - Direct integration with Backblaze B2 storage
+- 🗄️ **Dynamic Schemas** - Automatically create database tables from your data
+- ⚡ **High Performance** - Chunked processing for files with 10,000+ records
+- 🔄 **Workflow Automation** - Process ZIP archives and automate imports
+- 🔐 **Secure API** - RESTful API with authentication and role-based access
+
+---
+
+## 🚀 Quick Start
 
 ### Prerequisites
 
-- Python 3.8+
-- PostgreSQL 12+
-- Docker & Docker Compose (optional)
+- Python 3.8 or higher
+- PostgreSQL 12 or higher
+- Docker (optional, for easier database setup)
 
 ### Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd content-atlas
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/thefoundry-app/content-atlas.git
+cd content-atlas
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Install dependencies
+pip install -r requirements.txt
 
-3. **Start PostgreSQL**
-   ```bash
-   docker-compose up -d db
-   ```
+# Start PostgreSQL (using Docker)
+docker-compose up -d db
 
-4. **Configure environment**
-   ```bash
-   # Create .env file
-   echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/datamapper" > .env
-   ```
+# Configure environment
+cp .env.example .env
+# Edit .env with your database connection details
 
-5. **Run the application**
-   ```bash
-   uvicorn app.main:app --reload
-   ```
+# Run the application
+uvicorn app.main:app --reload
+```
 
-6. **Access the API**
-   - API: http://localhost:8000
-   - Interactive Docs: http://localhost:8000/docs
+### Access Your Instance
 
-## Documentation
+- **API:** http://localhost:8000
+- **API Documentation:** http://localhost:8000/docs
+- **Frontend:** Follow setup instructions in [docs/FRONTEND_SETUP.md](docs/FRONTEND_SETUP.md)
 
-### Getting Started
-- 📖 [Server Deployment Guide](docs/SERVER_SETUP.md) - Step-by-step guide for new servers
-- 🛠️ [Local Setup Guide](docs/SETUP.md) - Development installation and configuration
+---
+
+## 📖 Documentation
+
+### Official Documentation
+- 📘 **[Documentation Home](https://atlas.consuly.ai/documentation/)** - Complete guide to ContentAtlas
+- 🚀 **[Getting Started](https://atlas.consuly.ai/documentation/getting-started/)** - Step-by-step setup and first import
+- 🔌 **[API Reference](https://atlas.consuly.ai/documentation/api/)** - Complete API endpoint documentation
+
+### Additional Resources
 - 🏗️ [Architecture Overview](docs/ARCHITECTURE.md) - System design and components
-- 🧪 [Testing Guide](docs/TESTING.md) - Testing strategies and examples
-
-### API Documentation
-- 🔌 [API Reference](docs/API_REFERENCE.md) - Complete endpoint documentation
-- 🛠️ [Integration Guide](docs/INTEGRATION_GUIDE.md) - SDKs and code examples
-- 📊 [Data Models & Schema](docs/DATA_MODELS.md) - Formats, types, and validation
-- 🔄 [Duplicate Detection](docs/DUPLICATE_DETECTION.md) - Duplicate detection system
-- ⚡ [Parallel Processing](docs/PARALLEL_PROCESSING.md) - Large file processing
-
-### Operations
-- 🚀 [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
-- ⚙️ [Operational Guide](docs/OPERATIONAL_GUIDE.md) - Large files, retries, and best practices
-- 🔧 [Troubleshooting](docs/TROUBLESHOOTING.md) - Error codes and common issues
+- 🧪 [Testing Guide](docs/TESTING.md) - Running tests and development practices
+- 🚀 [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment instructions
 - 💻 [Console Interface](docs/CONSOLE.md) - Natural language query console
-- 🔄 [Database Reset](docs/DATABASE_RESET.md) - Reset database for testing
+- 🔧 [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 
-## API Endpoints
+---
 
-### Data Import
-- `POST /map-data` - Upload and map file data
-- `POST /map-b2-data` - Import from Backblaze B2
-- `POST /map-b2-data-async` - Async processing for large files
+## 💡 Example Usage
 
-### Data Analysis
-- `POST /detect-b2-mapping` - Auto-detect schema from file
-- `POST /extract-b2-excel-csv` - Preview Excel file contents
-
-### Table Management
-- `GET /tables` - List all tables
-- `GET /tables/{table_name}` - Query table data
-- `GET /tables/{table_name}/schema` - Get table schema
-- `GET /tables/{table_name}/stats` - Get table statistics
-
-### Task Management
-- `GET /tasks/{task_id}` - Check async task status
-
-See [API Reference](docs/API_REFERENCE.md) for detailed documentation.
-
-### Archive Auto-Process (ZIP)
-- `POST /auto-process-archive` downloads the ZIP from B2 once, streams each supported entry (CSV/XLSX/XLS) from memory for analysis/import, and uploads each entry a single time for persistence.
-- Reprocessing a specific file later uses the stored B2 path for that entry (not the whole ZIP), so day-to-day runs avoid per-entry B2 downloads and stay under bandwidth caps.
-- Unsupported entries (non-CSV/Excel) are marked as skipped; processing results and any failures are recorded on the import job.
-- Entries are fingerprinted by structure (normalized headers/column count) so the first analyzed file seeds the LLM decision and matching siblings reuse that mapping and target table automatically—keeping grouped files together and avoiding duplicate analysis work while preserving archive order.
-
-## Usage Example
+### Import a CSV File
 
 ```bash
-# Upload a CSV file with mapping configuration
 curl -X POST "http://localhost:8000/map-data" \
   -F "file=@customers.csv" \
   -F 'mapping_json={
@@ -120,32 +103,64 @@ curl -X POST "http://localhost:8000/map-data" \
     },
     "mappings": {
       "id": "Customer ID",
-      "name": "Customer Name",
+      "name": "Full Name",
       "email": "Email Address"
     }
   }'
 ```
 
-## Console Interface
-
-Query your database using natural language:
+### Query with Natural Language
 
 ```bash
-# Start interactive console
+# Start the interactive console
 python -m app.console
 
-# Or run a single query
-python -m app.console "Show me all customers"
+# Ask questions in plain English
+> "Show me all customers from Texas"
+> "What's the total revenue by product category?"
+> "List contacts added in the last 30 days"
 ```
 
-See [Console Interface Guide](docs/CONSOLE.md) for more details.
+---
 
-## Docker Deployment
+## 🛠️ Development
 
-### Quick Start with Docker Compose
+### Running Tests
 
 ```bash
-# Start the complete stack
+# Run all tests
+pytest
+
+# Run with coverage report
+pytest --cov=app
+
+# Run specific test file
+pytest tests/test_api.py -v
+```
+
+### Environment Variables
+
+Create a `.env` file based on `.env.example`:
+
+```env
+# Required
+DATABASE_URL=postgresql://user:password@localhost:5432/datamapper
+
+# Optional - For B2 cloud storage integration
+STORAGE_ACCESS_KEY_ID=your_key_id
+STORAGE_SECRET_ACCESS_KEY=your_secret_key
+STORAGE_BUCKET_NAME=your_bucket_name
+STORAGE_ENDPOINT_URL=https://s3.us-west-000.backblazeb2.com
+STORAGE_PROVIDER=b2
+
+# Optional - For AI-powered natural language queries
+ANTHROPIC_API_KEY=your_anthropic_key
+```
+
+### Docker Deployment
+
+```bash
+# Start complete stack (API + Database)
 docker-compose up -d
 
 # View logs
@@ -155,145 +170,21 @@ docker-compose logs -f
 docker-compose down
 ```
 
-See [Deployment Guide](docs/DEPLOYMENT.md) for production deployment.
+---
 
-## Environment Variables
+## 🤝 Support & Community
 
-### Required
-- `DATABASE_URL` - PostgreSQL connection string
+- 🌐 **Website:** [atlas.consuly.ai](https://atlas.consuly.ai)
+- 📖 **Documentation:** [atlas.consuly.ai/documentation](https://atlas.consuly.ai/documentation/)
+- 🐛 **Report Issues:** [GitHub Issues](https://github.com/thefoundry-app/content-atlas/issues)
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/thefoundry-app/content-atlas/discussions)
 
-### Initial admin setup
-- The first account created through the `/register` page becomes the admin. Automatic bootstrap via `ADMIN_*` variables has been removed; create the initial admin interactively when the app first loads.
+---
 
-### Optional (for B2 integration)
-- `STORAGE_ACCESS_KEY_ID` - Storage access key ID (B2 Application Key ID, AWS Access Key, etc.)
-- `STORAGE_SECRET_ACCESS_KEY` - Storage secret access key (B2 Application Key, AWS Secret Key, etc.)
-- `STORAGE_BUCKET_NAME` - Storage bucket name
-- `STORAGE_ENDPOINT_URL` - Storage endpoint URL (required for B2, MinIO; optional for AWS S3)
-- `STORAGE_PROVIDER` - Storage provider type (e.g., "b2", "s3", "minio")
+## 📄 License
 
-### Optional (for console)
-- `ANTHROPIC_API_KEY` - Anthropic API key for natural language queries
+See [LICENSE](LICENSE) file for details.
 
-## Development
+---
 
-### Running Tests
-
-```bash
-# Run tests
-pytest
-
-# Run with coverage
-pytest --cov=app
-
-# Run specific tests
-pytest tests/test_api.py -v
-
-# Skip B2 analysis tests (e.g., when B2/LLM creds unavailable)
-pytest -m "not b2"
-
-# Start development server
-uvicorn app.main:app --reload
-```
-
-### Database Reset (Development Only)
-
-Reset the database to a clean state while preserving user accounts:
-
-```bash
-# Interactive mode with confirmation
-python reset_dev_db.py
-
-# Auto-confirm (for automation)
-python reset_dev_db.py --yes
-```
-
-This will:
-- Drop all user-created data tables
-- Clear tracking tables (file_imports, table_metadata, import_history, import_jobs, uploaded_files)
-- Delete all files from B2 storage
-- **Preserve** user accounts
-
-⚠️ **Production Safety**: The script automatically detects and blocks production environments.
-
-See [Database Reset Guide](docs/DATABASE_RESET.md) for detailed documentation.
-
-## Repository Structure
-
-Content Atlas uses a **monorepo for development** but automatically syncs to separate deployment repositories for independent scaling.
-
-### Development (This Repository)
-- **Unified development environment** with full codebase
-- **Automated sync** to deployment repositories via GitHub Actions
-- **Local development** with docker-compose
-
-### Deployment Repositories
-- **`content-atlas-api`**: FastAPI backend for serverless/container deployment
-- **`content-atlas-frontend`**: React frontend for static hosting (Vercel, Netlify)
-
-📖 **[Repository Separation Guide](docs/REPOSITORY_SEPARATION.md)** - Learn how the automated sync works
-
-## Project Structure
-
-```
-content-atlas/                    # Development monorepo
-├── app/                          # FastAPI backend
-│   ├── main.py                   # Application entry point
-│   ├── api/                      # REST API endpoints
-│   ├── core/                     # Core functionality
-│   ├── db/                       # Database models & session
-│   ├── domain/                   # Business logic
-│   └── utils/                    # Utilities
-├── frontend/                     # React frontend
-│   ├── src/                      # React application
-│   ├── public/                   # Static assets
-│   └── package.json              # Dependencies
-├── docs/                         # Documentation
-├── tests/                        # Test suite
-├── docker-compose.yml            # Local development
-├── .github/workflows/            # Automated sync workflows
-└── setup-separate-repos.sh       # Repository setup script
-```
-
-## Key Features Explained
-
-### Duplicate Detection
-Intelligent duplicate detection at both file and row levels. Configure uniqueness columns, enable/disable checks, and customize error messages. See [Duplicate Detection](docs/DUPLICATE_DETECTION.md).
-
-### Large File Processing
-Automatic chunked processing for files >10,000 records with parallel duplicate checking. Handles files up to 100MB+ efficiently. See [Parallel Processing](docs/PARALLEL_PROCESSING.md).
-
-### Dynamic Schema Creation
-Tables are created automatically based on your mapping configuration. Supports multiple data types including INTEGER, VARCHAR, DECIMAL, and TIMESTAMP.
-
-### Cloud Storage Integration
-Direct integration with Backblaze B2 for importing files from cloud storage without manual downloads.
-
-## Performance
-
-- **Small files** (<1,000 records): <2 seconds
-- **Medium files** (1,000-10,000 records): 2-10 seconds
-- **Large files** (10,000-50,000 records): 10-30 seconds
-- **Very large files** (>50,000 records): 30+ seconds with async processing
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines and submit pull requests.
-
-## License
-
-[Your License Here]
-
-## Support
-
-For issues, questions, or contributions:
-- 📖 Check the [documentation](docs/)
-- 🐛 Report bugs via GitHub issues
-- 💬 Ask questions in discussions
-
-## Related Projects
-
-- [FastAPI](https://fastapi.tiangolo.com/) - Web framework
-- [Pandas](https://pandas.pydata.org/) - Data processing
-- [PostgreSQL](https://www.postgresql.org/) - Database
-- [Backblaze B2](https://www.backblaze.com/b2/) - Cloud storage
+**Built with ❤️ by [Consuly.ai](https://consuly.ai)**
