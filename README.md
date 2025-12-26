@@ -67,7 +67,137 @@ uvicorn app.main:app --reload
 
 - **API:** http://localhost:8000
 - **API Documentation:** http://localhost:8000/docs
-- **Frontend:** Follow setup instructions in [docs/FRONTEND_SETUP.md](docs/FRONTEND_SETUP.md)
+- **Frontend:** http://localhost:5173 (see [Frontend Setup](#-frontend-setup) below)
+
+---
+
+## 🖥️ Frontend Setup
+
+The ContentAtlas frontend provides a web dashboard for data import, table browsing, and natural language queries.
+
+### Quick Start
+
+```bash
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Configure API connection
+cp .env.example .env
+# Edit .env and set: VITE_API_URL=http://localhost:8000
+
+# Start development server
+npm run dev
+```
+
+The frontend will be available at **http://localhost:5173**
+
+### Connecting Frontend to Backend
+
+The frontend communicates with the backend API via the `VITE_API_URL` environment variable:
+
+**Development (.env):**
+```env
+VITE_API_URL=http://localhost:8000
+```
+
+**Production:**
+- For static builds: Set `VITE_API_URL` before building
+- For Docker: Set `API_URL` environment variable (runtime configuration)
+
+The backend must be running and accessible from the frontend. CORS is already configured in the FastAPI backend to allow frontend connections.
+
+### Production Deployment
+
+#### Option 1: Static Hosting (Vercel, Netlify)
+
+```bash
+cd frontend
+npm run build
+# Deploy the dist/ folder to your hosting provider
+```
+
+Set environment variable on your hosting platform:
+- `VITE_API_URL=https://your-api-domain.com`
+
+#### Option 2: Docker Container
+
+The frontend includes a production Dockerfile:
+
+```bash
+cd frontend
+docker build -t content-atlas-frontend .
+docker run -p 3000:3000 -e API_URL=https://your-api-domain.com content-atlas-frontend
+```
+
+#### Option 3: Railway Deployment
+
+Deploy both backend and frontend from the same monorepo:
+
+1. **Backend service**: Uses root `Dockerfile`
+2. **Frontend service**: Set `RAILWAY_DOCKERFILE_PATH=frontend/Dockerfile`
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#railway-deployment) for detailed Railway setup.
+
+#### Option 4: Complete Stack with Docker Compose
+
+Add frontend to `docker-compose.yml`:
+
+```yaml
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: datamapper
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/datamapper
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+```
+
+Run the complete stack:
+```bash
+docker-compose up -d
+```
+
+Access at:
+- **Frontend**: http://localhost:3000
+- **API**: http://localhost:8000
+
+### First-Time Setup
+
+Create an admin user to access the dashboard:
+
+```bash
+python create_admin_user.py
+```
+
+Then login at http://localhost:5173/login with your credentials.
+
+For detailed frontend documentation, see [docs/FRONTEND_SETUP.md](docs/FRONTEND_SETUP.md).
 
 ---
 

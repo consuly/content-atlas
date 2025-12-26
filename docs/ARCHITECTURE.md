@@ -1,6 +1,6 @@
 # Architecture Overview
 
-System architecture and design documentation for the Data Mapper API.
+System architecture and design documentation for the ContentAtlas API.
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@ System architecture and design documentation for the Data Mapper API.
 
 ## System Overview
 
-The Data Mapper API is a Python-based application that provides a flexible system for importing data from various file formats (CSV, Excel, JSON, XML) into a PostgreSQL database with configurable schema mapping and transformation rules.
+The ContentAtlas API is a Python-based application that provides a flexible system for importing data from various file formats (CSV, Excel, JSON, XML) into a PostgreSQL database with configurable schema mapping and transformation rules.
 
 ### Key Capabilities
 
@@ -125,7 +125,7 @@ def process(file_content: bytes) -> List[Dict[str, Any]]:
     pass
 ```
 
-### 3. Data Mapper
+### 3. ContentAtlas
 
 **Location**: `app/mapper.py`
 

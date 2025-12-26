@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Guide for deploying the Data Mapper API in production environments.
+Guide for deploying the ContentAtlas API in production environments.
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@ Guide for deploying the Data Mapper API in production environments.
 
 ## Overview
 
-This guide covers deploying the Data Mapper API in production environments using Docker and Docker Compose.
+This guide covers deploying the ContentAtlas API in production environments using Docker and Docker Compose.
 
 ### Deployment Options
 

@@ -1,1 +1,1 @@
-# Data Mapper API
+# Content Atlas by Consuly.ai

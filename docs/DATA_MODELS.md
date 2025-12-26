@@ -1,6 +1,6 @@
 # Data Models & Schema Guide
 
-This guide details the supported file formats, data types, validation rules, and transformation capabilities of the Data Mapper. Use this reference to prepare your data files for successful import.
+This guide details the supported file formats, data types, validation rules, and transformation capabilities of the ContentAtlas. Use this reference to prepare your data files for successful import.
 
 ## Table of Contents
 - [Supported File Formats](#supported-file-formats)

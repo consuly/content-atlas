@@ -20,7 +20,7 @@ def test_root():
     """Test root endpoint."""
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json() == {"message": "Data Mapper API", "version": "1.0.0"}
+    assert response.json() == {"message": "ContentAtlas API", "version": "0.9.0"}
 
 
 def test_api_endpoints_exist():

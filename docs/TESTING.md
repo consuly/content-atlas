@@ -1,6 +1,6 @@
 # Testing Guide
 
-Comprehensive guide for testing the Data Mapper API application.
+Comprehensive guide for testing the ContentAtlas API application.
 
 ## Table of Contents
 

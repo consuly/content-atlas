@@ -16,7 +16,7 @@ Interactive console for running natural language database queries.
 
 ## Overview
 
-The Data Mapper API includes an interactive console that allows you to query your database using natural language. The console uses AI to translate your questions into SQL queries and displays the results in a formatted, easy-to-read manner.
+The ContentAtlas API includes an interactive console that allows you to query your database using natural language. The console uses AI to translate your questions into SQL queries and displays the results in a formatted, easy-to-read manner.
 
 ### Key Benefits
 
@@ -84,7 +84,7 @@ You'll see a welcome screen:
 
 ```
 ╔══════════════════════════════════════════════════════════╗
-║          Data Mapper Query Console                       ║
+║          ContentAtlas Query Console                       ║
 ║                                                          ║
 ║  Ask questions about your data in natural language      ║
 ║  Type 'help' for commands, 'exit' to quit              ║

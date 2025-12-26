@@ -163,8 +163,8 @@ app.include_router(export.router)
 async def root():
     """Root endpoint returning API information."""
     return {
-        "message": "Data Mapper API",
-        "version": "1.0.0"
+        "message": "Content Atlas by Consuly.ai",
+        "version": "0.9.0"
     }
 
 

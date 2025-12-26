@@ -1,6 +1,6 @@
 # Setup Guide
 
-Complete guide for setting up the Data Mapper API application.
+Complete guide for setting up the ContentAtlas API application.
 
 ## Table of Contents
 

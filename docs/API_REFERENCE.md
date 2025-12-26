@@ -1,6 +1,6 @@
 # API Reference
 
-Complete reference for all Data Mapper API endpoints.
+Complete reference for all ContentAtlas API endpoints.
 
 ## Table of Contents
 
