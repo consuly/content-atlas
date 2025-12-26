@@ -413,12 +413,14 @@ After successful setup:
 
 1. **Explore the API**: Visit http://localhost:8000/docs
 2. **Read the API Reference**: See [API_REFERENCE.md](API_REFERENCE.md)
-3. **Test with sample data**: See [TESTING.md](TESTING.md)
-4. **Configure duplicate detection**: See [DUPLICATE_DETECTION.md](DUPLICATE_DETECTION.md)
-5. **Learn about console interface**: See [CONSOLE.md](CONSOLE.md)
+3. **Set up the Frontend**: See [FRONTEND_SETUP.md](FRONTEND_SETUP.md)
+4. **Test with sample data**: See [TESTING.md](TESTING.md)
+5. **Configure duplicate detection**: See [DUPLICATE_DETECTION.md](DUPLICATE_DETECTION.md)
+6. **Learn about console interface**: See [CONSOLE.md](CONSOLE.md)
 
 ## Related Documentation
 
+- [Frontend Setup Guide](FRONTEND_SETUP.md) - Frontend installation and development
 - [API Reference](API_REFERENCE.md) - Complete API endpoint documentation
 - [Testing Guide](TESTING.md) - Testing strategies and examples
 - [Deployment Guide](DEPLOYMENT.md) - Production deployment instructions

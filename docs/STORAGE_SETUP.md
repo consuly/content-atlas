@@ -181,30 +181,99 @@ For direct browser-to-storage uploads, you need to configure CORS on your bucket
 
 ### Backblaze B2 CORS
 
-1. Go to your bucket settings
-2. Add CORS rules:
-   ```json
-   [
-     {
-       "corsRuleName": "content-atlas-uploads",
-       "allowedOrigins": [
-         "http://localhost:5173",
-         "http://localhost:3000",
-         "https://your-production-domain.com"
-       ],
-       "allowedOperations": [
-         "s3_put"
-       ],
-       "allowedHeaders": [
-         "*"
-       ],
-       "exposeHeaders": [
-         "ETag"
-       ],
-       "maxAgeSeconds": 3600
-     }
-   ]
-   ```
+**CRITICAL**: The B2 web console's basic CORS settings are **not sufficient** for direct browser uploads using presigned URLs. You must configure custom CORS rules using the B2 CLI.
+
+#### Why Custom CORS Rules Are Required
+
+When browsers upload files directly to B2 using presigned URLs, they send an OPTIONS preflight request before the actual PUT request. The B2 web console's simple CORS settings don't properly configure:
+- The OPTIONS method for preflight requests
+- Required headers like `Content-Type` and authorization headers
+- Exposing the `ETag` header (needed for upload confirmation)
+
+#### Install B2 CLI
+
+```bash
+pip install b2
+```
+
+#### Authorize B2 CLI
+
+Use the Application Key credentials:
+
+```bash
+b2 authorize-account <your_application_key_id> <your_application_key>
+```
+
+#### Create CORS Rules File
+
+Create a file named `cors_rules.json` with the following content:
+
+**For Production:**
+```json
+[
+  {
+    "corsRuleName": "allowDirectUpload",
+    "allowedOrigins": [
+      "https://yourdomain.com",
+      "https://www.yourdomain.com"
+    ],
+    "allowedOperations": [
+      "s3_put",
+      "s3_get",
+      "s3_head"
+    ],
+    "allowedHeaders": ["*"],
+    "exposeHeaders": ["ETag", "x-amz-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+**For Development (localhost):**
+```json
+[
+  {
+    "corsRuleName": "allowDirectUpload",
+    "allowedOrigins": [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "http://localhost:8000"
+    ],
+    "allowedOperations": [
+      "s3_put",
+      "s3_get",
+      "s3_head"
+    ],
+    "allowedHeaders": ["*"],
+    "exposeHeaders": ["ETag", "x-amz-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+#### Apply CORS Rules
+
+Apply the CORS rules to your bucket:
+
+```bash
+b2 bucket update --cors-rules "$(cat cors_rules.json)" <your-bucket-name> allPrivate
+```
+
+**Windows PowerShell:**
+```powershell
+$corsRules = Get-Content cors_rules.json -Raw
+b2 bucket update --cors-rules $corsRules <your-bucket-name> allPrivate
+```
+
+#### Verify CORS Configuration
+
+Check that CORS rules were applied correctly:
+
+```bash
+b2 bucket get <your-bucket-name>
+```
+
+Look for the `corsRules` section in the output.
 
 ### AWS S3 CORS
 

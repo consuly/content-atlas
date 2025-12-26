@@ -214,6 +214,7 @@ For detailed frontend documentation, see [docs/FRONTEND_SETUP.md](docs/FRONTEND_
 - 🚀 [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment instructions
 - 💻 [Console Interface](docs/CONSOLE.md) - Natural language query console
 - 🔧 [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
+- 📈 [Scalability and Performance](docs/SCALABILITY_AND_PERFORMANCE.md) - Handling large datasets
 
 ---
 
@@ -308,11 +309,13 @@ docker-compose down
 - 📖 **Documentation:** [atlas.consuly.ai/documentation](https://atlas.consuly.ai/documentation/)
 - 🐛 **Report Issues:** [GitHub Issues](https://github.com/thefoundry-app/content-atlas/issues)
 - 💬 **Discussions:** [GitHub Discussions](https://github.com/thefoundry-app/content-atlas/discussions)
+- 🤝 **Contributing:** [Contribution Guide](CONTRIBUTING.md)
 
 ---
 
 ## 📄 License
 
+This project is licensed under the Business Source License 1.1 (BSL 1.1).
 See [LICENSE](LICENSE) file for details.
 
 ---

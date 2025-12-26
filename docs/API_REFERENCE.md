@@ -11,6 +11,12 @@ Complete reference for all ContentAtlas API endpoints.
 - [Data Analysis Endpoints](#data-analysis-endpoints)
   - [POST /extract-b2-excel-csv](#post-extract-b2-excel-csv)
   - [POST /detect-b2-mapping](#post-detect-b2-mapping)
+- [Natural Language Query Endpoints](#natural-language-query-endpoints)
+  - [POST /query-database](#post-query-database)
+- [Export Endpoints](#export-endpoints)
+  - [POST /api/export/query](#post-apiexportquery)
+- [SQL Generation Endpoints](#sql-generation-endpoints)
+  - [POST /api/v1/generate-sql](#post-apiv1generate-sql)
 - [Table Management Endpoints](#table-management-endpoints)
   - [GET /tables](#get-tables)
   - [GET /tables/{table_name}](#get-tablestable_name)
@@ -116,7 +122,7 @@ Download a file from Backblaze B2 and map data to the database.
 
 **Notes:**
 - Files larger than 50MB are automatically processed using chunked processing
-- See [Parallel Processing](PARALLEL_PROCESSING.md) for details on large file handling
+- See [Scalability and Performance](SCALABILITY_AND_PERFORMANCE.md) for details on large file handling
 
 ---
 
@@ -308,136 +314,71 @@ Execute natural language queries against the database using AI-powered SQL gener
   "error": null
 }
 ```
-`chart_suggestion` is returned when the prompt clearly asks for a visual (or the data is a clean time series). When no chart is appropriate, it still includes `should_display: false` with a rationale so the frontend can explain why a graph was skipped.
 
-**Conversation Memory:**
+---
 
-The endpoint supports conversation memory through the `thread_id` parameter, allowing for:
+## Export Endpoints
 
-**Follow-up Questions:**
+### POST /api/export/query
+
+The Export Endpoint allows direct SQL execution for exporting large datasets as CSV files, bypassing the LLM agent for maximum performance and higher row limits.
+
+**Request Body:**
 ```json
-// First query
 {
-  "prompt": "Show me all customers",
-  "thread_id": "session-abc"
-}
-
-// Follow-up query (remembers previous context)
-{
-  "prompt": "Now filter for California only",
-  "thread_id": "session-abc"
-}
-
-// Another follow-up
-{
-  "prompt": "Sort them by name",
-  "thread_id": "session-abc"
+  "sql_query": "SELECT * FROM customers LIMIT 50000",
+  "filename": "customers_export.csv"
 }
 ```
 
-**References to Past Results:**
-```json
-// First query
-{
-  "prompt": "What's the total revenue for Q1?",
-  "thread_id": "session-xyz"
-}
+**Parameters:**
+- `sql_query` (required): SQL SELECT query to execute
+- `filename` (optional): Name of the downloaded CSV file (defaults to "export.csv")
 
-// Follow-up comparing to previous result
-{
-  "prompt": "How does that compare to Q2?",
-  "thread_id": "session-xyz"
-}
-```
+**Response:**
+Returns a streaming CSV file download.
 
-**Context-Aware Queries:**
-```json
-// First query
-{
-  "prompt": "Show me all products",
-  "thread_id": "session-123"
-}
-
-// Follow-up using context from previous query
-{
-  "prompt": "Which of those have low stock?",
-  "thread_id": "session-123"
-}
-```
-
-**Memory Management:**
-- Each unique `thread_id` maintains its own conversation history
-- Message history is automatically trimmed to keep the last 5-6 conversation turns
-- Memory is stored in-memory (lost on server restart)
-- If `thread_id` is not provided, each query starts fresh without context
-
-**Supported Query Types:**
-- Simple queries: "Show me all customers"
-- Filtered queries: "Find products with price greater than 100"
-- Aggregations: "What's the average order value?"
-- Complex queries: "Show top 5 products by revenue"
-- JOINs: "List customers with their recent orders"
+**Limits:**
+- Row Limit: 100,000 rows (configurable via `EXPORT_ROW_LIMIT`)
+- Timeout: 120 seconds (configurable via `EXPORT_TIMEOUT_SECONDS`)
 
 **Security:**
-- Only SELECT queries are allowed
-- No INSERT, UPDATE, DELETE, or DDL operations
-- Query timeout: 30 seconds
-- Result limit: 1000 rows (configurable via `max_rows`)
+- Only SELECT queries allowed
+- No system table access
+- SQL injection prevention
 
-**Error Response:**
+---
+
+## SQL Generation Endpoints
+
+### POST /api/v1/generate-sql
+
+Provides a fast, lightweight way to convert natural language prompts into SQL queries **without executing them**. Optimized for the probe phase of large export workflows.
+
+**Request Body:**
 ```json
 {
-  "success": false,
-  "response": "An error occurred while processing your query",
-  "executed_sql": null,
-  "data_csv": null,
-  "execution_time_seconds": null,
-  "rows_returned": null,
-  "error": "Table 'nonexistent_table' does not exist"
+  "prompt": "Get top 10000 clients with email, name and company",
+  "table_hints": ["clients-list"]
 }
 ```
 
-**Use Cases:**
-- Build conversational data exploration interfaces
-- Create chatbot-style database query tools
-- Enable non-technical users to query databases
-- Rapid data analysis and exploration
-- Multi-turn analytical conversations
+**Parameters:**
+- `prompt` (required): Natural language description of the query
+- `table_hints` (optional): List of table names to focus on to speed up generation.
 
-**Example Conversation Flow:**
+**Response:**
 ```json
-// Query 1
-POST /query-database
 {
-  "prompt": "Show me all products",
-  "thread_id": "analytics-session-1"
+  "success": true,
+  "sql_query": "SELECT \"email\", \"contact_full_name\", \"company_name\" FROM \"clients-list\" LIMIT 10000",
+  "tables_referenced": ["clients-list"],
+  "explanation": "Selecting email and company columns from clients table with 10000 row limit"
 }
-// Returns: List of all products
-
-// Query 2 (builds on Query 1)
-POST /query-database
-{
-  "prompt": "Which of those cost more than $100?",
-  "thread_id": "analytics-session-1"
-}
-// Returns: Filtered list of expensive products
-
-// Query 3 (builds on Query 2)
-POST /query-database
-{
-  "prompt": "How many are there?",
-  "thread_id": "analytics-session-1"
-}
-// Returns: Count of expensive products
-
-// Query 4 (builds on entire conversation)
-POST /query-database
-{
-  "prompt": "What's the average price of those?",
-  "thread_id": "analytics-session-1"
-}
-// Returns: Average price of expensive products
 ```
+
+**Use Case:**
+Use this endpoint to generate SQL, then pass the SQL to `/api/export/query` for large data exports.
 
 ---
 
@@ -464,11 +405,6 @@ List all dynamically created tables in the database.
 }
 ```
 
-**Use Cases:**
-- Display available tables in a frontend UI
-- Monitor database contents
-- Verify successful data imports
-
 ---
 
 ### GET /tables/{table_name}
@@ -479,30 +415,19 @@ Query data from a specific table with pagination.
 - `limit`: Number of records to return (default: 100, max: 1000)
 - `offset`: Number of records to skip (default: 0)
 
-**Example Request:**
-```
-GET /tables/customers?limit=50&offset=100
-```
-
 **Response:**
 ```json
 {
   "success": true,
   "table_name": "customers",
   "data": [
-    {"id": 1, "name": "John Doe", "email": "john@example.com"},
-    {"id": 2, "name": "Jane Smith", "email": "jane@example.com"}
+    {"id": 1, "name": "John Doe", "email": "john@example.com"}
   ],
   "total_rows": 1500,
   "limit": 50,
   "offset": 100
 }
 ```
-
-**Use Cases:**
-- Display table data in a frontend grid/table
-- Export data for analysis
-- Verify data import results
 
 ---
 
@@ -517,16 +442,10 @@ Get the column schema and metadata for a table.
   "table_name": "customers",
   "columns": [
     {"name": "id", "type": "integer", "nullable": false},
-    {"name": "name", "type": "character varying", "nullable": true},
-    {"name": "email", "type": "character varying", "nullable": true}
+    {"name": "name", "type": "character varying", "nullable": true}
   ]
 }
 ```
-
-**Use Cases:**
-- Display table structure in a frontend UI
-- Validate data types before import
-- Generate documentation
 
 ---
 
@@ -543,16 +462,10 @@ Get basic statistics for a table.
   "columns_count": 3,
   "data_types": {
     "name": "character varying",
-    "email": "character varying",
     "created_at": "timestamp without time zone"
   }
 }
 ```
-
-**Use Cases:**
-- Display table overview in a dashboard
-- Monitor data growth
-- Validate import completeness
 
 ---
 
@@ -562,7 +475,7 @@ Get basic statistics for a table.
 
 Check the status of an async processing task.
 
-**Response (In Progress):**
+**Response:**
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -573,43 +486,11 @@ Check the status of an async processing task.
 }
 ```
 
-**Response (Completed):**
-```json
-{
-  "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "completed",
-  "progress": 100,
-  "message": "Processing completed successfully",
-  "result": {
-    "success": true,
-    "message": "B2 data mapped and inserted successfully",
-    "records_processed": 50000,
-    "table_name": "large_dataset"
-  }
-}
-```
-
-**Response (Failed):**
-```json
-{
-  "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "failed",
-  "progress": 45,
-  "message": "Error processing file: Invalid data format",
-  "result": null
-}
-```
-
 **Status Values:**
 - `pending`: Task is queued but not yet started
 - `processing`: Task is currently being processed
 - `completed`: Task completed successfully
 - `failed`: Task failed with an error
-
-**Use Cases:**
-- Poll for task completion in a frontend UI
-- Display progress bars for long-running imports
-- Handle errors gracefully
 
 ---
 
@@ -623,7 +504,7 @@ Check the status of an async processing task.
 
 ## Related Documentation
 
-- [Duplicate Detection](DUPLICATE_DETECTION.md) - Understanding duplicate detection and configuration
-- [Parallel Processing](PARALLEL_PROCESSING.md) - How large files are processed efficiently
-- [Setup Guide](SETUP.md) - Environment configuration and setup
+- [Duplicate Detection](DUPLICATE_DETECTION.md) - Understanding duplicate detection
+- [Scalability and Performance](SCALABILITY_AND_PERFORMANCE.md) - Large file processing
+- [Setup Guide](SETUP.md) - Environment configuration
 - [Testing Guide](TESTING.md) - Testing API endpoints
