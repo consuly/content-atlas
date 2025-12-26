@@ -90,7 +90,7 @@ B2 file deletion happens **after** successful database reset. If the database re
 DATABASE RESET UTILITY - DEVELOPMENT ONLY
 ================================================================================
 
-Database: localhost:5432/data_mapper
+Database: localhost:5432/content_atlas
 Environment: DEVELOPMENT
 
 ⚠️  WARNING: This will reset the following:

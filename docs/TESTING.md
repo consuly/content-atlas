@@ -73,12 +73,6 @@ pip install pytest pytest-asyncio httpx
 pytest
 ```
 
-### Skip B2 Analysis Tests
-
-```bash
-pytest -m "not b2"
-```
-
 ### Run Specific Test Files
 
 ```bash

@@ -20,7 +20,6 @@ from tests.utils.system_tables import ensure_system_tables_ready
 client = TestClient(app)
 
 
-@pytest.mark.not_b2
 def test_headerless_file_merge_with_duplicates():
     """
     Test comprehensive scenario with headerless file, date format differences, and duplicates.

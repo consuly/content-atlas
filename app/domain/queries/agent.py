@@ -397,7 +397,11 @@ def _trim_messages_impl(messages: List[Any]) -> tuple[int, Any] | None:
 
     # CRITICAL FIX: Walk forward from cut_index to find a safe boundary
     # We must ensure we never orphan a tool_result without its tool_use
-    while cut_index < len(messages):
+    max_iterations = len(messages)  # Safety: prevent infinite loops
+    iteration_count = 0
+    
+    while cut_index < len(messages) and iteration_count < max_iterations:
+        iteration_count += 1
         msg = messages[cut_index]
         
         # If the message at cut_index is a tool_result, we need to find its tool_use
@@ -415,6 +419,8 @@ def _trim_messages_impl(messages: List[Any]) -> tuple[int, Any] | None:
             if not found_tool_use:
                 cut_index += 1
                 continue
+            # After adjusting cut_index backward, continue the loop to re-check the new position
+            continue
         
         # If the message at cut_index is a tool_use, check if there's a tool_result after it
         elif _message_has_tool_use(msg):
@@ -451,14 +457,25 @@ def _trim_messages_impl(messages: List[Any]) -> tuple[int, Any] | None:
         
         # ADDITIONAL SAFETY: After adjusting to keep at least 3 messages,
         # verify we didn't create an orphaned tool_result
-        while cut_index < len(messages) - 3:
+        safety_iterations = 0
+        max_safety_iterations = 10  # Prevent infinite loop
+        
+        while cut_index < len(messages) - 3 and safety_iterations < max_safety_iterations:
+            safety_iterations += 1
+            
             if _message_has_tool_result(messages[cut_index]):
                 # Find its tool_use and include it
+                original_cut_index = cut_index
                 for search_index in range(cut_index - 1, 0, -1):
                     if _message_has_tool_use(messages[search_index]):
                         cut_index = search_index
                         break
-                break
+                
+                # If we adjusted backward, break to avoid infinite loop
+                if cut_index < original_cut_index:
+                    break
+                # If we didn't find a tool_use, move forward
+                cut_index += 1
             else:
                 break
     

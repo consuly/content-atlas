@@ -1817,11 +1817,13 @@ You MUST call the make_import_decision tool before providing your final response
    - Create separate rows for each value (one row per email, one row per phone, etc.)
    - Ensure the target table has only ONE column for that field type
    
-   **IMPORTANT - Column Selection Rules:**
-   1. **Use ONLY the columns the user explicitly mentions** - Do NOT auto-expand to numbered siblings
-   2. If user says "Primary Email and Personal Email", use EXACTLY those two columns
-   3. Do NOT include "Email 1", "Email 2", etc. unless the user specifically mentions them
-   4. The `source_columns` list in `explode_columns` must match the user's instruction EXACTLY
+   **IMPORTANT - Column Selection Rules (CRITICAL - READ CAREFULLY):**
+   1. **Use ONLY the columns the user explicitly mentions** - Do NOT auto-expand to similar columns
+   2. If user says "keep only primary email", use ONLY "Primary Email" - NOT "Personal Email", "Email 1", "Email 2", etc.
+   3. If user says "Primary Email and Personal Email", use EXACTLY those two columns - NOT numbered variants
+   4. Do NOT include columns the user didn't mention, even if they seem related (e.g., don't add "Email 1" when user only asked for "Primary Email")
+   5. The `source_columns` list in `explode_columns` must match the user's instruction EXACTLY - no additions
+   6. When user requests a SINGLE column (e.g., "keep only primary email"), use direct column_mapping instead of explode_columns
    
    **Example - Consolidating Multiple Email Columns:**
    User says: "Keep only primary and personal email. If row has two emails, create new entry with second email. Create only one email column."

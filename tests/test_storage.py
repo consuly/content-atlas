@@ -27,7 +27,7 @@ def test_storage_upload_and_download_roundtrip():
     ):
         pytest.skip("Storage credentials not configured; skipping live storage test")
 
-    sample_file = Path("tests/test_data_small.csv")
+    sample_file = Path("tests/csv/test_data_small.csv")
     data = sample_file.read_bytes()
 
     unique_name = f"test-{uuid.uuid4().hex}.csv"

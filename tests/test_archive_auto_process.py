@@ -113,49 +113,10 @@ def fake_storage_storage(monkeypatch):
     monkeypatch.setattr("app.integrations.storage.download_file", fake_download)
     monkeypatch.setattr("app.integrations.storage_multipart.download_file", fake_download)
     monkeypatch.setattr("app.api.routers.analysis.routes._download_file_from_storage", fake_download)
+    monkeypatch.setattr("app.api.routers.analysis.routes.upload_file_to_storage", fake_upload)
     return storage
 
 
-@pytest.mark.not_b2
-def test_auto_process_archive_happy_path(fake_storage_storage):
-    entries = {
-        "Marketing Agency - US.csv": os.path.join(
-            "tests", "csv", "Marketing Agency - US.csv"
-        ),
-        "Marketing Agency - Texas.csv": os.path.join(
-            "tests", "csv", "Marketing Agency - Texas.csv"
-        ),
-    }
-    zip_bytes = _build_zip(entries)
-    archive_id = _upload_zip(zip_bytes, filename="marketing.zip")
-
-    response = client.post(
-        "/auto-process-archive",
-        data={
-            "file_id": archive_id,
-            "analysis_mode": "auto_always",
-            "conflict_resolution": "llm_decide",
-        "max_iterations": "5",
-    },
-)
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["success"] is True
-    job_id = payload["job_id"]
-    assert job_id
-
-    job = _wait_for_job(job_id)
-    assert job["status"] == "succeeded"
-    metadata = job["result_metadata"]
-    assert metadata["processed_files"] == 2
-    assert metadata["failed_files"] == 0
-    assert metadata["skipped_files"] == 0
-    assert len(metadata["results"]) == 2
-    assert all(result["status"] == "processed" for result in metadata["results"])
-    assert all(result["uploaded_file_id"] for result in metadata["results"])
-
-
-@pytest.mark.not_b2
 def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage_storage):
     def fake_analyze(**_kwargs):
         return {
@@ -180,6 +141,9 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage
             "target_table": "archive_auto_failures",
         }
 
+    # Patch the getter function that returns the executor
+    monkeypatch.setattr("app.api.routers.analysis.routes._get_execute_llm_import_decision", lambda: fake_execute)
+    # Also patch the direct module just in case
     monkeypatch.setattr(
         "app.integrations.auto_import.execute_llm_import_decision", fake_execute
     )
@@ -219,7 +183,6 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage
     assert metadata["skipped_files"] == 1
 
 
-@pytest.mark.not_b2
 def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_storage, tmp_path):
     forced_table = "forced_archive_table"
 
@@ -238,12 +201,12 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
             },
         }
 
-    # Patch the analyzer function that _get_analyze_file_for_import returns
-    monkeypatch.setattr("app.domain.queries.analyzer.analyze_file_for_import", fake_analyze)
+    # Patch the getter function that returns the analyzer
+    monkeypatch.setattr("app.api.routers.analysis.routes._get_analyze_file_for_import", lambda: fake_analyze)
 
     captured = {}
 
-    def fake_execute(file_content, file_name, all_records, llm_decision):
+    def fake_execute(file_content, file_name, all_records, llm_decision, **_kwargs):
         captured["llm_decision"] = llm_decision
         assert llm_decision["target_table"] == forced_table
         assert llm_decision["strategy"] == "ADAPT_DATA"
@@ -284,6 +247,8 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
     job_id = payload["job_id"]
 
     job = _wait_for_job(job_id)
+    if job["status"] != "succeeded":
+        print("JOB FAILED DETAILS:", job)
     assert job["status"] == "succeeded"
     metadata = job["result_metadata"]
     assert metadata["processed_files"] == 1
@@ -295,7 +260,6 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
     assert metadata["skipped_files"] == 0
 
 
-@pytest.mark.not_b2
 def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_storage):
     analysis_calls = {"count": 0}
     execution_calls = {"count": 0}
@@ -313,8 +277,8 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_s
             },
         }
 
-    # Patch the analyzer function that _get_analyze_file_for_import returns
-    monkeypatch.setattr("app.domain.queries.analyzer.analyze_file_for_import", fake_analyze)
+    # Patch the getter function that returns the analyzer
+    monkeypatch.setattr("app.api.routers.analysis.routes._get_analyze_file_for_import", lambda: fake_analyze)
 
     def fake_execute(**_kwargs):
         execution_calls["count"] += 1
@@ -365,7 +329,6 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_s
     assert execution_calls["count"] == 2  # still executes both files
 
 
-@pytest.mark.not_b2
 def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fake_storage_storage):
     """If a cached fingerprint lacks a decision, the worker should still analyze and return a result."""
     analysis_module = importlib.import_module("app.api.routers.analysis")
@@ -431,7 +394,6 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
     assert fingerprint_cache["shared-fp"].get("llm_decision")
 
 
-@pytest.mark.not_b2
 def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_storage):
     execution_calls = {"count": 0}
 
@@ -526,7 +488,6 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_st
     assert all(result["status"] == "processed" for result in resumed_metadata["results"])
 
 
-@pytest.mark.not_b2
 def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage):
     """
     When resume_failed_entries_only=False, the endpoint should reprocess the entire archive

@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://user:password@localhost:5432/data_mapper"
+    database_url: str = "postgresql://user:password@localhost:5432/content_atlas"
     debug: bool = True
     date_default_dayfirst: bool = False
     log_level: str = "INFO"

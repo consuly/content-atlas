@@ -168,7 +168,6 @@ def test_analyze_failed_analysis(mock_failed_analysis):
         assert response.status_code == 502
 
 
-@pytest.mark.not_b2
 def test_analyze_file_honors_forced_table(monkeypatch):
     """target_table_name should override the LLM decision and adjust strategy for existing tables."""
     forced_table = "forced_existing_table"
@@ -499,7 +498,6 @@ def test_analyze_response_structure(require_llm):
     assert "error" in data or data["error"] is None
 
 
-@pytest.mark.b2
 def test_storage_analyze_response_structure(require_llm):
     """Test B2 analysis response structure with the real LLM."""
     with patch('app.api.routers.analysis.routes._download_file_from_storage') as mock_download:

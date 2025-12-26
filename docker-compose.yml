@@ -2,7 +2,7 @@ services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_DB: data_mapper
+      POSTGRES_DB: content_atlas
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
     ports:
@@ -15,7 +15,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/data_mapper
+      - DATABASE_URL=postgresql://user:password@db:5432/content_atlas
       - STORAGE_PROVIDER=${STORAGE_PROVIDER:-b2}
       - STORAGE_ENDPOINT_URL=${STORAGE_ENDPOINT_URL}
       - STORAGE_ACCESS_KEY_ID=${STORAGE_ACCESS_KEY_ID}

@@ -1787,12 +1787,14 @@ async def analyze_file_endpoint(
             raise HTTPException(status_code=502, detail=error_message)
 
         llm_decision = analysis_result.get("llm_decision")
+        print(f"DEBUG: analyze_file_endpoint - llm_decision (before force)={llm_decision}")
         if forced_table_name:
             llm_decision = _apply_forced_table_decision(
                 llm_decision,
                 forced_table_name,
                 forced_table_mode,
             )
+        print(f"DEBUG: analyze_file_endpoint - llm_decision (after force)={llm_decision}")
         if llm_decision is not None:
             llm_decision = dict(llm_decision)
             if normalized_instruction:
@@ -1831,6 +1833,7 @@ async def analyze_file_endpoint(
         if analysis_mode == AnalysisMode.AUTO_ALWAYS and llm_decision:
             # Execute the import automatically
             try:
+                print(f"DEBUG: analyze_file_endpoint - Calling execute_llm_import_decision with {llm_decision}")
                 execution_result = _get_execute_llm_import_decision()(
                     file_content=file_content,
                     file_name=file_name,
@@ -2136,6 +2139,10 @@ async def auto_process_archive_endpoint(
         forced_table_mode = normalized_mode
     if forced_table_name and forced_table_mode is None:
         forced_table_mode = "existing"
+
+    print(f"DEBUG: analyze_file_endpoint - target_table_name={target_table_name!r}, target_table_mode={target_table_mode!r}")
+    print(f"DEBUG: analyze_file_endpoint - forced_table_name={forced_table_name!r}, forced_table_mode={forced_table_mode!r}")
+
     normalized_instruction, saved_instruction_id = _resolve_llm_instruction(
         llm_instruction=llm_instruction,
         llm_instruction_id=llm_instruction_id,

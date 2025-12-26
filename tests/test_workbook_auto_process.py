@@ -287,7 +287,6 @@ def _upsert_clients(store: Dict[str, Dict], records):
             }
 
 
-@pytest.mark.not_b2
 def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, in_memory_state):
     import app.api.routers.analysis.routes as analysis_module
 

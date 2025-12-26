@@ -1,7 +1,7 @@
 import pytest
 
 from app.api.schemas.shared import MappingConfig, DuplicateCheckConfig
-from app.domain.imports.mapper import map_data
+from app.domain.imports.mapper import map_data, standardize_datetime, apply_rules
 
 
 def _base_config(mappings, rules=None, db_schema=None):
@@ -258,3 +258,88 @@ def test_explode_list_column_splits_into_outputs_without_row_duplication():
     assert mapped[0]["tag_secondary"] == "blue"
     assert mapped[1]["tag_primary"] == "green"
     assert mapped[1]["tag_secondary"] == "yellow"
+
+
+def test_datetime_standardization():
+    """Test datetime standardization functionality."""
+
+    # Test standardize_datetime function with various formats
+    test_cases = [
+        # (input, expected_output)
+        # Note: parse_flexible_date returns ISO 8601 with 'Z' suffix for UTC
+        ('Thu, 9th Oct, 2025 at 8:11pm', '2025-10-09T20:11:00Z'),
+        ('9/10/2025 20h11', '2025-09-10T20:11:00Z'),  # pandas interprets 9/10 as Sep 10 (monthfirst)
+        ('10/09/25 8:11pm', '2025-10-09T20:11:00Z'),
+        ('2025-10-09 20:11', '2025-10-09T20:11:00Z'),
+        ('10/09/2025', '2025-10-09T00:00:00Z'),  # date only gets time added
+        ('2025-10-09', '2025-10-09T00:00:00Z'),  # date only gets time added
+        (None, None),
+        ('', None),
+        ('invalid date', None),
+    ]
+
+    for input_val, expected in test_cases:
+        result = standardize_datetime(input_val)
+        assert result == expected, f"Failed for input {repr(input_val)}: got {repr(result)}, expected {repr(expected)}"
+
+    # Test with explicit format
+    result = standardize_datetime('10/09/2025 8:11 PM', '%m/%d/%Y %I:%M %p')
+    assert result == '2025-10-09T20:11:00Z'
+
+    # Test apply_rules with datetime transformations
+    record = {
+        'event_date': '10/09/2025 8:11 PM',
+        'name': 'Test Event'
+    }
+
+    rules = {
+        'datetime_transformations': [
+            {
+                'field': 'event_date',
+                'source_format': '%m/%d/%Y %I:%M %p',
+                'target_format': 'ISO8601'
+            }
+        ]
+    }
+
+    transformed_record, errors = apply_rules(record, rules)
+    assert transformed_record['event_date'] == '2025-10-09T20:11:00Z'
+    assert transformed_record['name'] == 'Test Event'
+    assert len(errors) == 0
+
+    # Test error handling
+    record_with_error = {
+        'event_date': 'invalid datetime value',
+        'name': 'Test Event'
+    }
+
+    transformed_record, errors = apply_rules(record_with_error, rules)
+    assert transformed_record['event_date'] is None  # Failed conversion
+    assert len(errors) == 1
+    assert errors[0]["type"] == "datetime_conversion"
+    assert 'Failed to convert datetime field' in errors[0]["message"]
+
+    # Test map_data with datetime transformations
+    records = [
+        {'event_date': '10/09/2025 8:11 PM', 'name': 'Event 1'},
+        {'event_date': '2025-10-10', 'name': 'Event 2'},  # date only
+        {'event_date': 'invalid', 'name': 'Event 3'},  # invalid
+    ]
+
+    config = _base_config(
+        mappings={'event_date': 'event_date', 'name': 'name'},
+        rules=rules,
+        db_schema={'event_date': 'TIMESTAMP', 'name': 'TEXT'}
+    )
+
+    mapped_records, all_errors = map_data(records, config)
+
+    # Check successful conversions
+    assert mapped_records[0]['event_date'] == '2025-10-09T20:11:00Z'
+    assert mapped_records[1]['event_date'] == '2025-10-10T00:00:00Z'
+    assert mapped_records[2]['event_date'] is None  # Failed conversion
+
+    # Check that errors were collected
+    assert len(all_errors) == 1
+    assert all_errors[0]["type"] == "datetime_conversion"
+    assert 'Failed to convert datetime field' in all_errors[0]["message"]
