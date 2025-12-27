@@ -445,6 +445,37 @@ class ImportHistoryRecord(BaseModel):
     parsing_time_seconds: Optional[float] = None
     insert_time_seconds: Optional[float] = None
     error_message: Optional[str] = None
+    
+    # Enhanced tracking fields
+    mapping_status: Optional[str] = None
+    mapping_errors_count: Optional[int] = None
+    rows_processed: Optional[int] = None
+    rows_skipped: Optional[int] = None
+    data_validation_errors: Optional[int] = None
+    warnings: Optional[List[str]] = None
+
+
+class MappingErrorHistoryRecord(BaseModel):
+    """Detailed record of a mapping error from history."""
+    id: int
+    import_id: str
+    record_number: Optional[int] = None
+    source_field: Optional[str] = None
+    target_field: Optional[str] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    source_value: Optional[str] = None
+    occurred_at: Optional[datetime] = None
+    chunk_number: Optional[int] = None
+
+
+class ImportMappingErrorsResponse(BaseModel):
+    """Response containing mapping errors for an import."""
+    success: bool
+    errors: List[MappingErrorHistoryRecord]
+    total_count: int
+    limit: int
+    offset: int
 
 
 class ImportHistoryListResponse(BaseModel):

@@ -4,7 +4,7 @@ Auto-import execution logic for LLM-analyzed files.
 This module handles the execution of import strategies recommended by the LLM agent.
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 from sqlalchemy import text, inspect
 from app.domain.imports.mapper import detect_mapping_from_file
 from app.db.models import create_table_if_not_exists, insert_records, calculate_file_hash
@@ -17,6 +17,7 @@ from app.domain.imports.schema_migrations import (
     SchemaMigrationError,
 )
 from app.domain.imports.history import start_import_tracking, complete_import_tracking
+from app.domain.imports.fingerprinting import store_table_fingerprint
 from app.utils.date import parse_flexible_date
 import pandas as pd
 import logging
@@ -508,6 +509,177 @@ def coerce_records_to_expected_types(
     return records_converted, conversion_summary
 
 
+def _parse_keep_only_instruction(instruction_text: Optional[str]) -> Dict[str, bool]:
+    """
+    Parse user instruction to detect "keep only primary" style directives.
+    
+    Returns a dict mapping data types to whether they should be filtered:
+    {"email": True, "phone": True} means keep only primary email/phone
+    """
+    if not instruction_text:
+        return {}
+    
+    lowered = instruction_text.lower()
+    filters = {}
+    
+    # Patterns that indicate "keep only one" for a data type
+    keep_only_patterns = [
+        "keep only",
+        "only keep",
+        "primary only",
+        "single",
+        "one per",
+        "first only",
+    ]
+    
+    # Check if any keep-only pattern is present
+    has_keep_only = any(pattern in lowered for pattern in keep_only_patterns)
+    
+    if not has_keep_only:
+        return {}
+    
+    # Detect which data types are mentioned
+    if any(term in lowered for term in ["email", "e-mail", "mail"]):
+        filters["email"] = True
+    
+    if any(term in lowered for term in ["phone", "telephone", "tel", "mobile", "contact number"]):
+        filters["phone"] = True
+    
+    return filters
+
+
+def _filter_column_mapping_per_instruction(
+    column_mapping: Dict[str, str],
+    instruction_text: Optional[str],
+    records: List[Dict[str, Any]]
+) -> Tuple[Dict[str, str], List[str]]:
+    """
+    Filter column_mapping to respect user instructions like "keep only the primary email".
+    
+    Returns:
+        (filtered_mapping, excluded_columns)
+    """
+    filters = _parse_keep_only_instruction(instruction_text)
+    
+    if not filters:
+        return column_mapping, []
+    
+    filtered_mapping = dict(column_mapping)
+    excluded_columns = []
+    
+    # Helper to detect if a column name contains a data type keyword
+    def column_contains_type(col_name: str, data_type: str) -> bool:
+        col_lower = col_name.lower()
+        if data_type == "email":
+            return any(term in col_lower for term in ["email", "e-mail", "mail"])
+        elif data_type == "phone":
+            return any(term in col_lower for term in ["phone", "tel", "mobile", "contact"])
+        return False
+    
+    # Helper to detect if a column is "primary" or "first"
+    def is_primary_column(col_name: str) -> bool:
+        col_lower = col_name.lower()
+        return any(term in col_lower for term in ["primary", "main", "first", "contact phone 1"])
+    
+    for data_type, should_filter in filters.items():
+        if not should_filter:
+            continue
+        
+        # Find all columns of this data type
+        type_columns = [
+            (source, target) 
+            for source, target in column_mapping.items()
+            if column_contains_type(source, data_type) or column_contains_type(target, data_type)
+        ]
+        
+        if len(type_columns) <= 1:
+            # Only one column of this type, no need to filter
+            continue
+        
+        # Find the primary column
+        primary_col = None
+        for source, target in type_columns:
+            if is_primary_column(source) or is_primary_column(target):
+                primary_col = (source, target)
+                break
+        
+        # If no explicit "primary", keep the first one
+        if not primary_col:
+            primary_col = type_columns[0]
+        
+        # Remove all non-primary columns
+        for source, target in type_columns:
+            if (source, target) != primary_col:
+                filtered_mapping.pop(source, None)
+                excluded_columns.append(source)
+                logger.info(
+                    "USER INSTRUCTION FILTER: Excluding column '%s' (user said keep only primary %s)",
+                    source,
+                    data_type
+                )
+    
+    return filtered_mapping, excluded_columns
+
+
+def _filter_row_transformations_per_instruction(
+    row_transformations: List[Dict[str, Any]],
+    instruction_text: Optional[str],
+    excluded_columns: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Remove explode_columns transformations that would violate user instructions.
+    
+    If user says "keep only primary email", we should NOT explode email columns.
+    """
+    filters = _parse_keep_only_instruction(instruction_text)
+    
+    if not filters:
+        return row_transformations
+    
+    filtered_transforms = []
+    
+    for transform in row_transformations:
+        if not isinstance(transform, dict):
+            filtered_transforms.append(transform)
+            continue
+        
+        if transform.get("type") != "explode_columns":
+            filtered_transforms.append(transform)
+            continue
+        
+        # Check if this explode_columns targets a filtered data type
+        source_columns = transform.get("source_columns", [])
+        target_column = transform.get("target_column", "")
+        
+        should_remove = False
+        for data_type, should_filter in filters.items():
+            if not should_filter:
+                continue
+            
+            # Check if any source column or target column matches the filtered type
+            for col in source_columns + [target_column]:
+                col_lower = str(col).lower()
+                if data_type == "email" and any(term in col_lower for term in ["email", "e-mail", "mail"]):
+                    should_remove = True
+                    break
+                elif data_type == "phone" and any(term in col_lower for term in ["phone", "tel", "mobile"]):
+                    should_remove = True
+                    break
+            
+            if should_remove:
+                break
+        
+        if should_remove:
+            logger.info(
+                "USER INSTRUCTION FILTER: Removing explode_columns for %s (user said keep only primary)",
+                source_columns
+            )
+        else:
+            filtered_transforms.append(transform)
+    
+    return filtered_transforms
+
+
 def execute_llm_import_decision(
     file_content: bytes,
     file_name: str,
@@ -547,6 +719,30 @@ def execute_llm_import_decision(
         elif forced_table_mode == "new" and strategy != "NEW_TABLE":
             logger.info("Adjusting strategy to NEW_TABLE for new-table request")
             strategy = "NEW_TABLE"
+        
+        # RACE CONDITION FIX: Check if table was created by parallel worker
+        # This handles ZIP file processing where multiple files with same structure
+        # are processed in parallel. If the first file creates the table while we're
+        # waiting, we should merge into it instead of creating a new table.
+        if strategy == "NEW_TABLE":
+            engine = get_engine()
+            with engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = :table_name
+                    )
+                """), {"table_name": target_table})
+                table_exists_now = result.scalar()
+                
+                if table_exists_now:
+                    logger.info(
+                        "AUTO-IMPORT: Table '%s' was created by parallel worker. "
+                        "Forcing ADAPT_DATA strategy to merge instead of recreating table.",
+                        target_table
+                    )
+                    strategy = "ADAPT_DATA"
         
         logger.info(f"="*80)
         logger.info(f"AUTO-IMPORT: Executing LLM decision")
@@ -610,6 +806,36 @@ def execute_llm_import_decision(
         else:
             logger.info("AUTO-IMPORT: No expected column types provided by LLM; using heuristic inference.")
         
+        # USER INSTRUCTION ENFORCEMENT: Filter columns and transformations per user instructions
+        # This ensures that even if LLM doesn't perfectly follow instructions, execution layer enforces them
+        filtered_mapping, excluded_columns = _filter_column_mapping_per_instruction(
+            column_mapping,
+            instruction_text,
+            records
+        )
+        
+        if excluded_columns:
+            logger.info(
+                "USER INSTRUCTION ENFORCEMENT: Filtered %d columns from mapping: %s",
+                len(excluded_columns),
+                excluded_columns
+            )
+            column_mapping = filtered_mapping
+        
+        # Filter row transformations to remove explode_columns for filtered data types
+        filtered_row_transforms = _filter_row_transformations_per_instruction(
+            row_transformations,
+            instruction_text,
+            excluded_columns
+        )
+        
+        if len(filtered_row_transforms) != len(row_transformations):
+            logger.info(
+                "USER INSTRUCTION ENFORCEMENT: Removed %d row transformations that violate user instructions",
+                len(row_transformations) - len(filtered_row_transforms)
+            )
+            row_transformations = filtered_row_transforms
+        
         # Build MappingConfig using LLM's column mapping
         # IMPORTANT: LLM provides {source_col: target_col} but mapper.py expects {target_col: source_col}
         # We need to INVERT the mapping for mapper.py to work correctly
@@ -630,6 +856,7 @@ def execute_llm_import_decision(
             instruction_text,
             multi_value_directives=multi_value_directives,
             require_explicit_multi_value=require_explicit_multi_value,
+            import_strategy=strategy,
         )
         
         # CRITICAL FIX: Remove exploded source columns from uniqueness columns
@@ -913,6 +1140,14 @@ def execute_llm_import_decision(
         logger.info(f"  Records processed: {result['records_processed']}")
         logger.info(f"  Table: {result['table_name']}")
         
+        # Update schema fingerprint for intelligent matching of future files
+        try:
+            table_columns = list(mapping_config.db_schema.keys())
+            engine = get_engine()
+            store_table_fingerprint(engine, target_table, table_columns)
+        except Exception as e:
+            logger.warning(f"AUTO-IMPORT: Failed to update table fingerprint: {e}")
+
         return {
             "success": True,
             "strategy_executed": strategy,
@@ -1085,9 +1320,12 @@ def _synthesize_multi_value_rules(
     *,
     multi_value_directives: Optional[List[Dict[str, Any]]] = None,
     require_explicit_multi_value: bool = True,
+    import_strategy: Optional[str] = None,
 ) -> tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]], Set[str]]:
     """
     Process multi-value transformation rules by trusting the LLM's explicit directives.
+    - For NEW_TABLE strategy: Do NOT apply multi-value explosion by default
+    - For MERGE/EXTEND/ADAPT: Only apply if explicitly requested by user or LLM
     
     This function has been simplified to ONLY apply explicit directives provided by the LLM.
     It no longer performs automatic sibling detection or pattern-based explosion, which was
@@ -1103,6 +1341,10 @@ def _synthesize_multi_value_rules(
     Multi-value explosion will only occur when:
     1. Explicit multi_value_directives are provided by the LLM
     2. Explicit row_transformations with explode_columns are provided by the LLM
+    
+    Args:
+        import_strategy: The import strategy (NEW_TABLE, MERGE_EXACT, etc.) to help
+                        determine if multi-value processing should be applied
     """
     if not records or not column_mapping:
         return column_mapping, column_transformations, row_transformations, set()

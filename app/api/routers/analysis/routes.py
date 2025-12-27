@@ -229,9 +229,31 @@ def _normalize_columns(columns: List[Any]) -> List[str]:
         if column is None:
             normalized.append(f"col_{index}")
             continue
+        # Use simple normalization compatible with fingerprinting module
+        # Keep alphanumeric characters and lowercase
         token = str(column).strip().lower()
+        import re
+        token = re.sub(r'[^a-z0-9]', '', token)
         normalized.append(token or f"col_{index}")
     return normalized
+
+
+def _table_exists(table_name: str) -> bool:
+    """
+    Check if a table exists in the database.
+    
+    Used to validate cached decisions - if a table was created by a previous file in the archive,
+    we need to check if new files should merge into it or create separate tables.
+    """
+    try:
+        from sqlalchemy import inspect
+        from app.db.session import get_engine
+        engine = get_engine()
+        inspector = inspect(engine)
+        return inspector.has_table(table_name)
+    except Exception as exc:
+        logger.warning("Failed to check table existence for '%s': %s", table_name, exc)
+        return False
 
 
 def _build_structure_fingerprint(entry_bytes: bytes, entry_name: str) -> Optional[str]:
@@ -239,6 +261,11 @@ def _build_structure_fingerprint(entry_bytes: bytes, entry_name: str) -> Optiona
     Build a lightweight structure fingerprint so similar files can reuse the same mapping decision.
 
     The fingerprint focuses on column shape (count + normalized labels) to avoid hashing entire content.
+    
+    NOTE: Structure fingerprinting is an optimization that caches LLM decisions for files with
+    identical column structures. However, this can cause issues when files with the same structure
+    should be consolidated (same semantic meaning) or separated (different semantic meaning).
+    The cache validation in _process_entry_bytes() handles these cases.
     """
     try:
         file_type = detect_file_type(entry_name)
@@ -257,10 +284,12 @@ def _build_structure_fingerprint(entry_bytes: bytes, entry_name: str) -> Optiona
             header_row = raw_rows[0] if raw_rows else []
             columns = header_row if has_header else [f"col_{idx+1}" for idx in range(len(header_row))]
             normalized = _normalize_columns(columns)
+            normalized.sort()  # SORT to ensure column order independence
             return f"csv:{len(normalized)}:{'|'.join(normalized)}"
         if file_type == "excel":
             df = pd.read_excel(io.BytesIO(entry_bytes), engine="openpyxl", nrows=5)
             normalized = _normalize_columns(list(df.columns))
+            normalized.sort()  # SORT to ensure column order independence
             return f"excel:{len(normalized)}:{'|'.join(normalized)}"
         if file_type == "json":
             return "json"
@@ -315,7 +344,12 @@ def _execute_cached_archive_decision(
         else:
             response.auto_execution_error = execution_result.get("error")
             response.error = execution_result.get("error")
-        return _summarize_archive_execution(response)
+        
+        summary = _summarize_archive_execution(response)
+        # Include the actual table name used for registry tracking
+        if execution_result.get("success"):
+            summary["actual_table_name"] = execution_result.get("table_name")
+        return summary
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("Cached execution failed for %s: %s", entry_name, exc)
         return {
@@ -462,9 +496,14 @@ def _process_entry_bytes(
 
     # 4. Analysis & Execution (parallel analysis, serialized insertion via TableLockManager)
     summary = {}
-    def _run_fresh_analysis() -> tuple[Optional[AnalyzeFileResponse], Dict[str, Any]]:
+    def _run_fresh_analysis(
+        override_instruction: Optional[str] = None,
+        override_target_table: Optional[str] = None,
+        override_target_mode: Optional[str] = None
+    ) -> tuple[Optional[AnalyzeFileResponse], Dict[str, Any]]:
         """Run analysis and return both the response and summarized outcome."""
         _preloaded_file_contents[uploaded_file_id] = entry_bytes
+        instruction_to_use = override_instruction if override_instruction is not None else llm_instruction
         try:
             local_response = asyncio.run(
                 analyze_file_endpoint(
@@ -476,9 +515,9 @@ def _process_entry_bytes(
                     auto_execute_confidence_threshold=auto_execute_confidence_threshold,
                     max_iterations=max_iterations,
                     db=db_session,
-                    target_table_name=forced_table_name,
-                    target_table_mode=forced_table_mode,
-                    llm_instruction=llm_instruction,
+                    target_table_name=override_target_table if override_target_table else forced_table_name,
+                    target_table_mode=override_target_mode if override_target_mode else forced_table_mode,
+                    llm_instruction=instruction_to_use,
                 )
             )
             return local_response, _summarize_archive_execution(local_response)
@@ -487,24 +526,134 @@ def _process_entry_bytes(
 
     try:
         if cached_plan and cached_plan.get("llm_decision"):
-            applied_decision = _apply_forced_table_decision(
-                cached_plan["llm_decision"],
-                forced_table_name,
-                forced_table_mode,
-            )
-            summary = _execute_cached_archive_decision(
-                entry_bytes=entry_bytes,
-                entry_name=entry_name,
-                llm_decision=applied_decision,
-            )
+            # CACHE AS TABLE HINT: Don't reuse full mapping - use as target table hint only
+            # This ensures each file gets fresh LLM analysis with proper column mapping
+            # while still consolidating into the same table
+            cached_decision = cached_plan["llm_decision"]
+            target_table_hint = cached_decision.get("target_table")
+            
+            # Check if registry has a created table for this fingerprint
+            created_table_hint = cached_plan.get("created_table")
+            table_hint = created_table_hint or target_table_hint
+            
+            if table_hint and not forced_table_name:
+                logger.info(
+                    "FINGERPRINT MATCH: File '%s' matches existing structure. "
+                    "Running FRESH LLM analysis with target table hint '%s' to ensure correct column mapping.",
+                    entry_name,
+                    table_hint
+                )
+                
+                _log_archive_debug({
+                    "event": "fingerprint_hint_used",
+                    "archive_path": archive_path,
+                    "entry_name": entry_name,
+                    "fingerprint": fingerprint,
+                    "table_hint": table_hint,
+                    "reason": "use_hint_for_fresh_analysis"
+                })
+                
+                # Run fresh analysis with table hint
+                analysis_response, summary = _run_fresh_analysis(
+                    override_target_table=table_hint,
+                    override_target_mode="existing"
+                )
+                
+                # EARLY REGISTRY RECORDING: Record table decision immediately after LLM analysis
+                # This ensures subsequent workers can see this decision before execution completes
+                if analysis_response and analysis_response.llm_decision and fingerprint:
+                    decided_table = analysis_response.llm_decision.get("target_table")
+                    if decided_table:
+                        with fingerprint_lock:
+                            if fingerprint in fingerprint_cache:
+                                fingerprint_cache[fingerprint]["created_table"] = decided_table
+                                logger.info(
+                                    "FINGERPRINT REGISTRY: Early-recorded table decision '%s' for fingerprint (hint path)",
+                                    decided_table
+                                )
+                
+                # Record the table that was actually created/used after execution
+                if summary.get("status") == "processed" and fingerprint:
+                    actual_table = summary.get("actual_table_name") or summary.get("table_name")
+                    if actual_table:
+                        with fingerprint_lock:
+                            if fingerprint in fingerprint_cache:
+                                fingerprint_cache[fingerprint]["created_table"] = actual_table
+                                logger.info(
+                                    "FINGERPRINT REGISTRY: Confirmed table '%s' for fingerprint after execution (hint path)",
+                                    actual_table
+                                )
+            else:
+                # No table hint available or user forced a different table - run fresh analysis
+                logger.info(
+                    "FINGERPRINT MATCH but no table hint: Running fresh analysis for '%s'",
+                    entry_name
+                )
+                analysis_response, summary = _run_fresh_analysis()
+                
+                # Store decision in cache for future files
+                if fingerprint and analysis_response and analysis_response.llm_decision:
+                    with fingerprint_lock:
+                        existing_cache = fingerprint_cache.get(fingerprint) or {}
+                        event = existing_cache.get("event") or cached_plan_event
+                        fingerprint_cache[fingerprint] = {
+                            "llm_decision": analysis_response.llm_decision,
+                            "event": event,
+                        }
+                        if event:
+                            event.set()
+                
+                # EARLY REGISTRY RECORDING: Record table decision immediately after LLM analysis
+                if analysis_response and analysis_response.llm_decision and fingerprint:
+                    decided_table = analysis_response.llm_decision.get("target_table")
+                    if decided_table:
+                        with fingerprint_lock:
+                            if fingerprint in fingerprint_cache:
+                                fingerprint_cache[fingerprint]["created_table"] = decided_table
+                                logger.info(
+                                    "FINGERPRINT REGISTRY: Early-recorded table decision '%s' for fingerprint (no hint path)",
+                                    decided_table
+                                )
+                
+                # Record the table that was actually created after execution
+                if summary.get("status") == "processed" and fingerprint:
+                    actual_table = summary.get("actual_table_name") or summary.get("table_name")
+                    if actual_table:
+                        with fingerprint_lock:
+                            if fingerprint in fingerprint_cache:
+                                fingerprint_cache[fingerprint]["created_table"] = actual_table
+                                logger.info(
+                                    "FINGERPRINT REGISTRY: Confirmed table '%s' for fingerprint after execution (no hint path)",
+                                    actual_table
+                                )
         elif cached_plan_event and fingerprint and not is_first_worker_for_plan:
             # Another worker is generating a plan; wait briefly to reuse it.
-            cached_plan_event.wait(timeout=10)
+            # Calculate timeout based on file complexity (column count from fingerprint)
+            wait_timeout = 10  # Default 10 seconds
+            if fingerprint:
+                # Fingerprint format: "csv:{col_count}:{normalized_columns}"
+                parts = fingerprint.split(":")
+                if len(parts) >= 2 and parts[1].isdigit():
+                    col_count = int(parts[1])
+                    # Add 0.5 seconds per column for complex files, cap at 60 seconds
+                    wait_timeout = min(10 + (col_count * 0.5), 60)
+                    logger.info(
+                        "FINGERPRINT WAIT: Waiting up to %d seconds for cached decision (file has %d columns)",
+                        wait_timeout,
+                        col_count
+                    )
+            
+            cached_plan_event.wait(timeout=wait_timeout)
             with fingerprint_lock:
                 cached_after_wait = fingerprint_cache.get(fingerprint)
             if cached_after_wait and cached_after_wait.get("llm_decision"):
+                decision_to_use = dict(cached_after_wait["llm_decision"])
+                if decision_to_use.get("strategy") == "NEW_TABLE":
+                    decision_to_use["strategy"] = "ADAPT_DATA"
+                    logger.info("AUTO-IMPORT: Switching cached strategy from NEW_TABLE to ADAPT_DATA for archive reuse (waited)")
+
                 applied_decision = _apply_forced_table_decision(
-                    cached_after_wait["llm_decision"],
+                    decision_to_use,
                     forced_table_name,
                     forced_table_mode,
                 )
@@ -515,30 +664,144 @@ def _process_entry_bytes(
                 )
             else:
                 # No plan materialized—fall back to fresh analysis so we still produce a result.
+                # But FIRST check if another worker registered a table while we were waiting
                 waited_for_cached_plan_without_decision = True
+                
+                # REGISTRY CHECK: Before running fresh analysis, check if another worker registered a table
+                created_table_from_registry = None
+                if fingerprint and not forced_table_name:
+                    with fingerprint_lock:
+                        existing_cache = fingerprint_cache.get(fingerprint) or {}
+                        created_table_from_registry = existing_cache.get("created_table")
+                
+                if created_table_from_registry:
+                    # Another file with same fingerprint created a table while we waited - force merge
+                    logger.info(
+                        "FINGERPRINT REGISTRY: Found existing table '%s' after cache timeout. "
+                        "Forcing ADAPT_DATA for file '%s' without fresh analysis.",
+                        created_table_from_registry,
+                        entry_name
+                    )
+                    
+                    # Build a decision using the existing table (use cached decision as template if available)
+                    decision_to_use = dict(cached_after_wait.get("llm_decision", {})) if cached_after_wait else {}
+                    decision_to_use["target_table"] = created_table_from_registry
+                    decision_to_use["strategy"] = "ADAPT_DATA"
+                    
+                    applied_decision = _apply_forced_table_decision(
+                        decision_to_use,
+                        forced_table_name,
+                        forced_table_mode,
+                    )
+                    
+                    summary = _execute_cached_archive_decision(
+                        entry_bytes=entry_bytes,
+                        entry_name=entry_name,
+                        llm_decision=applied_decision,
+                    )
+                    
+                    _log_archive_debug({
+                        "event": "fingerprint_registry_enforcement_after_wait",
+                        "archive_path": archive_path,
+                        "entry_name": entry_name,
+                        "fingerprint": fingerprint,
+                        "enforced_table": created_table_from_registry,
+                        "reason": "found_table_after_cache_timeout"
+                    })
+                else:
+                    # No table in registry - proceed with fresh analysis
+                    analysis_response, summary = _run_fresh_analysis()
+                    
+                    if fingerprint and analysis_response and analysis_response.llm_decision:
+                        with fingerprint_lock:
+                            event = cached_plan_event or (cached_after_wait or {}).get("event")
+                            fingerprint_cache[fingerprint] = {
+                                "llm_decision": analysis_response.llm_decision,
+                                "event": event,
+                            }
+                            if event:
+                                event.set()
+                    
+                    # Record the table that was actually created in the registry
+                    if summary.get("status") == "processed" and fingerprint:
+                        actual_table = summary.get("actual_table_name") or summary.get("table_name")
+                        if actual_table:
+                            with fingerprint_lock:
+                                if fingerprint in fingerprint_cache:
+                                    fingerprint_cache[fingerprint]["created_table"] = actual_table
+                                    logger.info(
+                                        "FINGERPRINT REGISTRY: Recorded table '%s' for fingerprint (waited path)",
+                                        actual_table
+                                    )
+        else:
+            # FINGERPRINT-TO-TABLE REGISTRY: Check if this fingerprint already has a created table
+            # This handles the case where we do fresh analysis but another worker already created the table
+            created_table_from_registry = None
+            if fingerprint and not forced_table_name:
+                with fingerprint_lock:
+                    existing_cache = fingerprint_cache.get(fingerprint) or {}
+                    created_table_from_registry = existing_cache.get("created_table")
+            
+            if created_table_from_registry:
+                # Another file with same fingerprint already created a table - force merge
+                logger.info(
+                    "FINGERPRINT REGISTRY: Found existing table '%s' for fingerprint. "
+                    "Forcing ADAPT_DATA for file '%s' without fresh analysis.",
+                    created_table_from_registry,
+                    entry_name
+                )
+                
+                # Build a decision using the existing table
+                decision_to_use = dict(cached_after_wait["llm_decision"]) if cached_after_wait and cached_after_wait.get("llm_decision") else {}
+                decision_to_use["target_table"] = created_table_from_registry
+                decision_to_use["strategy"] = "ADAPT_DATA"
+                
+                applied_decision = _apply_forced_table_decision(
+                    decision_to_use,
+                    forced_table_name,
+                    forced_table_mode,
+                )
+                
+                summary = _execute_cached_archive_decision(
+                    entry_bytes=entry_bytes,
+                    entry_name=entry_name,
+                    llm_decision=applied_decision,
+                )
+                
+                _log_archive_debug({
+                    "event": "fingerprint_registry_enforcement_fresh_path",
+                    "archive_path": archive_path,
+                    "entry_name": entry_name,
+                    "fingerprint": fingerprint,
+                    "enforced_table": created_table_from_registry,
+                    "reason": "fingerprint_already_has_table_from_registry"
+                })
+            else:
+                # No table in registry - proceed with fresh analysis
                 analysis_response, summary = _run_fresh_analysis()
+
                 if fingerprint and analysis_response and analysis_response.llm_decision:
                     with fingerprint_lock:
-                        event = cached_plan_event or (cached_after_wait or {}).get("event")
+                        existing_cache = fingerprint_cache.get(fingerprint) or {}
+                        event = existing_cache.get("event") or cached_plan_event
                         fingerprint_cache[fingerprint] = {
                             "llm_decision": analysis_response.llm_decision,
                             "event": event,
                         }
                         if event:
                             event.set()
-        else:
-            analysis_response, summary = _run_fresh_analysis()
-
-            if fingerprint and analysis_response and analysis_response.llm_decision:
-                with fingerprint_lock:
-                    existing_cache = fingerprint_cache.get(fingerprint) or {}
-                    event = existing_cache.get("event") or cached_plan_event
-                    fingerprint_cache[fingerprint] = {
-                        "llm_decision": analysis_response.llm_decision,
-                        "event": event,
-                    }
-                    if event:
-                        event.set()
+                
+                # Record the table that was actually created in the registry
+                if summary.get("status") == "processed" and fingerprint:
+                    actual_table = summary.get("actual_table_name") or summary.get("table_name")
+                    if actual_table:
+                        with fingerprint_lock:
+                            if fingerprint in fingerprint_cache:
+                                fingerprint_cache[fingerprint]["created_table"] = actual_table
+                                logger.info(
+                                    "FINGERPRINT REGISTRY: Recorded table '%s' for fingerprint (fresh path)",
+                                    actual_table
+                                )
 
     except HTTPException as exc:
         summary = {

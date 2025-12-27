@@ -19,6 +19,7 @@ The following system tables are protected from LLM access and must never be list
 - `query_messages` - Stored LLM conversation messages
 - `query_threads` - LLM conversation thread metadata
 - `llm_instructions` - Custom LLM instructions and prompts
+- `table_fingerprints` - Tracks table schema signatures for intelligent merging
 
 > 💡 **User uploads never overwrite these tables.** When a mapping request
 > specifies a reserved table name (for example, `users`), the backend

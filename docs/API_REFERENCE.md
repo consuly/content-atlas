@@ -22,6 +22,10 @@ Complete reference for all ContentAtlas API endpoints.
   - [GET /tables/{table_name}](#get-tablestable_name)
   - [GET /tables/{table_name}/schema](#get-tablestable_nameschema)
   - [GET /tables/{table_name}/stats](#get-tablestable_namestats)
+- [Import History Endpoints](#import-history-endpoints)
+  - [GET /import-history](#get-import-history)
+  - [GET /import-history/{import_id}](#get-import-historyimport_id)
+  - [GET /import-history/{import_id}/mapping-errors](#get-import-historyimport_idmapping-errors)
 - [Task Management Endpoints](#task-management-endpoints)
   - [GET /tasks/{task_id}](#get-taskstask_id)
 
@@ -464,6 +468,82 @@ Get basic statistics for a table.
     "name": "character varying",
     "created_at": "timestamp without time zone"
   }
+}
+```
+
+---
+
+## Import History Endpoints
+
+### GET /import-history
+
+List past imports with filtering.
+
+**Query Parameters:**
+- `table_name` (optional): Filter by destination table name
+- `status` (optional): Filter by status ('success', 'failed', 'partial')
+- `limit` (optional): Maximum records (default: 100)
+- `offset` (optional): Pagination offset
+
+**Response:**
+```json
+{
+  "success": true,
+  "imports": [
+    {
+      "import_id": "uuid",
+      "status": "success",
+      "table_name": "customers",
+      ...
+    }
+  ]
+}
+```
+
+---
+
+### GET /import-history/{import_id}
+
+Get detailed information about a specific import.
+
+**Response:**
+```json
+{
+  "success": true,
+  "import_record": {
+    "import_id": "uuid",
+    "status": "failed",
+    "error_message": "Mapping failed",
+    "mapping_status": "failed",
+    "mapping_errors_count": 5,
+    ...
+  }
+}
+```
+
+---
+
+### GET /import-history/{import_id}/mapping-errors
+
+Get detailed mapping errors for a specific import.
+
+**Query Parameters:**
+- `limit` (optional): Maximum errors to return (default: 100)
+- `offset` (optional): Pagination offset
+
+**Response:**
+```json
+{
+  "success": true,
+  "errors": [
+    {
+      "record_number": 1,
+      "error_type": "type_mismatch",
+      "error_message": "Value 'abc' is not a valid integer",
+      "source_field": "age"
+    }
+  ],
+  "total_count": 1
 }
 ```
 

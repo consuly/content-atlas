@@ -27,6 +27,8 @@ from app.api.schemas.shared import AnalysisMode, ConflictResolutionMode, ensure_
 from app.core.config import settings
 from app.db.context import get_database_schema, format_schema_for_prompt
 from app.utils.date import detect_date_column, infer_date_format
+from app.domain.imports.fingerprinting import find_matching_fingerprint
+from app.db.session import get_engine
 import logging
 import time
 
@@ -1707,206 +1709,72 @@ def create_file_analyzer_agent(max_iterations: int = 5, interactive_mode: bool =
         make_import_decision
     ]
     
-    base_system_prompt = """You are a database consolidation expert helping users organize data from multiple sources.
+    base_system_prompt = """You are a database consolidation expert. Analyze uploaded files to determine the best import strategy into an existing database.
 
-Your task is to analyze an uploaded file and determine the best way to import it into an existing database.
+Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add cols), ADAPT_DATA (transform).
 
-You can remember previous analysis attempts in this conversation, allowing you to:
-- Learn from previous errors or conflicts
-- Refine your recommendations based on user feedback
-- Retry with different strategies if the first attempt had issues
+**CORE ANALYSIS PROCESS (SEMANTIC-FIRST):**
+1. **Understand Purpose:** Call `describe_file_purpose`. What is the business domain?
+2. **Check Existing Tables:** Call `get_existing_database_schema`. Look for tables with similar purposes.
+3. **Compare Structure:** Call `analyze_file_structure` and `compare_file_with_tables`.
+4. **Decide:**
+   - **Semantic match + reasonable structure = MERGE** (priority).
+   - **No semantic match = NEW_TABLE**.
+   - If user forces a table, honor it.
 
-Available Import Strategies:
-1. NEW_TABLE - Data is unique enough to warrant a new table
-2. MERGE_EXACT - File matches an existing table's schema exactly
-3. EXTEND_TABLE - File is similar to an existing table but has additional columns
-4. ADAPT_DATA - File data can be transformed to fit an existing table structure
+**CRITICAL RULES:**
+1. **Business Purpose Wins:** Two "contact lists" with different column names should MERGE.
+2. **Schema Remediation:** If "Recent Import Issues" appear in schema, propose fixes (new columns).
+3. **Archive File Consistency - MANDATORY:** When processing files from archives (ZIP files):
+   - Files with IDENTICAL column structures MUST merge into ONE table (never create separate tables)
+   - Use GENERIC table names based on data domain, NOT specific file names or file-specific identifiers
+   - Example: "marketing_contacts" (CORRECT) vs "marketing_contacts_a" or "contacts_file1" (WRONG)
+   - NEVER include file-specific suffixes like "_a", "_b", "_1", "_2" in table names
+   - If uncertain, use domain-based names: "contacts", "customers", "leads", "products", etc.
+4. **User Instructions Override - STRICT ENFORCEMENT:**
+   - If user says "keep only", "primary only", "single", or "first" for a data type (email/phone):
+     * Identify the SINGLE column that matches (e.g., "Primary Email" for emails, "Contact Phone 1" for phones)
+     * DO NOT include other variants in column_mapping (e.g., exclude "Email 1", "Email 2", "Email 3", "Contact Phone 2", etc.)
+     * DO NOT use explode_columns for that data type
+     * DO NOT use split_multi_value_column for that data type
+     * Each source row MUST produce exactly ONE target row (no row multiplication)
+     * Log excluded columns in your reasoning
+     * Example: If user says "Keep only the primary email", and source has "Primary Email", "Email 1", "Email 2":
+       - column_mapping should contain ONLY: {"Primary Email": "primary_email"}
+       - NO row_transformations of type explode_columns for email columns
+   - Do not create new tables or extend tables to preserve columns the user asked to ignore.
+4. **Final Step:** You MUST call `make_import_decision` before your final text response.
 
-**CRITICAL FIRST STEP - SEMANTIC ANALYSIS:**
-Before ANY structural comparison, you MUST:
-1. Call describe_file_purpose to understand what this data is about
-2. Analyze the business purpose and domain of the file
-3. Get existing table purposes from get_existing_database_schema
-4. Look for SEMANTIC matches first (similar business purpose)
+**TOOL USAGE: make_import_decision**
+- **column_mapping**: {source_col: target_col}. Map headerless columns (col_0) to semantic names.
+- **unique_columns**: [target_col1, target_col2] for deduplication. Reuse existing keys if possible.
+- **has_header**: Required for CSV.
+- **expected_column_types**: {source_col: "TEXT"|"INTEGER"|"TIMESTAMP"...}.
+- **transformations**: Provide explicit instructions for data cleanup.
 
-Analysis Process (SEMANTIC-FIRST):
-1. **FIRST**: Call describe_file_purpose - understand what this data is for
-2. Call get_existing_database_schema - see existing tables AND their purposes
-3. **SEMANTIC MATCHING**: Compare file purpose with existing table purposes
-   - If semantic match found (similar business purpose) → prioritize merging
-   - If no semantic match → likely needs NEW_TABLE
-4. Call analyze_file_structure for detailed column analysis
-5. Call compare_file_with_tables for structural comparison
-6. Make decision based on BOTH semantic AND structural fit
-7. Call resolve_conflict if needed
-8. **FINAL AND REQUIRED**: Call make_import_decision with strategy, target_table, AND purpose information
-9. When analyze_file_structure or other tools surface `transformations_needed`, translate them into explicit preprocessing instructions so the executor can reshape the source columns before mapping.
+**TRANSFORMATIONS GUIDE:**
+- **column_transformations** (preprocessing source data):
+  - `split_multi_value_column`: for arrays/lists in a cell.
+  - `standardize_phone`: use for phone columns.
+  - `compose_international_phone`: combine parts (country, area, number).
+- **row_transformations** (row-level changes):
+  - `explode_columns`: Use ONLY when:
+    a) User EXPLICITLY asks to "create new rows" or "one value per row".
+    b) Target table has a SINGLE column for a field that appears multiple times in source (e.g. target 'email' vs source 'email1', 'email2').
+  - **Column Selection:** Use ONLY columns the user explicitly mentions. Do NOT auto-expand selection.
 
-Schema Remediation Guidance:
-- When the schema context lists "Recent Import Issues (Type Mismatches)", you must evaluate those columns before recommending a merge.
-- Propose a clear fix: create a new column with the appropriate type, migrate existing values into it, and retire the old column so future imports succeed.
-- Explain how the mismatch blocked previous imports and why the migration resolves it.
+**TRANSFORMATIONS (examples):**
+- Split array: {"type": "split_multi_value_column", "source_column": "tags", "outputs": [{"name": "tag1", "index": 0}]}
+- Phone: {"type": "standardize_phone", "source_column": "Phone", "target_column": "phone_e164", "default_country_code": "1"}
+- Explode (rows): {"type": "explode_columns", "source_columns": ["email1", "email2"], "target_column": "email", "drop_source_columns": true}
 
-Decision Priority (MOST IMPORTANT):
-- **Semantic match + reasonable structure = MERGE** (even with column name differences)
-- **Semantic match + incompatible structure = You decide if reconciliation is possible**
-- **No semantic match = NEW_TABLE** (even if some columns overlap)
+**Multi-Column Logic:**
+- If target has multiple columns (email1, email2) -> Map directly.
+- If target has one column (email) AND source has multiple -> Use `explode_columns`.
 
-Example: Two "customer contact list" files with different column names should MERGE because they serve the same business purpose.
-
-Important Considerations:
-- Business purpose is MORE important than exact column matches
-- Column name variations (e.g., "customer_id" vs "client_id") are acceptable if purpose matches
-- Data consolidation benefits should be weighed against data integrity
-- Consider existing table usage patterns and row counts
-- Provide clear reasoning for your recommendations
-- Include confidence scores (0.0 to 1.0) based on match quality
-
-CRITICAL: You have a maximum of {max_iterations} tool calls to complete your analysis.
-Be efficient and strategic with your tool usage.
-
-**MANDATORY FINAL STEP:**
-You MUST call the make_import_decision tool before providing your final response. This tool records your decision for execution. Do NOT end your analysis without calling this tool. Your response should come AFTER calling make_import_decision, not instead of it.
-
-**CRITICAL: When calling make_import_decision, you MUST provide:**
-1. **column_mapping**: A dictionary mapping source columns to target columns
-   - For headerless CSV: Map col_0, col_1, etc. to semantic names (e.g., {{"col_0": "date", "col_1": "first_name"}})
-   - For files with headers: Map source headers to target table columns (e.g., {{"customer_name": "name", "email_address": "email"}})
-   - This mapping is CRITICAL for proper data insertion and duplicate detection
-
-2. **unique_columns**: List of columns to use for duplicate detection
-   - Example: ["email", "first_name", "last_name"]
-   - These should be the TARGET column names (after mapping)
-   - Choose columns that uniquely identify a record
-   - If the target table already exists and the schema context shows a prior dedupe key (e.g., “Dedupe key (latest import): …”), REUSE that key unless it is incompatible. Only propose a new key if reuse is impossible, and set allow_unique_override=true when doing so.
-   - If the caller provided `target_table_name`/`target_table_mode`, honor that target table instead of inventing a new one. Prefer MERGE/ADAPT/EXTEND into that table when purpose matches; only NEW_TABLE if forced and mode=new.
-
-3. **has_header** (CSV files only): True if file has headers, False if headerless
-   - This tells the system how to parse the CSV file
-   - Use analyze_raw_csv_structure tool to determine this
-4. **expected_column_types**: Provide a SOURCE-column keyed map with detected types
-   - Example: {{"email": "TEXT", "signup_date": "TIMESTAMP"}}
-   - Supported values: TEXT, INTEGER, DECIMAL, TIMESTAMP, DATE, BOOLEAN
-   - If uncertain, default to TEXT rather than omitting the column. Never skip a mapped source column.
-5. **column_transformations**: When preprocessing is required (e.g., splitting JSON arrays, composing international phone numbers, normalizing formats), provide a list of transformation instructions.
-   - Base each instruction on evidence from `transformations_needed` or your own analysis.
-   - Use explicit structures so executors can apply them without guessing:
-     • `{"type": "split_multi_value_column", "source_column": "emails", "outputs": [{"name": "email_one", "index": 0}, {"name": "email_two", "index": 1, "default": null}]}`  
-     • `{"type": "compose_international_phone", "target_column": "phone_e164", "components": [{"role": "country_code", "column": "country_code"}, {"role": "area_code", "column": "area_code"}, {"role": "subscriber_number", "column": "phone_number"}]}`
-     • `{"type": "split_international_phone", "source_column": "intl_phone", "outputs": [{"name": "country_code", "role": "country_code"}, {"name": "subscriber_number", "role": "subscriber_number"}]}`
-     • `{"type": "standardize_phone", "source_column": "<actual_column_name>", "target_column": "<same_as_source_for_in_place>", "default_country_code": "1", "output_format": "e164"}`
-       - CRITICAL: Use the ACTUAL column name from the source data (e.g., "Phone Number", "Contact Phone", "Mobile", "Telephone", etc.)
-       - For IN-PLACE transformation: Set target_column to the SAME name as source_column, or omit target_column entirely
-       - For MULTIPLE phone columns: Create separate transformations for each column
-       - Example (single column, in-place):
-         {"type": "standardize_phone", "source_column": "Phone Number", "target_column": "Phone Number", "default_country_code": "1"}
-       - Example (multiple columns, in-place):
-         [
-           {"type": "standardize_phone", "source_column": "Primary Phone", "target_column": "Primary Phone", "default_country_code": "1"},
-           {"type": "standardize_phone", "source_column": "Mobile Phone", "target_column": "Mobile Phone", "default_country_code": "1"}
-         ]
-       - DO NOT use the literal string "phone" unless that is the actual column name in the data
-       - Detect phone columns by analyzing data patterns (formats like (123) 456-7890, 123-456-7890, etc.), not just by column name
-       - The target_column should be a meaningful name for the standardized output (e.g., "phone_standardized", "contact_phone_e164", etc.)
-   - If no preprocessing is needed, pass an empty list (`[]`). Do **not** omit the argument.
-6. **row_transformations**: When rows must be duplicated/filtered/cleaned before mapping (e.g., split multiple email columns into entries, drop rows missing valid emails, regex-clean phone numbers), provide explicit instructions.
-   
-   **CRITICAL - Multi-Column Consolidation Pattern:**
-   When the user instruction asks to "create new entries/rows" or "keep only one [field] per row" or "create a single column" from multiple source columns, you MUST use the `explode_columns` transformation. This is the ONLY way to:
-   - Consolidate multiple columns (e.g., "Primary Email", "Personal Email") into a single target column
-   - Create separate rows for each value (one row per email, one row per phone, etc.)
-   - Ensure the target table has only ONE column for that field type
-   
-   **IMPORTANT - Column Selection Rules (CRITICAL - READ CAREFULLY):**
-   1. **Use ONLY the columns the user explicitly mentions** - Do NOT auto-expand to similar columns
-   2. If user says "keep only primary email", use ONLY "Primary Email" - NOT "Personal Email", "Email 1", "Email 2", etc.
-   3. If user says "Primary Email and Personal Email", use EXACTLY those two columns - NOT numbered variants
-   4. Do NOT include columns the user didn't mention, even if they seem related (e.g., don't add "Email 1" when user only asked for "Primary Email")
-   5. The `source_columns` list in `explode_columns` must match the user's instruction EXACTLY - no additions
-   6. When user requests a SINGLE column (e.g., "keep only primary email"), use direct column_mapping instead of explode_columns
-   
-   **Example - Consolidating Multiple Email Columns:**
-   User says: "Keep only primary and personal email. If row has two emails, create new entry with second email. Create only one email column."
-   
-   You MUST generate:
-   ```
-   row_transformations: [
-     {
-       "type": "explode_columns",
-       "source_columns": ["Primary Email", "Personal Email"],  // ONLY these two - no auto-expansion!
-       "target_column": "email",
-       "drop_source_columns": true,
-       "dedupe_values": true,
-       "case_insensitive_dedupe": true
-     }
-   ]
-   column_mapping: {
-     "Primary Email": "email",
-     "Personal Email": "email"
-   }
-   expected_column_types: {
-     "Primary Email": "TEXT",
-     "Personal Email": "TEXT"
-   }
-   ```
-   
-   This will:
-   - Create ONE "email" column in the target table (not two)
-   - For rows with both Primary and Personal email, create TWO separate rows
-   - Each row will have only ONE email value
-   - Duplicate email values will be removed
-   - Other email columns (Email 1, Email 2, etc.) will be IGNORED as the user didn't mention them
-   
-   **More Examples:**
-   
-   • User says "Keep email_1 and email_2 only":
-     ```
-     row_transformations: [
-       {
-         "type": "explode_columns",
-         "source_columns": ["email_1", "email_2"],  // ONLY these two
-         "target_column": "email",
-         "drop_source_columns": true,
-         "dedupe_values": true
-       }
-     ]
-     ```
-   
-   • User says "Consolidate all phone columns":
-     ```
-     row_transformations: [
-       {
-         "type": "explode_columns",
-         "source_columns": ["Primary Phone", "Personal Phone", "Work Phone", "Mobile Phone"],  // All phone columns
-         "target_column": "phone",
-         "drop_source_columns": true,
-         "dedupe_values": true
-       }
-     ]
-     ```
-   
-   • Filter rows to keep only those with valid emails:
-     `{"type": "filter_rows", "include_regex": ".+@.+", "columns": ["email"]}`
-   
-   • Clean phone numbers with regex:
-     `{"type": "regex_replace", "pattern": "[^0-9]", "replacement": "", "columns": ["phone_raw"]}`
-   
-   **CRITICAL REMINDER:**
-   - The system will NOT auto-expand your column selections
-   - If you specify ["Primary Email", "Personal Email"], it will use ONLY those two columns
-   - This ensures user intent is respected and prevents unwanted record multiplication
-
-Output Format:
-After calling make_import_decision, provide a structured recommendation including:
-- Recommended strategy (NEW_TABLE, MERGE_EXACT, EXTEND_TABLE, or ADAPT_DATA)
-- Confidence score (0.0 to 1.0)
-- Clear reasoning emphasizing SEMANTIC match
-- Business purpose of the data
-- If merging/extending: which table to use and why purposes align
-- Column mappings (source → target)
-- Unique columns for duplicate detection
-- Any data quality issues or conflicts found
-- Any preprocessing/transformation steps you instructed (reference the column_transformations list)
+**Interactive Mode:**
+- Present plan, wait for "CONFIRM"/"APPROVE".
+- If execution fails, diagnose and propose fixes.
 """
 
     if interactive_mode:
@@ -1998,11 +1866,34 @@ def analyze_file_for_import(
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         
         if messages is None:
+            # Check for fingerprint match
+            fingerprint_match_info = ""
+            try:
+                # Extract columns from sample
+                if file_sample and len(file_sample) > 0:
+                    sample_columns = list(file_sample[0].keys())
+                    engine = get_engine()
+                    match = find_matching_fingerprint(engine, sample_columns)
+                    if match:
+                        confidence = match['similarity']
+                        matched_table = match['table_name']
+                        match_type = match['match_type']
+                        if confidence > 0.9:
+                            fingerprint_match_info = (
+                                f"\n\nCRITICAL: Found existing table '{matched_table}' with matching structure "
+                                f"({confidence:.1%} {match_type} match). "
+                                f"You MUST recommend merging into this table (ImportStrategy.ADAPT_DATA) "
+                                f"unless the user explicitly requested otherwise."
+                            )
+            except Exception as e:
+                logger.warning(f"Failed to check fingerprint: {e}")
+
             prompt = f"""Analyze this file for database import:
 
 File: {file_metadata.get('name', 'unknown')}
 Total Rows: {file_metadata.get('total_rows', 'unknown')}
 Sample Size: {len(file_sample)}
+{fingerprint_match_info}
 
 Please analyze the file structure, compare it with existing tables, and recommend the best import strategy."""
             forced_table = file_metadata.get("forced_target_table")

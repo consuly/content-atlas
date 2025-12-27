@@ -45,6 +45,8 @@ async def lifespan(app: FastAPI):
         from .core.security import init_auth_tables
         from .domain.queries.history import create_query_history_tables
         from .db.llm_instructions import create_llm_instruction_table
+        from .db.models import create_table_fingerprints_table_if_not_exists, create_file_imports_table_if_not_exists
+        from .db.session import get_engine
         
         print("Initializing database tables...")
         create_table_metadata_table()
@@ -70,6 +72,13 @@ async def lifespan(app: FastAPI):
 
         create_llm_instruction_table()
         print("✓ llm_instructions table ready")
+
+        engine = get_engine()
+        create_table_fingerprints_table_if_not_exists(engine)
+        print("✓ table_fingerprints table ready")
+        
+        create_file_imports_table_if_not_exists(engine)
+        print("✓ file_imports table ready")
 
         # Surface bootstrap requirement when no users exist
         try:

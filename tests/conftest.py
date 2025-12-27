@@ -16,7 +16,7 @@ from app.db.session import get_engine
 from app.db.metadata import create_table_metadata_table
 from app.domain.imports.history import create_import_history_table
 from app.domain.uploads.uploaded_files import create_uploaded_files_table
-from app.db.models import create_file_imports_table_if_not_exists
+from app.db.models import create_file_imports_table_if_not_exists, create_table_fingerprints_table_if_not_exists
 from app.domain.imports.jobs import ensure_import_jobs_table
 from app.domain.queries.history import create_query_history_tables
 from app.db.llm_instructions import create_llm_instruction_table
@@ -80,6 +80,9 @@ def initialize_test_database():
 
         print("  Creating file_imports table...")
         create_file_imports_table_if_not_exists(engine)
+
+        print("  Creating table_fingerprints table...")
+        create_table_fingerprints_table_if_not_exists(engine)
 
         print("  ✓ All system tables initialized successfully")
         print("="*80 + "\n")

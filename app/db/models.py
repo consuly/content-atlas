@@ -314,6 +314,21 @@ def record_file_import(engine: Engine, file_hash: str, file_name: str, table_nam
         })
 
 
+def create_table_fingerprints_table_if_not_exists(engine: Engine):
+    """Create table_fingerprints table to track schema signatures for intelligent merging."""
+    create_sql = """
+    CREATE TABLE IF NOT EXISTS table_fingerprints (
+        table_name VARCHAR(255) PRIMARY KEY,
+        column_names JSONB NOT NULL,
+        fingerprint_hash VARCHAR(64) NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_fingerprint_hash ON table_fingerprints(fingerprint_hash);
+    """
+    with engine.begin() as conn:
+        conn.execute(text(create_sql))
+
+
 def coerce_value_for_sql_type(value: Any, sql_type: str) -> Any:
     """
     Coerce a value to match the expected SQL type for database insertion.

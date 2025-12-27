@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import {
   Alert,
   Space,
@@ -14,6 +14,7 @@ import {
   ThunderboltOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
+import { ColorModeContext } from '../../../contexts/color-mode/context';
 import { ErrorLogViewer } from '../../../components/error-log-viewer';
 import { UploadedFile, ProcessingResult } from './types';
 
@@ -73,6 +74,8 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
   instructionField,
   archiveResultsPanel,
 }) => {
+  const { mode } = useContext(ColorModeContext);
+  
   return (
     <div style={{ padding: '24px 0' }}>
       {isArchive && (
@@ -144,7 +147,7 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
             </Row>
 
             {useSharedTable && (
-              <div style={{ background: '#fafafa', padding: 16, borderRadius: 8 }}>
+              <div style={{ background: mode === 'dark' ? '#1a2332' : '#fafafa', padding: 16, borderRadius: 8 }}>
                 <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                   <Text strong>Target Table Settings</Text>
                   <Space>

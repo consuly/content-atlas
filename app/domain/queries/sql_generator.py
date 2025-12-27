@@ -18,7 +18,7 @@ PROTECTED_SYSTEM_TABLES = {
     'import_history', 'mapping_errors', 'table_metadata', 'uploaded_files',
     'users', 'file_imports', 'import_jobs', 'llm_instructions',
     'api_keys', 'import_duplicates',
-    'query_messages', 'query_threads',
+    'query_messages', 'query_threads', 'table_fingerprints',
 }
 
 

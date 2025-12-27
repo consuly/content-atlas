@@ -202,12 +202,14 @@ GET /import-history/{import_id}
     "status": "success",
     "error_message": null,
     "warnings": [],
+    "mapping_status": "completed",
+    "mapping_errors_count": 0,
     "total_rows_in_file": 1000,
     "rows_processed": 1000,
     "rows_inserted": 1000,
     "rows_skipped": 0,
     "duplicates_found": 0,
-    "validation_errors": 0,
+    "data_validation_errors": 0,
     "duration_seconds": 2.5,
     "parsing_time_seconds": 0.5,
     "duplicate_check_time_seconds": 0.8,
@@ -218,6 +220,40 @@ GET /import-history/{import_id}
     "created_at": "2025-10-28T12:30:00Z",
     "updated_at": "2025-10-28T12:30:02Z"
   }
+}
+```
+
+### Get Mapping Errors
+
+```http
+GET /import-history/{import_id}/mapping-errors
+```
+
+**Query Parameters:**
+- `limit` (optional): Maximum records to return (default: 100)
+- `offset` (optional): Pagination offset (default: 0)
+
+**Response:**
+```json
+{
+  "success": true,
+  "errors": [
+    {
+      "id": 1,
+      "import_id": "550e8400-...",
+      "record_number": 5,
+      "error_type": "type_mismatch",
+      "error_message": "Value 'abc' is not a valid integer",
+      "source_field": "age",
+      "target_field": "age_years",
+      "source_value": "abc",
+      "occurred_at": "2025-10-28T12:30:05Z",
+      "chunk_number": 1
+    }
+  ],
+  "total_count": 1,
+  "limit": 100,
+  "offset": 0
 }
 ```
 

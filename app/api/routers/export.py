@@ -39,6 +39,7 @@ PROTECTED_SYSTEM_TABLES = {
     'import_duplicates',
     'query_messages',
     'query_threads',
+    'table_fingerprints',
 }
 
 

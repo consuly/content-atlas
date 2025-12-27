@@ -10,14 +10,16 @@ from app.api.schemas.shared import (
     ImportHistoryListResponse, ImportHistoryRecord,
     ImportHistoryDetailResponse, ImportStatisticsResponse,
     ImportDuplicateRowsResponse, DuplicateDetailResponse,
-    DuplicateMergeRequest, DuplicateMergeResponse
+    DuplicateMergeRequest, DuplicateMergeResponse,
+    ImportMappingErrorsResponse, MappingErrorHistoryRecord
 )
 from app.domain.imports.history import (
     get_import_history,
     get_import_statistics,
     list_duplicate_rows,
     get_duplicate_row_detail,
-    resolve_duplicate_row
+    resolve_duplicate_row,
+    get_mapping_errors
 )
 
 router = APIRouter(prefix="/import-history", tags=["import-history"])
@@ -182,6 +184,46 @@ async def get_import_duplicate_rows(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve duplicate rows: {str(e)}")
+
+
+@router.get("/{import_id}/mapping-errors", response_model=ImportMappingErrorsResponse)
+async def get_import_mapping_errors(
+    import_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve mapping errors that occurred during an import.
+    """
+    if limit <= 0 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+    try:
+        records = get_import_history(import_id=import_id, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+
+        import_record = ImportHistoryRecord(**records[0])
+        errors_data = get_mapping_errors(import_id=import_id, limit=limit, offset=offset)
+        
+        # Convert to Pydantic models
+        errors = [MappingErrorHistoryRecord(**err) for err in errors_data]
+        total_count = import_record.mapping_errors_count or len(errors)
+
+        return ImportMappingErrorsResponse(
+            success=True,
+            errors=errors,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve mapping errors: {str(e)}")
 
 
 @router.get("/{import_id}/duplicates/{duplicate_id}", response_model=DuplicateDetailResponse)
