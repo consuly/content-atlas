@@ -19,11 +19,6 @@ The following system tables are protected from LLM access and must never be list
 - `query_messages` - Stored LLM conversation messages
 - `query_threads` - LLM conversation thread metadata
 - `llm_instructions` - Custom LLM instructions and prompts
-- `workflows` - Workflow definitions and metadata
-- `workflow_steps` - Individual steps within workflows
-- `workflow_variables` - Workflow variable definitions
-- `workflow_executions` - Workflow execution history
-- `workflow_step_results` - Results from individual workflow step executions
 
 > 💡 **User uploads never overwrite these tables.** When a mapping request
 > specifies a reserved table name (for example, `users`), the backend

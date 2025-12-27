@@ -19,11 +19,6 @@ def test_protected_tables_constant():
         'file_imports',
         'import_jobs',
         'llm_instructions',
-        'workflows',
-        'workflow_steps',
-        'workflow_variables',
-        'workflow_executions',
-        'workflow_step_results',
     }
     assert PROTECTED_SYSTEM_TABLES == expected_tables
 

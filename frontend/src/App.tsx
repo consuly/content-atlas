@@ -32,8 +32,7 @@ import { QueryPage } from "./pages/query";
 import { ApiKeysPage } from "./pages/api-keys";
 import { TableViewerPage } from "./pages/tables/[tableName]";
 import { TablesListPage } from "./pages/tables";
-import { WorkflowsPage, WorkflowDetail } from "./pages/workflows";
-import { Database, KeyRound, MessageSquareText, UploadCloud, Workflow } from "lucide-react";
+import { Database, KeyRound, MessageSquareText, UploadCloud } from "lucide-react";
 
 const DevtoolsProviderLazy = import.meta.env.DEV
   ? React.lazy(() =>
@@ -65,14 +64,6 @@ function App() {
           meta: {
             label: "Query Database",
             icon: <MessageSquareText size={20} />,
-          },
-        },
-        {
-          name: "workflows",
-          list: "/workflows",
-          meta: {
-            label: "Workflows",
-            icon: <Workflow size={20} />,
           },
         },
         {
@@ -141,10 +132,6 @@ function App() {
                 </ErrorBoundary>
               }
             />
-          </Route>
-          <Route path="/workflows">
-            <Route index element={<WorkflowsPage />} />
-            <Route path=":id" element={<WorkflowDetail />} />
           </Route>
           <Route path="/api-keys">
             <Route index element={<ApiKeysPage />} />

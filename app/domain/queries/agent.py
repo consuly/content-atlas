@@ -40,11 +40,6 @@ PROTECTED_SYSTEM_TABLES = {
     'file_imports',
     'import_jobs',
     'llm_instructions',
-    'workflows',
-    'workflow_steps',
-    'workflow_variables',
-    'workflow_executions',
-    'workflow_step_results',
 }
 
 # Extended list used for strict SQL validation inside the agent; covers additional

@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import type { UploadProps, UploadFile } from 'antd';
 import axios from 'axios';
-import { API_URL, MAX_UPLOAD_SIZE_MB } from '../../config';
+import { API_URL, MAX_UPLOAD_SIZE_MB, UPLOAD_MODE } from '../../config';
 import { calculateFileHash } from '../../utils/fileHash';
 import { uploadToStorageDirect } from '../../utils/storageUploader';
 
@@ -91,7 +91,71 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     }
   };
 
-  const uploadFile = async (file: File): Promise<boolean> => {
+  const uploadFileProxied = async (file: File): Promise<boolean> => {
+    try {
+      setIsUploading(true);
+      setUploadProgress(0);
+
+      const token = localStorage.getItem('refine-auth');
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('allow_duplicate', 'false');
+
+      messageApi.info(`Uploading ${file.name}...`);
+
+      const response = await axios.post(`${API_URL}/upload-to-b2`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = progressEvent.total
+            ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            : 0;
+          setUploadProgress(percentCompleted);
+        },
+      });
+
+      if (response.data.success) {
+        if (response.data.exists) {
+          // File is a duplicate
+          setDuplicateFile({
+            file,
+            existingFile: response.data.existing_file,
+          });
+          setIsUploading(false);
+          return false;
+        }
+
+        messageApi.success(`${file.name} uploaded successfully`);
+        onUploadSuccess?.(response.data.files);
+        setIsUploading(false);
+        return true;
+      }
+
+      throw new Error('Upload failed');
+    } catch (error) {
+      const axiosError = error as { response?: { status?: number; data?: { exists?: boolean; existing_file?: UploadedFile } }; message?: string };
+      
+      // Handle duplicate detection from error response
+      if (axiosError.response?.status === 409 || axiosError.response?.data?.exists) {
+        setDuplicateFile({
+          file,
+          existingFile: axiosError.response?.data?.existing_file as UploadedFile,
+        });
+        setIsUploading(false);
+        return false;
+      }
+      
+      const err = error as Error;
+      messageApi.error(`Failed to upload ${file.name}: ${err.message}`);
+      onUploadError?.([err]);
+      setIsUploading(false);
+      return false;
+    }
+  };
+
+  const uploadFileDirect = async (file: File): Promise<boolean> => {
     try {
       setIsUploading(true);
       setUploadProgress(0);
@@ -186,6 +250,15 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       onUploadError?.([err]);
       setIsUploading(false);
       return false;
+    }
+  };
+
+  const uploadFile = async (file: File): Promise<boolean> => {
+    // Choose upload method based on configuration
+    if (UPLOAD_MODE === 'proxied') {
+      return uploadFileProxied(file);
+    } else {
+      return uploadFileDirect(file);
     }
   };
 

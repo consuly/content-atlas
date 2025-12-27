@@ -342,6 +342,54 @@ mc cors set content-atlas-bucket --allow-origin "http://localhost:5173" --allow-
 - Ensure CORS exposes the `ETag` header
 - Clear browser cache and retry
 
+### Persistent CORS Issues During Development/Testing
+
+If you've configured CORS correctly but still experience upload failures, you can use **proxied upload mode** as a workaround:
+
+#### Option 1: Use the Automated CORS Configuration Script (Recommended)
+
+Run the convenience script to configure B2 CORS automatically:
+
+```bash
+# For development (localhost)
+python configure_b2_cors.py --bucket-name content-atlas --environment dev
+
+# For testing (allow all origins - NOT for production)
+python configure_b2_cors.py --bucket-name content-atlas --environment test
+```
+
+#### Option 2: Enable Proxied Upload Mode
+
+If CORS configuration doesn't work or you need a quick workaround for testing:
+
+1. **Update your `.env` file** (both root and `frontend/.env` if it exists):
+   ```env
+   VITE_UPLOAD_MODE=proxied
+   ```
+
+2. **Restart the frontend development server**:
+   ```bash
+   cd frontend
+   npm run dev
+   ```
+
+3. **How it works**:
+   - `proxied`: Files upload through the FastAPI backend (bypasses CORS)
+   - `direct`: Files upload directly from browser to B2 (requires CORS)
+
+**Proxied mode is ideal for**:
+- Local development without CORS setup
+- Running automated tests
+- CI/CD pipelines
+- Environments where CORS configuration is difficult
+
+**Direct mode is ideal for**:
+- Production deployments (better performance)
+- When CORS is properly configured
+- Reducing backend load for large files
+
+To switch back to direct uploads, change `VITE_UPLOAD_MODE=direct` and restart the frontend.
+
 ---
 
 ## Migration from B2-Specific Setup

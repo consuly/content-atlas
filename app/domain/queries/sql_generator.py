@@ -16,9 +16,8 @@ from app.db.context import get_database_schema, format_schema_for_prompt, get_ta
 # Protected system tables (same as agent.py)
 PROTECTED_SYSTEM_TABLES = {
     'import_history', 'mapping_errors', 'table_metadata', 'uploaded_files',
-    'users', 'file_imports', 'import_jobs', 'llm_instructions', 'workflows',
-    'workflow_steps', 'workflow_variables', 'workflow_executions',
-    'workflow_step_results', 'api_keys', 'import_duplicates',
+    'users', 'file_imports', 'import_jobs', 'llm_instructions',
+    'api_keys', 'import_duplicates',
     'query_messages', 'query_threads',
 }
 

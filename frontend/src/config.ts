@@ -1,6 +1,7 @@
 type RuntimeConfig = {
   VITE_API_URL?: string;
   VITE_MAX_UPLOAD_SIZE_MB?: string | number;
+  VITE_UPLOAD_MODE?: string;
 };
 
 declare global {
@@ -28,3 +29,8 @@ export const MAX_UPLOAD_SIZE_MB =
   resolveNumber(runtimeConfig?.VITE_MAX_UPLOAD_SIZE_MB) ||
   resolveNumber(import.meta.env.VITE_MAX_UPLOAD_SIZE_MB) ||
   100;
+
+export const UPLOAD_MODE =
+  runtimeConfig?.VITE_UPLOAD_MODE ||
+  import.meta.env.VITE_UPLOAD_MODE ||
+  "direct";

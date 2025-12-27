@@ -33,8 +33,7 @@ def test_get_database_schema_excludes_system_tables():
         'file_imports', 'table_metadata', 'import_history', 'uploaded_files',
         'users', 'mapping_errors', 'import_jobs', 'import_duplicates',
         'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads',
-        'llm_instructions', 'workflows', 'workflow_steps', 'workflow_variables',
-        'workflow_executions', 'workflow_step_results'
+        'llm_instructions'
     ]
     
     for table_name in excluded_tables:

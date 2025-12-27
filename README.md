@@ -269,6 +269,22 @@ pytest --cov=app
 pytest tests/test_api.py -v
 ```
 
+### Resetting the Database
+
+During development, you may need to reset the database to clear test data:
+
+```bash
+# Interactive mode with confirmation
+python reset_dev_db.py
+
+# Auto-confirm (useful for scripts)
+python reset_dev_db.py --yes
+```
+
+⚠️ **Warning**: This drops all tables (including users), deletes storage files, and clears logs.
+
+For detailed information, see [docs/DATABASE_RESET.md](docs/DATABASE_RESET.md).
+
 ### Environment Variables
 
 Create a `.env` file based on `.env.example`:
