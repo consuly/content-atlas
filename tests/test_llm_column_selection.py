@@ -286,10 +286,11 @@ def test_llm_respects_user_column_names_case_insensitive():
     csv_content = _create_test_csv_with_multiple_email_columns()
     records = process_csv(csv_content)
     
-    # User instruction uses lowercase
+    # User instruction uses lowercase and is explicit about row explosion
     user_instruction = (
         "Keep only the primary email and personal email. "
-        "Create only one column email in the new table."
+        "Create only one column email in the new table. "
+        "Use explode_columns to create a separate row for each email address."
     )
     
     file_metadata = {
@@ -406,7 +407,8 @@ def test_llm_column_mapping_consistency():
     
     user_instruction = (
         "Keep only the primary email and personal email. "
-        "Create only one column email in the new table."
+        "Create only one column email in the new table. "
+        "Use explode_columns to create a separate row for each email address."
     )
     
     file_metadata = {

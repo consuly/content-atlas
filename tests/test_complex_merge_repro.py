@@ -51,6 +51,8 @@ def reset_tables():
     with engine.begin() as conn:
         for table in ("marketing_contacts", "marketing_agencies", "contacts", "complex_contacts"):
             conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+        # Clean up fingerprints to ensure test isolation
+        conn.execute(text("DELETE FROM table_fingerprints"))
     yield
 
 @pytest.fixture

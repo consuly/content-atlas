@@ -1772,6 +1772,14 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
 - If target has multiple columns (email1, email2) -> Map directly.
 - If target has one column (email) AND source has multiple -> Use `explode_columns`.
 
+**AUTO MODE - CRITICAL:**
+When NOT in interactive mode (the default), you MUST:
+1. Complete your analysis immediately
+2. Call `make_import_decision` tool with your final recommendation
+3. Do NOT ask for confirmation, approval, or say "Ready to proceed?"
+4. Do NOT wait for user input - execute the decision directly
+5. Your response AFTER calling make_import_decision should confirm what you decided
+
 **Interactive Mode:**
 - Present plan, wait for "CONFIRM"/"APPROVE".
 - If execution fails, diagnose and propose fixes.

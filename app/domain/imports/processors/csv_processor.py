@@ -153,6 +153,11 @@ def process_csv(file_content: bytes, has_header: Optional[bool] = None) -> List[
     if has_header:
         # Standard processing with header
         df = pd.read_csv(io.BytesIO(file_content))
+        
+        # Strip whitespace from column names to ensure consistent matching
+        # This prevents issues where " COLUMN_NAME " != "COLUMN_NAME"
+        df.columns = df.columns.str.strip()
+        
         logger.info(f"Processed CSV with header: {len(df)} rows, columns: {list(df.columns)}")
     else:
         # Process without header and use generated column names
@@ -185,6 +190,9 @@ def load_csv_sample(file_content: bytes, sample_rows: int = 1000) -> List[Dict[s
     )
     if not has_header:
         df.columns = [f"col_{i+1}" for i in range(len(df.columns))]
+    else:
+        # Strip whitespace from column names for consistency
+        df.columns = df.columns.str.strip()
 
     records = df.to_dict("records")
     for record in records:
@@ -216,6 +224,9 @@ def stream_csv_records(
             if generated_columns is None:
                 generated_columns = [f"col_{i+1}" for i in range(len(df.columns))]
             df.columns = generated_columns
+        else:
+            # Strip whitespace from column names for consistency
+            df.columns = df.columns.str.strip()
 
         records = df.to_dict("records")
         for record in records:
@@ -256,6 +267,11 @@ def process_excel(file_content: bytes, sheet_name: Optional[str] = None) -> List
             raise ValueError(f"Could not read Excel file: {str(e)}")
 
     df = _ensure_single_sheet_dataframe(df)
+    
+    # Strip whitespace from column names to ensure consistent matching
+    # This prevents issues where " COLUMN_NAME " != "COLUMN_NAME"
+    df.columns = df.columns.str.strip()
+    
     records = df.to_dict('records')
 
     # Convert pandas NaT values to None for database compatibility
@@ -292,6 +308,10 @@ def process_large_excel(file_content: bytes, chunk_size: int = 20000, sheet_name
         )
         
         df = _ensure_single_sheet_dataframe(df)
+        
+        # Strip whitespace from column names to ensure consistent matching
+        df.columns = df.columns.str.strip()
+        
         records = df.to_dict('records')
 
         # Convert pandas NaT values to None for database compatibility
