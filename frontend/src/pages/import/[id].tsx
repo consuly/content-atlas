@@ -35,6 +35,55 @@ import { InstructionField } from './components/InstructionField';
 const { Text, Paragraph } = Typography;
 const DUPLICATE_PREVIEW_LIMIT = 20;
 
+const useSimulatedProgress = (
+  actualProgress: number | null | undefined,
+  isLoading: boolean,
+  estimatedDuration: number = 5000
+) => {
+  const [percent, setPercent] = useState(0);
+
+  useEffect(() => {
+    if (!isLoading) {
+      if (actualProgress === 100) {
+        setPercent(100);
+      }
+      return;
+    }
+    
+    // Reset if we start a new loading phase
+    if (percent === 100 && (!actualProgress || actualProgress === 0)) {
+        setPercent(0);
+    }
+
+    const intervalMs = 100;
+    
+    const interval = setInterval(() => {
+      setPercent((prev) => {
+        // If actual progress provided and greater than current, catch up
+        if (typeof actualProgress === 'number' && actualProgress > prev) {
+             const diff = actualProgress - prev;
+             // Catch up smoothly
+             return prev + Math.max(0.5, diff * 0.1);
+        } 
+        
+        // Otherwise simulate progress towards 90%
+        if (prev < 90) {
+             const totalSteps = estimatedDuration / intervalMs;
+             const step = 90 / totalSteps;
+             return prev + step;
+        }
+        
+        return prev;
+      });
+    }, intervalMs);
+
+    return () => clearInterval(interval);
+  }, [isLoading, actualProgress, estimatedDuration, percent]);
+  
+  if (actualProgress === 100) return 100;
+  return Math.min(99, Math.max(0, percent));
+};
+
 export const ImportMappingPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -384,6 +433,27 @@ export const ImportMappingPage: React.FC = () => {
       return chunkProgressLabel ?? undefined;
     },
     [chunkProgressLabel]
+  );
+
+  const estimatedDuration = useMemo(() => {
+      if (!file) return 5000;
+      // Base 2s, plus 50ms per KB
+      // 1MB = 1024KB -> ~53s
+      // 100KB -> ~7s
+      const duration = 2000 + (file.file_size / 1024) * 50;
+      return Math.min(60000, duration); // Cap at 60s
+  }, [file]);
+
+  const simulatedArchiveProgress = useSimulatedProgress(
+      archiveProgressPercent,
+      isArchiveMappingActive,
+      estimatedDuration
+  );
+
+  const simulatedMappingProgress = useSimulatedProgress(
+      progressDisplayPercent,
+      isMappingInProgress,
+      estimatedDuration
   );
 
   const formatBytes = (bytes: number): string => {
@@ -1980,7 +2050,7 @@ export const ImportMappingPage: React.FC = () => {
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Text strong>Archive mapping progress</Text>
               <Progress
-                percent={archiveProgressPercent}
+                percent={simulatedArchiveProgress}
                 status={archiveProgressStatus}
                 size="small"
               />
@@ -2048,15 +2118,13 @@ export const ImportMappingPage: React.FC = () => {
               {mappingStageLabel && (
                 <Text type="secondary">Stage: {mappingStageLabel.replace(/_/g, ' ')}</Text>
               )}
-              {progressDisplayPercent !== null && (
-                <Progress
-                  percent={progressDisplayPercent}
-                  status="active"
-                  size="small"
-                  style={{ width: 260 }}
-                  format={renderProgressLabel}
-                />
-              )}
+              <Progress
+                percent={simulatedMappingProgress}
+                status="active"
+                size="small"
+                style={{ width: 260 }}
+                format={renderProgressLabel}
+              />
             </Space>
           </Space>
         </Card>
