@@ -582,6 +582,7 @@ class ArchiveAutoProcessFileResult(BaseModel):
     import_id: Optional[str] = None
     auto_retry_used: bool = False
     message: Optional[str] = None
+    llm_response: Optional[str] = None
 
 
 class ArchiveAutoProcessResponse(BaseModel):

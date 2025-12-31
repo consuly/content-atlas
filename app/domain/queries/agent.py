@@ -809,10 +809,12 @@ def create_query_agent(system_prompt: str):
 
     # Initialize LLM (Anthropic Claude)
     llm = ChatAnthropic(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-5-20250929",
         api_key=settings.anthropic_api_key,
         temperature=0,  # Keep deterministic for SQL generation
-        max_tokens=4096
+        max_tokens=4096,
+        timeout=90.0,  # 90 second timeout for API calls
+        max_retries=2  # Retry on transient failures
     )
 
     # Define tools

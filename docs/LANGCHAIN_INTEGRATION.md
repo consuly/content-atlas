@@ -56,7 +56,7 @@ class DatabaseQueryState(AgentState):
 
 # Initialize model
 llm = ChatAnthropic(
-    model="claude-haiku-4-5-20251001",
+    model="claude-sonnet-4-5-20250929",
     api_key=settings.anthropic_api_key,
     temperature=0,
     max_tokens=4096
@@ -756,7 +756,7 @@ from langchain_classic import hub
 ```python
 # Using Haiku for cost-effective queries
 llm = ChatAnthropic(
-    model="claude-haiku-4-5-20251001",
+    model="claude-sonnet-4-5-20250929",
     api_key=settings.anthropic_api_key,
     temperature=0,  # Deterministic for SQL
     max_tokens=4096
@@ -1039,7 +1039,7 @@ class CustomState(AgentState):
 
 # 2. Initialize model
 llm = ChatAnthropic(
-    model="claude-haiku-4-5-20251001",
+    model="claude-sonnet-4-5-20250929",
     temperature=0,
     max_tokens=4096
 )

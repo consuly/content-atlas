@@ -1692,10 +1692,12 @@ def create_file_analyzer_agent(max_iterations: int = 5, interactive_mode: bool =
         )
 
     model = ChatAnthropic(
-        model="claude-haiku-4-5-20251001",  # Much faster than Sonnet
+        model="claude-sonnet-4-5-20250929",  # Much faster than Sonnet
         api_key=api_key,
         temperature=0,  # Deterministic for consistent decisions
-        max_tokens=4096
+        max_tokens=4096,
+        timeout=90.0,  # 90 second timeout for API calls
+        max_retries=2  # Retry on transient failures
     )
     
     tools = [

@@ -217,7 +217,7 @@ def _guess_content_type(file_name: str) -> str:
 
 
 def _build_archive_entry_name(archive_stem: str, entry_name: str, index: int) -> str:
-    sanitized = entry_name.replace("\\", "_").replace("/", "_")
+    sanitized = entry_name.replace("\\", "_").replace("/", "_").replace(" ", "_")
     sanitized = sanitized or f"archive_entry_{index:03d}"
     return f"{archive_stem}__{index:03d}__{sanitized}"
 
@@ -419,6 +419,7 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
         "import_id": auto_result.import_id if auto_result else None,
         "auto_retry_used": response.auto_retry_attempted,
         "message": message,
+        "llm_response": response.llm_response,
     }
 
 
@@ -496,6 +497,8 @@ def _process_entry_bytes(
 
     # 4. Analysis & Execution (parallel analysis, serialized insertion via TableLockManager)
     summary = {}
+    analysis_response: Optional[AnalyzeFileResponse] = None  # Track response for error logging
+    
     def _run_fresh_analysis(
         override_instruction: Optional[str] = None,
         override_target_table: Optional[str] = None,
@@ -804,20 +807,34 @@ def _process_entry_bytes(
                                 )
 
     except HTTPException as exc:
+        msg = getattr(exc, "detail", None)
+        if not msg:
+            msg = str(exc)
+        if not msg:
+            msg = f"HTTPException {exc.status_code} (no detail provided)"
         summary = {
             "status": "failed",
-            "message": getattr(exc, "detail", str(exc)),
+            "message": msg,
             "auto_retry_used": False,
         }
+        # Include LLM response if analysis got far enough to produce one
+        if analysis_response and analysis_response.llm_response:
+            summary["llm_response"] = analysis_response.llm_response
         if cached_plan_event:
             cached_plan_event.set()
     except Exception as exc:
         logger.exception("Auto-process failed for %s: %s", archive_path, exc)
+        msg = str(exc)
+        if not msg:
+            msg = f"{type(exc).__name__}: (no error message)"
         summary = {
             "status": "failed",
-            "message": str(exc),
+            "message": msg,
             "auto_retry_used": False,
         }
+        # Include LLM response if analysis got far enough to produce one
+        if analysis_response and analysis_response.llm_response:
+            summary["llm_response"] = analysis_response.llm_response
         if cached_plan_event:
             cached_plan_event.set()
 
@@ -826,8 +843,13 @@ def _process_entry_bytes(
     if not summary.get("message"):
         fallback = "Automatic processing failed"
         if waited_for_cached_plan_without_decision:
-            fallback += " after cached plan lookup returned no decision"
+            fallback += " after cache timeout waiting for parallel file's LLM decision"
+        else:
+            fallback += " - no error details captured (check server logs for exceptions)"
         summary["message"] = fallback
+        # Even if we have no error message, include LLM response if available
+        if analysis_response and analysis_response.llm_response:
+            summary["llm_response"] = analysis_response.llm_response
 
     if cached_plan_event and fingerprint:
         with fingerprint_lock:
@@ -848,6 +870,7 @@ def _process_entry_bytes(
         import_id=summary.get("import_id"),
         auto_retry_used=summary.get("auto_retry_used", False),
         message=summary.get("message"),
+        llm_response=summary.get("llm_response"),
     )
 
 
@@ -976,6 +999,11 @@ def _extract_supported_archive_entries(
             archive_path = info.filename
             if not archive_path or archive_path.endswith("/"):
                 continue
+            
+            # Skip macOS system files and hidden files
+            if "__MACOSX" in archive_path or os.path.basename(archive_path).startswith("._"):
+                continue
+
             if normalized_allowed is not None and archive_path not in normalized_allowed:
                 continue
 
@@ -2082,6 +2110,29 @@ async def analyze_file_endpoint(
         # Determine can_auto_execute based on analysis_mode
         if analysis_mode == AnalysisMode.AUTO_ALWAYS:
             response.can_auto_execute = llm_decision is not None
+            if not llm_decision:
+                # AUTO_ALWAYS requires a decision. If missing, it's a failure.
+                error_msg = "Automatic processing failed: AI could not determine a confident import strategy without user input."
+                response.success = False
+                response.error = error_msg
+                
+                # Cleanup job state so it doesn't hang in 'running'
+                if job_id:
+                    update_import_job(
+                        job_id, 
+                        status="failed", 
+                        error_message=error_msg,
+                        stage="analysis"
+                    )
+                # Ensure file status reflects failure
+                if file_id:
+                    update_file_status(
+                        file_id, 
+                        "failed", 
+                        error_message=error_msg,
+                        expected_active_job_id=job_id
+                    )
+
         elif analysis_mode == AnalysisMode.AUTO_HIGH_CONFIDENCE:
             # Would need to parse confidence from LLM response
             response.can_auto_execute = False  # Conservative default

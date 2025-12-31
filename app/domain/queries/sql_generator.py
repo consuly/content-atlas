@@ -111,10 +111,12 @@ Generate the SQL query now."""
         
         # Initialize LLM
         llm = ChatAnthropic(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-5-20250929",
             api_key=settings.anthropic_api_key,
             temperature=0,
-            max_tokens=2048
+            max_tokens=2048,
+            timeout=90.0,  # 90 second timeout for API calls
+            max_retries=2  # Retry on transient failures
         )
         
         # Single LLM call

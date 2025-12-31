@@ -8,12 +8,17 @@ Usage:
 import requests
 import json
 import sys
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
 # API Configuration
 API_BASE_URL = "http://localhost:8000"
+
+# Log file paths
+MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.jsonl")
+ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_debug.jsonl")
 
 
 def format_timestamp(ts: Optional[str]) -> str:
@@ -187,7 +192,32 @@ def print_job_summary(job: Dict[str, Any], show_metadata: bool = True):
         if result_metadata and isinstance(result_metadata, dict):
             print(f"\n   📊 RESULT METADATA:")
             for key, value in list(result_metadata.items())[:10]:
-                if isinstance(value, (list, dict)):
+                if key == "results" and isinstance(value, list):
+                    print(f"      {key}: {type(value).__name__} ({len(value)} items)")
+                    # Show detailed per-file results for archive/workbook jobs
+                    for idx, result in enumerate(value, 1):
+                        if isinstance(result, dict):
+                            status = result.get("status", "unknown")
+                            status_emoji = {"processed": "✅", "failed": "❌", "skipped": "⏭️"}.get(status, "❓")
+                            print(f"\n         {status_emoji} Result #{idx}:")
+                            print(f"            Archive Path: {result.get('archive_path', 'N/A')}")
+                            print(f"            Status: {status}")
+                            if result.get("stored_file_name"):
+                                print(f"            Stored Name: {result.get('stored_file_name')}")
+                            if result.get("table_name"):
+                                print(f"            Table: {result.get('table_name')}")
+                            if result.get("records_processed") is not None:
+                                print(f"            Records: {result.get('records_processed')}")
+                            if result.get("message"):
+                                msg = result.get("message", "")
+                                # Show full message for failures
+                                if status == "failed":
+                                    print(f"            ⚠️  Error Message:")
+                                    for line in msg.split("\n")[:20]:  # Show up to 20 lines
+                                        print(f"               {line}")
+                                else:
+                                    print(f"            Message: {msg[:200]}")
+                elif isinstance(value, (list, dict)):
                     print(f"      {key}: {type(value).__name__} ({len(value)} items)")
                 else:
                     print(f"      {key}: {value}")
@@ -263,6 +293,163 @@ def print_mapping_errors(errors: List[Dict[str, Any]], limit: int = 20):
             print(f"\n     ... and {len(type_errors) - 5} more errors of this type")
 
 
+def read_jsonl_log(log_path: str, search_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Read entries from a JSONL log file, optionally filtering by field values"""
+    if not os.path.exists(log_path):
+        return []
+    
+    entries = []
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if search_filter:
+                        match = all(
+                            str(entry.get(key, "")).lower().find(str(val).lower()) >= 0
+                            for key, val in search_filter.items()
+                        )
+                        if match:
+                            entries.append(entry)
+                    else:
+                        entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        print(f"⚠️  Error reading log file {log_path}: {e}")
+    
+    return entries
+
+
+def print_mapping_failure_logs(file_id: Optional[str] = None, file_name: Optional[str] = None, job_id: Optional[str] = None):
+    """Read and display mapping failure logs"""
+    search_filter = {}
+    if file_id:
+        search_filter["file_id"] = file_id
+    if file_name:
+        search_filter["file_name"] = file_name or search_filter.get("archive_name", "")
+    if job_id:
+        search_filter["job_id"] = job_id
+    
+    entries = read_jsonl_log(MAPPING_FAILURE_LOG, search_filter if search_filter else None)
+    
+    if not entries:
+        return
+    
+    print(f"\n🔥 MAPPING FAILURE LOG ENTRIES ({len(entries)} found):")
+    print("=" * 80)
+    
+    for idx, entry in enumerate(entries, 1):
+        print(f"\n📝 Entry #{idx} - {entry.get('event', 'unknown_event')}")
+        print(f"   Timestamp: {format_timestamp(entry.get('ts'))}")
+        
+        if entry.get('file_id'):
+            print(f"   File ID: {entry.get('file_id')}")
+        if entry.get('file_name'):
+            print(f"   File Name: {entry.get('file_name')}")
+        if entry.get('archive_name'):
+            print(f"   Archive: {entry.get('archive_name')}")
+        if entry.get('archive_path'):
+            print(f"   Archive Path: {entry.get('archive_path')}")
+        if entry.get('job_id'):
+            print(f"   Job ID: {entry.get('job_id')}")
+        if entry.get('uploaded_file_id'):
+            print(f"   Uploaded File ID: {entry.get('uploaded_file_id')}")
+        
+        if entry.get('error'):
+            print(f"\n   ⚠️  ERROR:")
+            error_lines = str(entry.get('error')).split("\n")
+            for line in error_lines[:15]:
+                print(f"      {line}")
+            if len(error_lines) > 15:
+                print(f"      ... ({len(error_lines) - 15} more lines)")
+        
+        # Show LLM response if available
+        raw_result = entry.get('raw_result', {})
+        if isinstance(raw_result, dict):
+            llm_response = raw_result.get('llm_response')
+            if llm_response:
+                print(f"\n   💬 LLM RESPONSE:")
+                response_lines = str(llm_response).split("\n")
+                for line in response_lines[:10]:
+                    print(f"      {line}")
+                if len(response_lines) > 10:
+                    print(f"      ... ({len(response_lines) - 10} more lines)")
+        
+        # Show analysis mode and conflict resolution
+        if entry.get('analysis_mode'):
+            print(f"   Analysis Mode: {entry.get('analysis_mode')}")
+        if entry.get('conflict_resolution'):
+            print(f"   Conflict Resolution: {entry.get('conflict_resolution')}")
+        if entry.get('strategy'):
+            print(f"   Strategy: {entry.get('strategy')}")
+        if entry.get('target_table'):
+            print(f"   Target Table: {entry.get('target_table')}")
+
+
+def print_archive_debug_logs(file_id: Optional[str] = None, job_id: Optional[str] = None, archive_name: Optional[str] = None):
+    """Read and display archive debug logs"""
+    search_filter = {}
+    if file_id:
+        search_filter["file_id"] = file_id
+    if job_id:
+        search_filter["job_id"] = job_id
+    if archive_name:
+        search_filter["archive_name"] = archive_name
+    
+    entries = read_jsonl_log(ARCHIVE_DEBUG_LOG, search_filter if search_filter else None)
+    
+    if not entries:
+        return
+    
+    print(f"\n🔍 ARCHIVE DEBUG LOG ENTRIES ({len(entries)} found):")
+    print("=" * 80)
+    
+    # Group by event type for better readability
+    event_groups = defaultdict(list)
+    for entry in entries:
+        event_type = entry.get('event', 'unknown')
+        event_groups[event_type].append(entry)
+    
+    for event_type, event_entries in event_groups.items():
+        print(f"\n📌 Event: {event_type} ({len(event_entries)} occurrences)")
+        print("-" * 80)
+        
+        for idx, entry in enumerate(event_entries[:5], 1):
+            print(f"\n   [{idx}] {format_timestamp(entry.get('ts'))}")
+            
+            # Show relevant fields based on event type
+            if event_type == "job_started":
+                print(f"       Archive: {entry.get('archive_name')}")
+                print(f"       Supported Entries: {len(entry.get('supported_entries', []))}")
+                if entry.get('forced_table_name'):
+                    print(f"       Forced Table: {entry.get('forced_table_name')} ({entry.get('forced_table_mode')})")
+            
+            elif event_type in ("entry_finished", "entry_error"):
+                print(f"       File: {entry.get('archive_path')}")
+                print(f"       Status: {entry.get('status')}")
+                if entry.get('table_name'):
+                    print(f"       Table: {entry.get('table_name')}")
+                if entry.get('records_processed') is not None:
+                    print(f"       Records: {entry.get('records_processed')}")
+                if entry.get('message'):
+                    print(f"       Message: {entry.get('message')[:150]}")
+                if entry.get('error'):
+                    print(f"       Error: {entry.get('error')[:150]}")
+            
+            elif event_type == "job_completed":
+                print(f"       Success: {entry.get('success')}")
+                print(f"       Processed: {entry.get('processed_files')}")
+                print(f"       Failed: {entry.get('failed_files')}")
+                print(f"       Skipped: {entry.get('skipped_files')}")
+        
+        if len(event_entries) > 5:
+            print(f"\n   ... and {len(event_entries) - 5} more {event_type} events")
+
+
 def investigate_file(file_record: Dict[str, Any]):
     """Comprehensive investigation of a single file"""
     file_id = file_record.get("id")
@@ -275,12 +462,21 @@ def investigate_file(file_record: Dict[str, Any]):
     # 1. Show file details
     print_file_summary(file_record, show_details=True)
     
-    # 2. Get associated jobs
+    # 2. Check log files for this file
+    print_mapping_failure_logs(file_id=file_id, file_name=file_name)
+    print_archive_debug_logs(file_id=file_id, archive_name=file_name)
+    
+    # 3. Get associated jobs
     jobs = get_import_jobs(file_id=file_id)
     if jobs:
         print(f"\n📦 FOUND {len(jobs)} ASSOCIATED JOB(S):")
         for job in jobs:
+            job_id = job.get("id")
             print_job_summary(job, show_metadata=True)
+            
+            # Check logs for this specific job
+            print_mapping_failure_logs(job_id=job_id)
+            print_archive_debug_logs(job_id=job_id)
             
             # Check for import history linked to this job
             result_metadata = job.get("result_metadata", {})
@@ -300,7 +496,7 @@ def investigate_file(file_record: Dict[str, Any]):
     else:
         print("\n⚠️  No jobs found for this file")
     
-    # 3. Search import history by file name (fallback)
+    # 4. Search import history by file name (fallback)
     history_records = get_import_history()
     matching_history = [h for h in history_records if file_name in h.get("file_name", "")]
     if matching_history:
@@ -313,6 +509,18 @@ def investigate_file(file_record: Dict[str, Any]):
                 errors = get_mapping_errors(import_id)
                 if errors:
                     print_mapping_errors(errors)
+    
+    # 5. Look for child files (archive entries)
+    all_files = search_files(limit=200)
+    child_files = [f for f in all_files if f.get("parent_file_id") == file_id]
+    if child_files:
+        print(f"\n👶 FOUND {len(child_files)} CHILD FILE(S) (Archive Entries):")
+        for child_file in child_files:
+            print_file_summary(child_file, show_details=True)
+            # Check logs for child files
+            child_file_id = child_file.get("id")
+            child_file_name = child_file.get("file_name", "")
+            print_mapping_failure_logs(file_id=child_file_id, file_name=child_file_name)
 
 
 def show_recent_failures():
