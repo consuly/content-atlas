@@ -2053,6 +2053,7 @@ export const ImportMappingPage: React.FC = () => {
                 percent={simulatedArchiveProgress}
                 status={archiveProgressStatus}
                 size="small"
+                format={(percent) => `${Math.round(percent ?? 0)}%`}
               />
               {displayJobInfo?.stage && (
                 <Text type="secondary">
@@ -2108,9 +2109,9 @@ export const ImportMappingPage: React.FC = () => {
 
       {!isArchiveMappingActive && isMappingInProgress && (
         <Card size="small" style={{ marginBottom: 16 }}>
-          <Space align="start" size={16}>
+          <Space align="start" size={16} style={{ width: '100%' }}>
             <Spin size="large" />
-            <Space direction="vertical" size={4}>
+            <Space direction="vertical" size={4} style={{ width: '100%', flex: 1 }}>
               <Text strong>Mapping in progress</Text>
               <Text type="secondary">
                 We are mapping {file.file_name}. You can stay on this page to see live updates.
@@ -2122,7 +2123,6 @@ export const ImportMappingPage: React.FC = () => {
                 percent={simulatedMappingProgress}
                 status="active"
                 size="small"
-                style={{ width: 260 }}
                 format={renderProgressLabel}
               />
             </Space>

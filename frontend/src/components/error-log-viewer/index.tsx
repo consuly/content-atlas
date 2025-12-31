@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Alert, Collapse, Typography, Space, Tag, Button } from 'antd';
+import { Alert, Collapse, Typography, Space, Tag, Button, theme } from 'antd';
 import { ExclamationCircleOutlined, ReloadOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { formatUserFacingError } from '../../utils/errorMessages';
 
@@ -29,6 +29,8 @@ export const ErrorLogViewer: React.FC<ErrorLogViewerProps> = ({
   onRetry,
   showRetry = true,
 }) => {
+  const { token } = theme.useToken();
+
   const getErrorTypeColor = (type?: string) => {
     switch (type) {
       case 'EXECUTION_FAILED':
@@ -105,16 +107,16 @@ export const ErrorLogViewer: React.FC<ErrorLogViewerProps> = ({
               <Paragraph
                 code
                 style={{
-                  marginTop: 8,
-                  padding: 12,
-                  background: '#fff',
-                  borderRadius: 4,
-                  fontSize: 12,
-                  maxHeight: 200,
-                  overflow: 'auto',
-                }}
-              >
-                {JSON.stringify(errorDetails.llm_decision_context, null, 2)}
+              marginTop: 8,
+              padding: 12,
+              background: token.colorBgContainer,
+              borderRadius: 4,
+              fontSize: 12,
+              maxHeight: 200,
+              overflow: 'auto',
+            }}
+          >
+            {JSON.stringify(errorDetails.llm_decision_context, null, 2)}
               </Paragraph>
             </div>
           )}
@@ -170,7 +172,7 @@ export const ErrorLogViewer: React.FC<ErrorLogViewerProps> = ({
           style={{
             margin: 0,
             padding: 12,
-            background: '#fff',
+            background: token.colorBgContainer,
             borderRadius: 4,
             fontSize: 12,
             maxHeight: 200,
@@ -216,7 +218,7 @@ export const ErrorLogViewer: React.FC<ErrorLogViewerProps> = ({
       {detailPanels.length > 0 && (
         <Collapse
           bordered={false}
-          style={{ background: '#fafafa' }}
+          style={{ background: token.colorFillAlter }}
           expandIconPosition="end"
         >
           {detailPanels}
