@@ -59,12 +59,14 @@ def clean_log_files() -> dict:
         return results
     
     try:
-        for log_file in logs_dir.glob("*.log"):
-            try:
-                log_file.unlink()
-                results['files_deleted'] += 1
-            except Exception as e:
-                results['errors'].append(f"Failed to delete {log_file.name}: {e}")
+        # Clean all log file types (.log, .jsonl, etc.)
+        for pattern in ["*.log", "*.jsonl"]:
+            for log_file in logs_dir.glob(pattern):
+                try:
+                    log_file.unlink()
+                    results['files_deleted'] += 1
+                except Exception as e:
+                    results['errors'].append(f"Failed to delete {log_file.name}: {e}")
     except Exception as e:
         results['errors'].append(f"Failed to access logs directory: {e}")
     

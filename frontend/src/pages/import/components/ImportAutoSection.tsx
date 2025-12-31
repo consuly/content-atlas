@@ -82,7 +82,7 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
         <Alert
           message="Archive detected"
           description="Auto Process Archive will unpack every CSV/XLSX in this ZIP file and run the auto mapper on each one sequentially."
-          type="warning"
+          type="info"
           showIcon
           style={{ marginBottom: 24 }}
         />

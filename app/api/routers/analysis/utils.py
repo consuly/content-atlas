@@ -35,12 +35,13 @@ from app.db.llm_instructions import (
     touch_llm_instruction,
     create_llm_instruction_table,
 )
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 # Module-level constants
-ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_auto_process.log")
-MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.log")
+ARCHIVE_DEBUG_LOG = os.path.join("logs", "archive_debug.jsonl")
+MAPPING_FAILURE_LOG = os.path.join("logs", "mapping_failures.jsonl")
 _archive_log_lock = threading.Lock()
 _failure_log_lock = threading.Lock()
 
@@ -150,8 +151,13 @@ def log_archive_debug(payload: Dict[str, Any]) -> None:
     """
     try:
         os.makedirs(os.path.dirname(ARCHIVE_DEBUG_LOG), exist_ok=True)
+        # Use local timezone if configured, otherwise UTC
+        if settings.log_timezone == "local":
+            ts = datetime.now().astimezone().isoformat()
+        else:
+            ts = datetime.now(timezone.utc).isoformat()
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": ts,
             **payload,
         }
         with _archive_log_lock:
@@ -168,8 +174,13 @@ def log_mapping_failure(payload: Dict[str, Any]) -> None:
     """
     try:
         os.makedirs(os.path.dirname(MAPPING_FAILURE_LOG), exist_ok=True)
+        # Use local timezone if configured, otherwise UTC
+        if settings.log_timezone == "local":
+            ts = datetime.now().astimezone().isoformat()
+        else:
+            ts = datetime.now(timezone.utc).isoformat()
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": ts,
             **payload,
         }
         with _failure_log_lock:

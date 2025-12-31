@@ -7,10 +7,16 @@ class Settings(BaseSettings):
     debug: bool = True
     date_default_dayfirst: bool = False
     log_level: str = "INFO"
+    log_timezone: str = "local"  # Options: "local" (server timezone), "UTC"
     map_stage_timeout_seconds: int = 600
     map_parallel_max_workers: int = 4  # Controls parallel mapping chunk workers
     upload_max_file_size_mb: int = 100
     b2_max_retries: int = 3
+    
+    # LLM Analysis Timeouts (in seconds)
+    llm_api_timeout: int = 120  # Timeout for Claude API calls (increased from 90s default)
+    llm_analysis_timeout: int = 180  # Overall analysis timeout (must be > llm_api_timeout)
+    llm_max_retries: int = 2  # Number of retries on transient LLM failures
     
     # Authentication
     secret_key: str = "your-secret-key-change-in-production"

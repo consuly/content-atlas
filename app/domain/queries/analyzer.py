@@ -1639,7 +1639,7 @@ _file_analyzer_checkpointer = InMemorySaver()
 # Constants for loop prevention
 MAX_RETRY_ATTEMPTS = 3
 MAX_TOTAL_TOOL_CALLS = 10
-ANALYSIS_TIMEOUT_SECONDS = 60
+ANALYSIS_TIMEOUT_SECONDS = settings.llm_analysis_timeout  # Use configured timeout (default: 180s)
 
 
 @before_model
@@ -1696,8 +1696,8 @@ def create_file_analyzer_agent(max_iterations: int = 5, interactive_mode: bool =
         api_key=api_key,
         temperature=0,  # Deterministic for consistent decisions
         max_tokens=4096,
-        timeout=90.0,  # 90 second timeout for API calls
-        max_retries=2  # Retry on transient failures
+        timeout=float(settings.llm_api_timeout),  # Configurable API timeout (default: 120s)
+        max_retries=settings.llm_max_retries  # Configurable retries (default: 2)
     )
     
     tools = [
@@ -1774,13 +1774,17 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
 - If target has multiple columns (email1, email2) -> Map directly.
 - If target has one column (email) AND source has multiple -> Use `explode_columns`.
 
-**AUTO MODE - CRITICAL:**
-When NOT in interactive mode (the default), you MUST:
-1. Complete your analysis immediately
-2. Call `make_import_decision` tool with your final recommendation
-3. Do NOT ask for confirmation, approval, or say "Ready to proceed?"
-4. Do NOT wait for user input - execute the decision directly
-5. Your response AFTER calling make_import_decision should confirm what you decided
+**AUTO MODE - CRITICAL (NON-INTERACTIVE DEFAULT):**
+When NOT in interactive mode (analysis_mode=AUTO_ALWAYS or absence of interactive_mode flag):
+1. ✅ **COMPLETE ANALYSIS IMMEDIATELY** - Analyze file structure, compare with existing tables
+2. ✅ **CALL make_import_decision TOOL** - You MUST call this tool with your final recommendation
+3. ❌ **NEVER ASK FOR CONFIRMATION** - Do NOT say "Please confirm", "Ready to proceed?", or "Let me know"
+4. ❌ **NEVER WAIT FOR USER INPUT** - Do NOT list "Next Steps" or "Options" for the user
+5. ❌ **NEVER END WITH QUESTIONS** - Do NOT ask the user to approve, confirm, or choose anything
+6. ✅ **RESPOND AFTER DECISION** - After calling make_import_decision, your text response should summarize what you decided
+
+**AUTO MODE FAILURE = NOT CALLING make_import_decision**
+If you analyze the file but don't call make_import_decision, the import will fail with "Automatic processing failed".
 
 **Interactive Mode:**
 - Present plan, wait for "CONFIRM"/"APPROVE".
@@ -1847,6 +1851,25 @@ def analyze_file_for_import(
     Returns:
         Analysis results with recommendations
     """
+    # Use unique thread per invocation unless caller provides one explicitly
+    if thread_id is None:
+        thread_id = f"analysis-{uuid4()}"
+    
+    # ENTRY-POINT LOGGING: Log analysis start with all key parameters
+    logger.info(
+        "LLM-ANALYSIS-START: file='%s', total_rows=%s, sample_size=%d, analysis_mode=%s, "
+        "conflict_mode=%s, max_iterations=%d, thread_id=%s, interactive_mode=%s, has_instruction=%s",
+        file_metadata.get('name', 'unknown'),
+        file_metadata.get('total_rows', 'unknown'),
+        len(file_sample),
+        analysis_mode.value,
+        conflict_mode.value,
+        max_iterations,
+        thread_id,
+        interactive_mode,
+        bool(llm_instruction)
+    )
+    
     try:
         # Get existing database schema
         schema_info = get_database_schema()
@@ -1863,14 +1886,11 @@ def analyze_file_for_import(
         )
         
         # Create and run agent
+        logger.info("LLM-ANALYSIS-AGENT-CREATE: Creating agent for file='%s'", file_metadata.get('name', 'unknown'))
         agent = create_file_analyzer_agent(
             max_iterations=max_iterations,
             interactive_mode=interactive_mode
         )
-        
-        # Use unique thread per invocation unless caller provides one explicitly
-        if thread_id is None:
-            thread_id = f"analysis-{uuid4()}"
         
         # Create config with thread_id for conversation continuity
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
@@ -1923,6 +1943,13 @@ Please analyze the file structure, compare it with existing tables, and recommen
         else:
             messages_to_send = messages
         
+        # LOG BEFORE LLM INVOCATION
+        logger.info(
+            "LLM-ANALYSIS-INVOKE: Calling agent.invoke() for file='%s', message_count=%d",
+            file_metadata.get('name', 'unknown'),
+            len(messages_to_send)
+        )
+        
         result = agent.invoke(
             {"messages": messages_to_send},
             context=context,
@@ -1939,6 +1966,16 @@ Please analyze the file structure, compare it with existing tables, and recommen
         # Extract LLM decision if it was made
         llm_decision = context.file_metadata.get("llm_decision")
         
+        # LOG SUCCESSFUL COMPLETION
+        logger.info(
+            "LLM-ANALYSIS-COMPLETE: file='%s', iterations=%d, decision=%s, strategy=%s, target_table=%s",
+            file_metadata.get('name', 'unknown'),
+            iterations_used,
+            'YES' if llm_decision else 'NO',
+            llm_decision.get('strategy') if llm_decision else 'NONE',
+            llm_decision.get('target_table') if llm_decision else 'NONE'
+        )
+        
         return {
             "success": True,
             "response": response_text,
@@ -1949,7 +1986,12 @@ Please analyze the file structure, compare it with existing tables, and recommen
         
     except Exception as e:
         error_detail = f"{e.__class__.__name__}: {e}"
-        logger.error(f"Error analyzing file: {error_detail}", exc_info=True)
+        logger.error(
+            "LLM-ANALYSIS-FAILED: file='%s', error='%s'",
+            file_metadata.get('name', 'unknown'),
+            error_detail,
+            exc_info=True
+        )
         return {
             "success": False,
             "error": error_detail,

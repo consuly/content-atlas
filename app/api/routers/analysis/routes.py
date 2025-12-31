@@ -182,8 +182,13 @@ def _log_archive_debug(payload: Dict[str, Any]) -> None:
     """
     try:
         os.makedirs(os.path.dirname(ARCHIVE_DEBUG_LOG), exist_ok=True)
+        # Use local timezone if configured, otherwise UTC
+        if settings.log_timezone == "local":
+            ts = datetime.now().astimezone().isoformat()
+        else:
+            ts = datetime.now(timezone.utc).isoformat()
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": ts,
             **payload,
         }
         with _archive_log_lock:
@@ -200,8 +205,13 @@ def _log_mapping_failure(payload: Dict[str, Any]) -> None:
     """
     try:
         os.makedirs(os.path.dirname(MAPPING_FAILURE_LOG), exist_ok=True)
+        # Use local timezone if configured, otherwise UTC
+        if settings.log_timezone == "local":
+            ts = datetime.now().astimezone().isoformat()
+        else:
+            ts = datetime.now(timezone.utc).isoformat()
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": ts,
             **payload,
         }
         with _failure_log_lock:
@@ -632,14 +642,16 @@ def _process_entry_bytes(
         elif cached_plan_event and fingerprint and not is_first_worker_for_plan:
             # Another worker is generating a plan; wait briefly to reuse it.
             # Calculate timeout based on file complexity (column count from fingerprint)
-            wait_timeout = 10  # Default 10 seconds
+            # Wait timeout should be LONGER than LLM analysis timeout to avoid race conditions
+            wait_timeout = min(settings.llm_analysis_timeout + 30, 240)  # LLM timeout + 30s buffer, cap at 240s
             if fingerprint:
                 # Fingerprint format: "csv:{col_count}:{normalized_columns}"
                 parts = fingerprint.split(":")
                 if len(parts) >= 2 and parts[1].isdigit():
                     col_count = int(parts[1])
-                    # Add 0.5 seconds per column for complex files, cap at 60 seconds
-                    wait_timeout = min(10 + (col_count * 0.5), 60)
+                    # For very complex files, add even more time
+                    if col_count > 50:
+                        wait_timeout = min(wait_timeout + 60, 300)
                     logger.info(
                         "FINGERPRINT WAIT: Waiting up to %d seconds for cached decision (file has %d columns)",
                         wait_timeout,
