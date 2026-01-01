@@ -14,6 +14,10 @@ from contextlib import asynccontextmanager
 from .core.config import settings
 from .core.logging_config import configure_logging
 
+# Ensure logging is configured before the application starts serving requests.
+configure_logging(settings.log_level, settings.log_timezone)
+print(f"Logging configured with level: {settings.log_level}", flush=True)
+
 # Import routers
 from .api.routers import (
     imports, mapping, tables, tasks, query, analysis, llm_instructions,
@@ -22,10 +26,6 @@ from .api.routers import (
 
 # Backwards-compatible exports used by tests and legacy modules.
 from .domain.queries.analyzer import analyze_file_for_import  # noqa: F401
-
-# Ensure logging is configured before the application starts serving requests.
-configure_logging(settings.log_level)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

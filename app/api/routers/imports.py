@@ -84,6 +84,7 @@ async def map_data_endpoint(
     from app.db.models import FileAlreadyImportedException, DuplicateDataException
     
     try:
+        print(f"DEBUG: Entering /map-data for file {getattr(file, 'filename', 'unknown')}", flush=True)
         logger.info("Received /map-data request for file '%s'", getattr(file, "filename", "unknown"))
 
         # Parse mapping config
