@@ -351,7 +351,8 @@ export const ImportMappingPage: React.FC = () => {
   const isMappingInProgress =
     (processing || file?.status === 'mapping' || mappingJobActive) &&
     effectiveJobStatus !== 'failed' &&
-    file?.status !== 'failed';
+    file?.status !== 'failed' &&
+    file?.status !== 'mapped';
   const mappingStageLabel = displayJobInfo?.stage ?? file?.active_job_stage ?? file?.active_job_status ?? null;
   const mappingProgress =
     typeof displayJobInfo?.progress === 'number'
