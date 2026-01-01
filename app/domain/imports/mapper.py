@@ -165,7 +165,7 @@ def map_data(
                             value=value,
                             record_number=record_number,
                         ))
-                        logger.warning(message)
+                        logger.debug(message)
                         mapped_record[col_name] = None
                     continue
                 if isinstance(value, numbers.Real):
@@ -184,7 +184,7 @@ def map_data(
                             value=value,
                             record_number=record_number,
                         ))
-                        logger.warning(message)
+                        logger.debug(message)
                         mapped_record[col_name] = None
                     continue
                 if isinstance(value, str):
@@ -209,7 +209,7 @@ def map_data(
                             value=value,
                             record_number=record_number,
                         ))
-                        logger.warning(message)
+                        logger.debug(message)
                         mapped_record[col_name] = None
                         continue
                     if numeric_value == numeric_value.to_integral():
@@ -224,7 +224,7 @@ def map_data(
                             value=value,
                             record_number=record_number,
                         ))
-                        logger.warning(message)
+                        logger.debug(message)
                         mapped_record[col_name] = None
                     continue
                 # Unsupported type for integer column
@@ -265,7 +265,7 @@ def map_data(
                             value=value,
                             record_number=record_number,
                         ))
-                        logger.warning(message)
+                        logger.debug(message)
                         mapped_record[col_name] = None
 
         # Convert any integral numeric values (even DECIMAL columns) to ints for display consistency
@@ -301,13 +301,13 @@ def map_data(
 
                         # Skip if value contains email pattern
                         if '@' in value_str:
-                            logger.info(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be an email")
+                            logger.debug(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be an email")
                             mapped_record[col_name] = original_value
                             continue
 
                         # Skip if value looks like a name (single word with capital letter, no numbers)
                         if value_str and value_str[0].isupper() and value_str.isalpha() and len(value_str) < 30:
-                            logger.info(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be a name")
+                            logger.debug(f"Skipping date conversion for '{col_name}': value '{value_str}' appears to be a name")
                             mapped_record[col_name] = original_value
                             continue
 
@@ -855,13 +855,13 @@ def apply_rules_vectorized(df: pd.DataFrame, rules: Dict[str, Any]) -> Tuple[pd.
             failed_count = conversion_failed.sum()
             
             if failed_count > 0:
-                message = f"Failed to convert {failed_count} datetime values in field '{field}'"
-                errors.append(_build_mapping_error(
-                    error_type="datetime_conversion",
-                    message=message,
-                    column=field
-                ))
-                logger.warning(message)
+                    message = f"Failed to convert {failed_count} datetime values in field '{field}'"
+                    errors.append(_build_mapping_error(
+                        error_type="datetime_conversion",
+                        message=message,
+                        column=field
+                    ))
+                    logger.debug(message)
             
             # Format to ISO 8601
             # For date-only values, use date format; for datetime, use full ISO format
@@ -912,7 +912,7 @@ def apply_rules(record: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[Dict[str
                     column=field,
                     value=original_value
                 ))
-                logger.warning(message)
+                logger.debug(message)
 
             # Always update the record (None for failed conversions, standardized value for success)
             record[field] = standardized_value

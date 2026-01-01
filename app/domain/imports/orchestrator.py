@@ -2359,5 +2359,11 @@ def execute_data_import(
                 duration_seconds=time.time() - start_time,
                 error_message=str(e)
             )
-        logger.error(f"Import failed: {str(e)}", exc_info=True)
+        
+        # Limit log verbosity unless in debug mode
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.error(f"Import failed: {str(e)}", exc_info=True)
+        else:
+            logger.error(f"Import failed: {str(e)}")
+            
         raise
