@@ -1,4 +1,4 @@
-import React, { Suspense } from "react";
+import React from "react";
 import { Authenticated, Refine } from "@refinedev/core";
 import { RefineKbar, RefineKbarProvider } from "@refinedev/kbar";
 
@@ -33,22 +33,6 @@ import { ApiKeysPage } from "./pages/api-keys";
 import { TableViewerPage } from "./pages/tables/[tableName]";
 import { TablesListPage } from "./pages/tables";
 import { Database, KeyRound, MessageSquareText, UploadCloud } from "lucide-react";
-
-const DevtoolsProviderLazy = import.meta.env.DEV
-  ? React.lazy(() =>
-      import("@refinedev/devtools").then((mod) => ({
-        default: mod.DevtoolsProvider,
-      })),
-    )
-  : null;
-
-const DevtoolsPanelLazy = import.meta.env.DEV
-  ? React.lazy(() =>
-      import("@refinedev/devtools").then((mod) => ({
-        default: mod.DevtoolsPanel,
-      })),
-    )
-  : null;
 
 function App() {
   const appContent = (
@@ -165,16 +149,7 @@ function App() {
       <RefineKbarProvider>
         <ColorModeContextProvider>
           <AntdApp>
-            {import.meta.env.DEV && DevtoolsProviderLazy && DevtoolsPanelLazy ? (
-              <Suspense fallback={null}>
-                <DevtoolsProviderLazy>
-                  {appContent}
-                  <DevtoolsPanelLazy />
-                </DevtoolsProviderLazy>
-              </Suspense>
-            ) : (
-              appContent
-            )}
+            {appContent}
           </AntdApp>
         </ColorModeContextProvider>
       </RefineKbarProvider>
