@@ -1,16 +1,16 @@
-# ContentAtlas by Consuly.ai
+# Content Atlas
 
 **Consolidate your business data from multiple sources into one powerful, queryable database.**
 
-ContentAtlas is a data consolidation platform designed for SMBs to import data from CSV, Excel, JSON, and XML files into PostgreSQL, then query it using natural language powered by AI.
+Content Atlas is a data consolidation platform designed for SMBs to import data from CSV, Excel, JSON, and XML files into PostgreSQL, then query it using natural language powered by AI.
 
 🌐 **Official Website:** [atlas.consuly.ai](https://atlas.consuly.ai)
 
 ---
 
-## What is ContentAtlas?
+## What is Content Atlas?
 
-ContentAtlas solves the problem of scattered business data across multiple spreadsheets and systems. It helps you:
+Content Atlas solves the problem of scattered business data across multiple spreadsheets and systems. It helps you:
 
 - **Consolidate data** from various sources into a single PostgreSQL database
 - **Query naturally** using AI - ask questions in plain English, get exact answers
@@ -93,7 +93,7 @@ python create_admin_user.py
 ## 📚 Documentation
 
 ### Official Documentation
-- 📘 **[Documentation Home](https://atlas.consuly.ai/documentation/)** - Complete guide to ContentAtlas
+- 📘 **[Documentation Home](https://atlas.consuly.ai/documentation/)** - Complete guide to Content Atlas
 - 🚀 **[Getting Started](https://atlas.consuly.ai/documentation/getting-started/)** - Step-by-step setup and first import
 - 🔌 **[API Reference](https://atlas.consuly.ai/documentation/api/)** - Complete API endpoint documentation
 
@@ -188,7 +188,6 @@ ANTHROPIC_API_KEY=your_anthropic_key
 
 - 🌐 **Website:** [atlas.consuly.ai](https://atlas.consuly.ai)
 - 🐛 **Report Issues:** [GitHub Issues](https://github.com/thefoundry-app/content-atlas/issues)
-- 💬 **Discussions:** [GitHub Discussions](https://github.com/thefoundry-app/content-atlas/discussions)
 - 🤝 **Contributing:** [Contribution Guide](CONTRIBUTING.md)
 
 ---

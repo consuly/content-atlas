@@ -217,10 +217,20 @@ def analyze_file_structure(
         null_count = sum(1 for row in sample_data if row.get(col) is None)
         null_percentage = (null_count / len(sample_data)) * 100
         
+        # Calculate uniqueness metrics
+        unique_values = set(str(v) for v in values if v is not None)
+        unique_count = len(unique_values)
+        unique_ratio = unique_count / len(values) if values else 0.0
+        
+        # Dynamic sample size: 25 for small files, up to 100 for large files
+        sample_size = min(25, len(values)) if len(sample_data) < 10000 else min(100, len(values))
+        
         column_analysis[col] = {
             "predominant_type": predominant_type,
             "null_percentage": null_percentage,
-            "sample_values": values[:5]  # First 5 non-null values
+            "unique_count": unique_count,
+            "unique_ratio": unique_ratio,
+            "sample_values": values[:sample_size]  # 25-100 non-null values for better analysis
         }
     
     # Identify data quality issues
@@ -1749,7 +1759,25 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
 
 **TOOL USAGE: make_import_decision**
 - **column_mapping**: {source_col: target_col}. Map headerless columns (col_0) to semantic names.
-- **unique_columns**: [target_col1, target_col2] for deduplication. Reuse existing keys if possible.
+- **unique_columns**: CRITICAL for archive deduplication - choose wisely based on column analysis:
+  * **Analyze uniqueness metrics first**: Check `unique_ratio` and `unique_count` from analyze_file_structure
+  * **High uniqueness threshold**: Prefer columns with unique_ratio > 0.95 (95% of values are unique)
+  * **Example uniqueness analysis**:
+    - email: unique_ratio=0.98, unique_count=1050 → EXCELLENT candidate
+    - phone: unique_ratio=0.92, unique_count=980 → GOOD candidate
+    - department: unique_ratio=0.05, unique_count=8 → BAD candidate (only 8 unique values)
+  * **NEVER use auto-increment IDs** (id, row_id, index) - they repeat across files in archives
+  * **NEVER use low-cardinality columns** (department, status, category) - too many duplicates
+  * **PREFER business-meaningful columns**: email > (first_name + last_name) > phone
+  * **USE MULTIPLE COLUMNS** when no single column has unique_ratio > 0.95:
+    - If email unique_ratio=0.85: combine ["email", "company"] or ["email", "first_name", "last_name"]
+    - If no high-uniqueness columns: use ["first_name", "last_name", "company"] for contacts
+  * **For contact data examples**:
+    - Best: ["email"] when unique_ratio > 0.95
+    - Good: ["first_name", "last_name", "company"] when email has lower uniqueness
+    - Avoid: ["phone"] alone (often shared), ["department"] (very low cardinality)
+  * **Example GOOD choices**: ["email"], ["first_name", "last_name"], ["email", "company"]
+  * **Example BAD choices**: ["id"], ["row_number"], ["department"], ["status"]
 - **has_header**: Required for CSV.
 - **expected_column_types**: {source_col: "TEXT"|"INTEGER"|"TIMESTAMP"...}.
 - **transformations**: Provide explicit instructions for data cleanup.
