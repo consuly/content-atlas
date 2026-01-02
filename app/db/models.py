@@ -480,6 +480,8 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
         count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
         row_count = count_result.scalar()
         
+        print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' check. Exists: {table_exists}, Rows: {row_count}. Uniqueness cols: {uniqueness_columns}")
+
         if row_count == 0:
             print(f"DEBUG: _check_for_duplicates_db_side: Table '{table_name}' is empty, no duplicates possible")
             return [], 0
@@ -569,9 +571,23 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
             try:
                 result = conn.execute(query, params)
                 count = result.scalar()
-                
+                    
                 if count > 0:
                     duplicate_indices.append(global_idx)
+                else:
+                    # Debug logic for specific email we know is duplicated
+                    # Check if any param value contains the email
+                    for k, v in params.items():
+                        if v == 'atreasadenq@ask.com':
+                            print(f"DEBUG_FAIL: Duplicate check failed for {v}")
+                            print(f"Query: {query}")
+                            print(f"Params: {params}")
+                            # Check DB content
+                            try:
+                                db_check = conn.execute(text(f"SELECT email FROM \"{table_name}\" WHERE email = 'atreasadenq@ask.com'")).fetchall()
+                                print(f"DB probe result: {db_check}")
+                            except Exception as dbe:
+                                print(f"DB probe failed: {dbe}")
                 
                 # Log first few checks for debugging (without exposing data values)
                 if global_idx < 3:

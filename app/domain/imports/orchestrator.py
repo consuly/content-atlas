@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 import csv
 import io
+import json
 import math
 import re
 from difflib import get_close_matches
@@ -50,6 +51,7 @@ from app.api.schemas.shared import MappingConfig
 from .history import (
     start_import_tracking, 
     complete_import_tracking,
+    get_import_history,
     update_mapping_status,
     initialize_mapping_chunks,
     mark_chunk_in_progress,
@@ -514,6 +516,70 @@ def _build_type_mismatch_followup(table_name: str, summary: List[Dict[str, Any]]
     return "\n".join(lines)
 
 
+def _lookup_historical_uniqueness_columns(engine, table_name: str) -> Optional[List[str]]:
+    """
+    Fetch uniqueness columns from the most recent successful or in-progress import for this table.
+    Helps maintain consistent duplicate detection when concurrent imports miss table state.
+    
+    Scans recent history to find the first configuration that defines uniqueness columns,
+    handling the case where the current import (with empty config) appears first in the log.
+    """
+    try:
+        with engine.connect() as conn:
+            # Query import_history directly to avoid circular dependency issues or large object loading
+            # We look for 'in_progress' too because in parallel execution, the first file might 
+            # have released the lock but not yet marked itself as 'success'.
+            result = conn.execute(
+                text(
+                    """
+                    SELECT mapping_config
+                    FROM import_history
+                    WHERE table_name = :table_name
+                      AND status IN ('success', 'in_progress')
+                      AND mapping_config IS NOT NULL
+                    ORDER BY import_timestamp DESC
+                    LIMIT 5
+                    """
+                ),
+                {"table_name": table_name},
+            )
+            
+            for row in result:
+                if not row or not row[0]:
+                    continue
+
+                cfg = row[0]
+                if isinstance(cfg, str):
+                    try:
+                        cfg = json.loads(cfg)
+                    except Exception:
+                        continue
+                
+                if not isinstance(cfg, dict):
+                    continue
+
+                # Extract unique columns from various possible locations in the config structure
+                unique_cols = cfg.get("unique_columns")
+                if not unique_cols:
+                    dc = cfg.get("duplicate_check") or {}
+                    unique_cols = (
+                        dc.get("uniqueness_columns")
+                        or dc.get("unique_columns")
+                        or cfg.get("uniqueness_columns")
+                    )
+                
+                # If we found a valid configuration, return it immediately
+                # This skips over records (like the current one) that might have empty/missing config
+                if unique_cols and isinstance(unique_cols, list) and len(unique_cols) > 0:
+                    return unique_cols
+            
+            return None
+            
+    except Exception as e:
+        logger.warning("Failed to lookup historical uniqueness columns for %s: %s", table_name, e)
+        return None
+
+
 def _reconcile_uniqueness_columns(
     engine,
     table_name: str,
@@ -524,6 +590,27 @@ def _reconcile_uniqueness_columns(
     Validate/repair uniqueness columns against the live table schema right before insertion.
     Returns the resolved uniqueness columns and a list of adjustments that were applied.
     """
+    # If no uniqueness columns are explicitly configured, try to inherit from history
+    # This is critical for parallel zip imports where the second file might not know the 
+    # first file established a uniqueness constraint.
+    explicit_unique = (
+        mapping_config.duplicate_check.uniqueness_columns 
+        if mapping_config.duplicate_check 
+        else mapping_config.unique_columns
+    )
+    
+    if not explicit_unique:
+        historical = _lookup_historical_uniqueness_columns(engine, table_name)
+        if historical:
+            logger.info(
+                "Inferred uniqueness columns from table history for '%s': %s",
+                table_name,
+                historical
+            )
+            if mapping_config.duplicate_check:
+                mapping_config.duplicate_check.uniqueness_columns = historical
+            mapping_config.unique_columns = historical
+
     desired = _determine_uniqueness_columns(mapping_config, sample_record)
     if not desired:
         return [], []
@@ -607,6 +694,11 @@ def _reconcile_uniqueness_columns(
 
                 is_sample_empty = sample_val in (None, "", [])
                 is_table_empty_for_col = non_null_count == 0 if non_null_count is not None else False
+
+                logger.info(
+                    "Reconcile debug: col=%s, table_empty=%s (count=%s), sample_empty=%s (val=%s)",
+                    col, is_table_empty_for_col, non_null_count, is_sample_empty, sample_val
+                )
 
                 if is_table_empty_for_col and is_sample_empty:
                     adjustments.append(
@@ -2046,13 +2138,15 @@ def execute_data_import(
         
         # Create table if needed
         engine = get_engine()
-        inspector = inspect(engine)
-        table_exists = inspector.has_table(mapping_config.table_name)
         
         # Acquire table lock for safe sequential insertion
         # This prevents race conditions when multiple files target the same table in parallel
         insert_start = time.time()
         with TableLockManager.acquire(mapping_config.table_name):
+            # Check existence INSIDE lock to handle concurrent creation
+            inspector = inspect(engine)
+            table_exists = inspector.has_table(mapping_config.table_name)
+
             if not table_exists or import_strategy == "NEW_TABLE":
                 create_table_if_not_exists(engine, mapping_config)
                 logger.info(f"Created table: {mapping_config.table_name}")

@@ -16,7 +16,7 @@ CSV_CONTENT_A = """"Research Date","Contact Full Name","First Name","Middle Name
 "2024-06-04T13:00:02.701Z","Bill Walls","Bill","","Walls","Owner","Other","C-Level","InTouch Marketing","InTouch Marketing","intouch-marketing.com","Marketing Agency, 1 - 11E, O/F/C, US","billw@intouch-marketing.com","https://login.seamless.ai/contact/4951289300","https://www.linkedin.com/in/intouchmk","billw@intouch-marketing.com","valid","98%","info@intouch-marketing.com","do not mail","92%","bwalls@intouchmarketing.us","invalid","14%","","","","","","","","","","","","","","","","","","","","","","billintouchmk@gmail.com","valid","93%","billwalls@roadrunner.com","invalid","15%","","","","909.730.2819","12%","909.392.2164","99%","+44-1295-261161","2%","","","669.900.6833","2%","","","","","","","","","","","","","","","","","","","","","","","","","","","","","","","La Verne, CA, United States","La Verne","California","CA","","","United States","US","USA","840","23779 Yellowbill Terrace, Moreno Valley, CA 92557, United States","23779 Yellowbill Terrace","","","Moreno Valley","California","CA","92557","","United States","US","USA","840","10000000","InTouch Marketing provides lead generation strategies for businesses through the use of Inbound Marketing, PPC Management, Social Media, Link Building, Web Design & SEO.","intouch-marketing.com","","Marketing and Advertising","https://www.linkedin.com/company/3353339","3353339","$5M - $20M","10","2 - 10 employees","","","","","","","","","","","","909.392.2164","","","","","",""
 """
 
-CSV_CONTENT_B = CSV_CONTENT_A  # Identical content
+CSV_CONTENT_B = CSV_CONTENT_A.replace("Jenny", "Jennifer")  # Different content to avoid file hash duplicate
 
 def _build_zip(file_map: Dict[str, str]) -> bytes:
     buffer = io.BytesIO()

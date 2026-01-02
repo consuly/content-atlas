@@ -531,6 +531,8 @@ def _process_entry_bytes(
                     target_table_name=override_target_table if override_target_table else forced_table_name,
                     target_table_mode=override_target_mode if override_target_mode else forced_table_mode,
                     llm_instruction=instruction_to_use,
+                    skip_file_duplicate_check=False,
+                    require_explicit_multi_value=False,
                 )
             )
             return local_response, _summarize_archive_execution(local_response)

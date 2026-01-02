@@ -1,6 +1,9 @@
 import threading
 from typing import Dict
 from contextlib import contextmanager
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TableLockManager:
     """
@@ -23,9 +26,12 @@ class TableLockManager:
     @contextmanager
     def acquire(cls, table_name: str):
         """Context manager to acquire and release a table lock."""
+        logger.info(f"Attempting to acquire lock for table '{table_name}'")
         lock = cls.get_lock(table_name)
         lock.acquire()
+        logger.info(f"Acquired lock for table '{table_name}'")
         try:
             yield
         finally:
             lock.release()
+            logger.info(f"Released lock for table '{table_name}'")

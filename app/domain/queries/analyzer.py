@@ -1763,12 +1763,23 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
   - `explode_columns`: Use ONLY when:
     a) User EXPLICITLY asks to "create new rows" or "one value per row".
     b) Target table has a SINGLE column for a field that appears multiple times in source (e.g. target 'email' vs source 'email1', 'email2').
+    c) **CRITICAL**: Row transformations run BEFORE column mapping.
+       - `source_columns` MUST be the EXACT names from the file header (e.g. "Primary Email", "Email 2"). Do NOT invent temporary names.
+       - The *target_column* (e.g. "email") is created by the transformation and becomes available for mapping.
+       - The *source_columns* are dropped (consumed).
+    d) **MAPPING RULE**: You MUST add `{"target_column_name": "db_column_name"}` to `column_mapping`.
+       - Example: If explode creates column "email", add `"email": "email"` to column_mapping.
+       - Do NOT include the consumed source columns in `column_mapping`.
+
   - **Column Selection:** Use ONLY columns the user explicitly mentions. Do NOT auto-expand selection.
 
 **TRANSFORMATIONS (examples):**
 - Split array: {"type": "split_multi_value_column", "source_column": "tags", "outputs": [{"name": "tag1", "index": 0}]}
 - Phone: {"type": "standardize_phone", "source_column": "Phone", "target_column": "phone_e164", "default_country_code": "1"}
-- Explode (rows): {"type": "explode_columns", "source_columns": ["email1", "email2"], "target_column": "email", "drop_source_columns": true}
+- Explode (rows):
+  - File columns: ["Primary Email", "Secondary Email", "First Name"]
+  - Transformation: {"type": "explode_columns", "source_columns": ["Primary Email", "Secondary Email"], "target_column": "email", "drop_source_columns": true}
+  - Mapping: {"email": "email", "First Name": "first_name"} (Note: "Primary Email" is NOT in mapping, "email" IS in mapping)
 
 **Multi-Column Logic:**
 - If target has multiple columns (email1, email2) -> Map directly.
