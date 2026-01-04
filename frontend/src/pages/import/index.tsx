@@ -20,6 +20,7 @@ interface UploadedFile {
   mapped_table_name?: string;
   mapped_date?: string;
   mapped_rows?: number;
+  duplicates_found?: number;
   error_message?: string;
   active_job_id?: string;
   active_job_status?: string;
@@ -28,21 +29,9 @@ interface UploadedFile {
   active_job_started_at?: string;
 }
 
-interface ImportSummary {
-  import_id?: string;
-  duplicates_found?: number;
-}
-
-interface ImportHistoryRecord {
-  import_id?: string;
-  source_path?: string;
-  file_name?: string;
-  file_size_bytes?: number;
-  duplicates_found?: number;
-}
 export const ImportPage: React.FC = () => {
   const navigate = useNavigate();
-  const [files, setFiles] = useState<Array<UploadedFile & ImportSummary>>([]);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('all');
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
@@ -55,7 +44,6 @@ export const ImportPage: React.FC = () => {
     mapped: 0,
     needs_mapping: 0,
   });
-  const [importSummaryCache, setImportSummaryCache] = useState<Record<string, ImportSummary>>({});
   const { message: messageApi, modal } = AntdApp.useApp();
 
   const normalizeJobStatus = useCallback(
@@ -84,73 +72,6 @@ export const ImportPage: React.FC = () => {
     const normalized = normalizeJobStatus(file.active_job_status);
     return normalized === 'queued' || normalized === 'pending';
   };
-
-  const attachImportSummaries = useCallback(async (
-    fileList: UploadedFile[],
-    token: string | null
-  ): Promise<Array<UploadedFile & ImportSummary>> => {
-    if (!fileList.length) {
-      return fileList;
-    }
-
-    const headers = {
-      ...(token && { Authorization: `Bearer ${token}` }),
-    };
-
-    const mappedFiles = fileList.filter((file) => file.status === 'mapped');
-    // If we already cached summaries for all mapped files, skip the network trip.
-    const missingSummaries = mappedFiles.filter((file) => !importSummaryCache[file.id]);
-    let mergedCache = importSummaryCache;
-
-    if (missingSummaries.length > 0) {
-      try {
-        // Fetch a single page of import history and match locally by source path,
-        // falling back to filename + size. The endpoint is ordered by newest first.
-        const historyLimit = Math.max(missingSummaries.length, 200);
-        const response = await axios.get(`${API_URL}/import-history`, {
-          params: {
-            limit: historyLimit,
-            offset: 0,
-          },
-          headers,
-        });
-
-        const history: ImportHistoryRecord[] = response.data?.imports || [];
-        const updates: Record<string, ImportSummary> = {};
-
-        missingSummaries.forEach((file) => {
-          const match = history.find((record) => {
-            const recordSource = record.source_path;
-            const recordName = record.file_name;
-            const recordSize = record.file_size_bytes;
-            return (
-              (recordSource && recordSource === file.b2_file_path) ||
-              (recordName === file.file_name && recordSize === file.file_size)
-            );
-          }) as { import_id?: string; duplicates_found?: number } | undefined;
-
-          if (match) {
-            updates[file.id] = {
-              import_id: match.import_id,
-              duplicates_found: match.duplicates_found ?? 0,
-            };
-          } else {
-            updates[file.id] = { duplicates_found: undefined };
-          }
-        });
-
-        mergedCache = { ...importSummaryCache, ...updates };
-        setImportSummaryCache(mergedCache);
-      } catch (err) {
-        console.error('Error fetching import history batch:', err);
-      }
-    }
-
-    return fileList.map((file) => ({
-      ...file,
-      ...(mergedCache[file.id] || {}),
-    }));
-  }, [importSummaryCache]);
 
   const statusGroups: Record<string, string[]> = useMemo(
     () => ({
@@ -267,14 +188,13 @@ export const ImportPage: React.FC = () => {
           }
         }
 
-        const filesWithImports = await attachImportSummaries(fetchedFiles, token);
-        setFiles(filesWithImports);
+        setFiles(fetchedFiles);
         setTotalCount(nextTotal);
         setTabCounts((prev) => ({ ...prev, [status || 'all']: nextTotal }));
         fetchTabCounts();
         setSelectedRowKeys((prev) =>
           prev.filter((key) =>
-            filesWithImports.some(
+            fetchedFiles.some(
               (file: UploadedFile) => file.id === key && !isJobActive(file)
             )
           )
@@ -288,7 +208,6 @@ export const ImportPage: React.FC = () => {
     },
     [
       activeTab,
-      attachImportSummaries,
       currentPage,
       fetchTabCounts,
       isJobActive,
@@ -607,7 +526,7 @@ export const ImportPage: React.FC = () => {
     );
   };
 
-  const columns: ColumnsType<UploadedFile & ImportSummary> = [
+  const columns: ColumnsType<UploadedFile> = [
     {
       title: 'File Name',
       dataIndex: 'file_name',
@@ -649,7 +568,7 @@ export const ImportPage: React.FC = () => {
       ],
       onFilter: (value, record) => record.status === value,
       sorter: (a, b) => (a.status || '').localeCompare(b.status || ''),
-      render: (_: string, record: UploadedFile & ImportSummary) => getStatusBadge(record),
+      render: (_: string, record: UploadedFile) => getStatusBadge(record),
     },
     {
       title: 'Table',
@@ -689,12 +608,12 @@ export const ImportPage: React.FC = () => {
         const duplicates = record.duplicates_found ?? 0;
         return value === 'has' ? duplicates > 0 : duplicates === 0;
       },
-      render: (_: number | undefined, record: UploadedFile & ImportSummary) => {
+      render: (_: number | undefined, record: UploadedFile) => {
         if (record.status !== 'mapped') {
           return '-';
         }
         const duplicates = record.duplicates_found;
-        if (duplicates === undefined) {
+        if (duplicates === undefined || duplicates === null) {
           return 'Unknown';
         }
         return duplicates.toLocaleString();
@@ -705,7 +624,7 @@ export const ImportPage: React.FC = () => {
       key: 'actions',
       fixed: 'right',
       width: 220,
-      render: (_: unknown, record: UploadedFile & ImportSummary) => (
+      render: (_: unknown, record: UploadedFile) => (
         <Space size="small">
           {record.status === 'uploaded' && (
             <Button
@@ -831,7 +750,7 @@ export const ImportPage: React.FC = () => {
           style={{ marginBottom: '16px' }}
         />
 
-        <Table<UploadedFile & ImportSummary>
+        <Table<UploadedFile>
           columns={columns}
           dataSource={files}
           rowKey="id"

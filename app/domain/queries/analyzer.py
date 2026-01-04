@@ -158,9 +158,15 @@ def sample_file_data(
         logger.info(f"File has {total_rows} rows, using all data")
         return records, total_rows
     
-    # Split sample budget: 50% from beginning, 50% random
-    head_size = min(50, target_sample_size // 2)
-    random_size = target_sample_size - head_size
+    # Split sample budget: Prioritize random sampling after first 15 rows
+    # Always include first 15 rows for header context (if available)
+    # Then fill the rest of the budget with random samples
+    head_size = min(15, target_sample_size)
+    if total_rows <= target_sample_size:
+        head_size = total_rows
+        random_size = 0
+    else:
+        random_size = target_sample_size - head_size
     
     logger.info(f"Sampling {target_sample_size} rows from {total_rows} total "
                 f"({head_size} from start, {random_size} random)")
@@ -217,10 +223,21 @@ def analyze_file_structure(
         null_count = sum(1 for row in sample_data if row.get(col) is None)
         null_percentage = (null_count / len(sample_data)) * 100
         
+        # Collect sample values with character budget
+        sample_subset = []
+        current_len = 0
+        budget = 500  # Character budget per column
+        for v in values[:100]:
+            s = str(v)
+            if current_len + len(s) > budget and len(sample_subset) >= 5:
+                break
+            sample_subset.append(v)
+            current_len += len(s)
+
         column_analysis[col] = {
             "predominant_type": predominant_type,
             "null_percentage": null_percentage,
-            "sample_values": values[:5]  # First 5 non-null values
+            "sample_values": sample_subset
         }
     
     # Identify data quality issues
@@ -383,10 +400,21 @@ def analyze_raw_csv_structure(
     # Analyze first row to determine if it's a header
     has_header = _analyze_if_header_row(first_row, second_row)
     
+    # Collect sample rows with character budget
+    sample_rows = []
+    current_len = 0
+    budget = 10000
+    for row in raw_rows[:20]:
+        s = str(row)
+        if current_len + len(s) > budget and len(sample_rows) >= 5:
+            break
+        sample_rows.append(row)
+        current_len += len(s)
+
     result = {
         "has_header": has_header,
         "num_columns": len(first_row),
-        "sample_rows": raw_rows[:5]  # First 5 rows for context
+        "sample_rows": sample_rows
     }
     
     if has_header:
@@ -500,7 +528,7 @@ def _infer_column_types_from_rows(
         has_phone_keyword = any(keyword in col_name_lower for keyword in phone_keywords)
         
         # Check if values match phone patterns
-        sample_values = [str(v) for v in values[:20]]
+        sample_values = [str(v) for v in values[:100]]
         phone_matches = sum(1 for v in sample_values if phone_pattern.match(v))
         phone_match_ratio = phone_matches / len(sample_values) if sample_values else 0
         
@@ -511,21 +539,21 @@ def _infer_column_types_from_rows(
                 "reasoning": "Contains phone number values" if has_phone_keyword else "Values match phone number patterns"
             }
         # Check for date patterns
-        elif detect_date_column(values[:20]):
+        elif detect_date_column(values[:100]):
             column_types[col_name] = {
                 "data_type": "TIMESTAMP",
                 "confidence": 0.95,
                 "reasoning": "Contains date/timestamp values"
             }
         # Check for email
-        elif any('@' in str(v) for v in values[:10]):
+        elif any('@' in str(v) for v in values[:50]):
             column_types[col_name] = {
                 "data_type": "TEXT",
                 "confidence": 0.90,
                 "reasoning": "Contains email addresses"
             }
         # Check for numeric (only if not phone)
-        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in values[:20]):
+        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in values[:100]):
             column_types[col_name] = {
                 "data_type": "DECIMAL",
                 "confidence": 0.85,
@@ -589,7 +617,7 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
             }
             continue
         
-        sample_values = values[:20]
+        sample_values = values[:100]
         
         # Check for phone number patterns FIRST (before numeric check)
         phone_matches = sum(1 for v in sample_values if phone_pattern.match(str(v)))
@@ -624,7 +652,7 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
             continue
         
         # Check for email
-        if any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+        if any('@' in str(v) and '.' in str(v) for v in sample_values[:50]):
             email_count = sum(1 for v in sample_values if '@' in str(v))
             inferred_columns[column_id] = {
                 "semantic_name": "email",
@@ -1289,7 +1317,7 @@ def _infer_schema_from_headerless_data_impl(
             continue
         
         # Sample first few values for pattern analysis
-        sample_values = values[:20]
+        sample_values = values[:100]
         
         # Detect data type and semantic meaning
         confidence = 0.0
@@ -1306,7 +1334,7 @@ def _infer_schema_from_headerless_data_impl(
             reasoning = f"Column contains date values in {date_format} format"
         
         # Check for email patterns
-        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:50]):
             email_count = sum(1 for v in sample_values if '@' in str(v))
             if email_count / len(sample_values) > 0.7:
                 semantic_name = "email"
@@ -1377,7 +1405,7 @@ def _infer_schema_from_headerless_data_impl(
             "data_type": data_type,
             "confidence": confidence,
             "reasoning": reasoning,
-            "sample_values": [str(v)[:50] for v in sample_values[:3]]  # First 3 values, truncated
+            "sample_values": [str(v)[:50] for v in sample_values[:5]]  # First 5 values, truncated
         }
     
     # Calculate overall confidence
@@ -1438,8 +1466,16 @@ def describe_file_purpose(
     # Check if this is a headerless file
     is_headerless = all(col.startswith('col_') for col in columns)
     
-    # Get a few sample records for context
-    sample_records = sample_data[:5]
+    # Get a few sample records for context with character budget
+    sample_records = []
+    current_len = 0
+    budget = 5000
+    for record in sample_data[:20]:
+        s = str(record)
+        if current_len + len(s) > budget and len(sample_records) >= 5:
+            break
+        sample_records.append(record)
+        current_len += len(s)
     
     result = {
         "columns": columns,
@@ -1749,7 +1785,16 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
 
 **TOOL USAGE: make_import_decision**
 - **column_mapping**: {source_col: target_col}. Map headerless columns (col_0) to semantic names.
-- **unique_columns**: [target_col1, target_col2] for deduplication. Reuse existing keys if possible.
+- **unique_columns**: [target_col1, target_col2] for deduplication.
+  * **Recommendation:** Prefer **Strict Check** (Natural Keys) for most datasets (Contacts, Products, etc.). This identifies the entity so it can be updated.
+  * **Strict Check (Merge/Update):** Select NATURAL KEYS (e.g., ["email"] or ["first_name", "last_name"]). If these match, it is a duplicate (allowing merge/update).
+    - **Tip:** If emails might be shared (e.g. "info@company.com") or ambiguous, prefer a composite key like `["email", "last_name"]`.
+  * **Loose Check (History/Log):** Select ALL COLUMNS only if the user explicitly asks for "history" or "log" where identical events are distinct.
+  * **WARNING:** Do NOT use generic sequential IDs (e.g. 1, 2, 3...) or simple row numbers.
+- **allow_unique_override**: **Set to TRUE** if you are specifying `unique_columns`.
+  * The system defaults to "Sticky History" (reusing the uniqueness rules from previous imports to this table).
+  * **CRITICAL:** If you do not set this to True, your `unique_columns` choice will be IGNORED in favor of history.
+  * Always set `allow_unique_override=True` when you want to enforce your specific uniqueness strategy.
 - **has_header**: Required for CSV.
 - **expected_column_types**: {source_col: "TEXT"|"INTEGER"|"TIMESTAMP"...}.
 - **transformations**: Provide explicit instructions for data cleanup.

@@ -535,6 +535,7 @@ class UploadedFileInfo(BaseModel):
     mapped_table_name: Optional[str] = None
     mapped_date: Optional[datetime] = None
     mapped_rows: Optional[int] = None
+    duplicates_found: Optional[int] = None
     error_message: Optional[str] = None
     active_job_id: Optional[str] = None
     active_job_status: Optional[str] = None

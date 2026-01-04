@@ -134,7 +134,7 @@ def _detect_dayfirst(series: pd.Series) -> Optional[bool]:
     if sample_values.empty:
         return None
 
-    for value in sample_values.astype(str).head(25):
+    for value in sample_values.astype(str).head(100):
         match = _SLASHED_DATE_PATTERN.match(value)
         if not match:
             continue
@@ -480,7 +480,17 @@ def coerce_records_to_expected_types(
                     column_summary["coerced_values"] = coerced_count
                 df[source_col] = converted
             elif normalized_type == "TEXT":
-                df[source_col] = series.astype(str).where(series.notna(), None)
+                if pd.api.types.is_numeric_dtype(series):
+                    # Smart conversion: remove .0 from float-integers (e.g. zip codes)
+                    def _numeric_to_str(val):
+                        if pd.isna(val):
+                            return None
+                        if isinstance(val, float) and val.is_integer():
+                            return str(int(val))
+                        return str(val)
+                    df[source_col] = series.apply(_numeric_to_str)
+                else:
+                    df[source_col] = series.astype(str).where(series.notna(), None)
                 column_summary["status"] = "converted"
             else:
                 column_summary["status"] = "unsupported_type"
@@ -940,7 +950,7 @@ def execute_llm_import_decision(
             if not schema_type:
                 if source_col and records:
                     sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
-                    subset = sample_values[:20]
+                    subset = sample_values[:100]
                     sample_str = [str(v) for v in subset]
 
                     phone_patterns = [
@@ -1205,7 +1215,7 @@ def _looks_like_email_column(source_column: str, target_column: str, records: Li
     if any(hint in str(target_column).lower() for hint in name_hints):
         return True
 
-    for record in records[:25]:
+    for record in records[:100]:
         value = record.get(source_column)
         if isinstance(value, str) and "@" in value:
             return True
