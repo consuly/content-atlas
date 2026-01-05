@@ -168,7 +168,7 @@ async def root():
     """Root endpoint returning API information."""
     return {
         "message": "Content Atlas API",
-        "version": "1.0.1"
+        "version": app.version
     }
 
 

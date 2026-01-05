@@ -20,7 +20,7 @@ def test_root():
     """Test root endpoint."""
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json() == {"message": "Content Atlas by Consuly.ai", "version": "0.9.0"}
+    assert response.json() == {"message": "Content Atlas API", "version": app.version}
 
 
 def test_api_endpoints_exist():
@@ -52,13 +52,13 @@ def test_api_endpoints_exist():
 def test_async_endpoints_exist():
     """Test that async endpoints exist."""
     # Test async task endpoint
-    response = client.get("/tasks/test-task-id", timeout=REQUEST_TIMEOUT)
+    response = client.get("/tasks/test-task-id")
     assert response.status_code == 404  # Task not found (expected)
 
     # Test async processing endpoint (endpoint accepts request and queues it)
     with patch("app.api.routers.tasks.process_storage_data_async") as mock_process:
         mock_process.return_value = None  # prevent actual background execution
-        response = client.post("/map-b2-data-async", timeout=REQUEST_TIMEOUT, json={
+        response = client.post("/map-b2-data-async", json={
             "file_name": "test.xlsx",
             "mapping": {
                 "table_name": "test",
