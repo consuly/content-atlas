@@ -22,6 +22,7 @@ PRESET_PATTERNS = {
     "uuid": r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
     "ssn": r"^\d{3}-\d{2}-\d{4}$",
     "ein": r"^\d{2}-\d{7}$",
+    "postal_code": r"^[A-Za-z0-9\s-]{3,10}$",
     "postal_code_us": r"^\d{5}(-\d{4})?$",
     "postal_code_ca": r"^[A-Za-z]\d[A-Za-z][\s-]?\d[A-Za-z]\d$",
     
@@ -59,6 +60,7 @@ PRESET_DESCRIPTIONS = {
     "uuid": "UUID v4 format",
     "ssn": "US Social Security Number (###-##-####)",
     "ein": "US Employer Identification Number (##-#######)",
+    "postal_code": "Postal code (alphanumeric)",
     "postal_code_us": "US ZIP code (5 or 9 digits)",
     "postal_code_ca": "Canadian postal code",
     "url": "HTTP/HTTPS URL",

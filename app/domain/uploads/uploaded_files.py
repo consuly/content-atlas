@@ -77,6 +77,7 @@ def create_uploaded_files_table():
             mapped_date TIMESTAMP,
             mapped_rows INTEGER,
             duplicates_found INTEGER,
+            data_validation_errors INTEGER,
             user_id VARCHAR(255),
             error_message TEXT,
             active_job_id UUID,
@@ -121,6 +122,10 @@ def create_uploaded_files_table():
         conn.execute(text("""
             ALTER TABLE uploaded_files
             ADD COLUMN IF NOT EXISTS duplicates_found INTEGER;
+        """))
+        conn.execute(text("""
+            ALTER TABLE uploaded_files
+            ADD COLUMN IF NOT EXISTS data_validation_errors INTEGER;
         """))
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_uploaded_files_active_job
@@ -200,6 +205,7 @@ def insert_uploaded_file(
                 "mapped_date": None,
                 "mapped_rows": None,
                 "duplicates_found": None,
+                "data_validation_errors": None,
                 "error_message": None,
                 "active_job_id": None,
                 "active_job_status": None,
@@ -241,7 +247,7 @@ def get_uploaded_files(
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at, parent_file_id,
-        duplicates_found
+        duplicates_found, data_validation_errors
     FROM uploaded_files
     WHERE {where_sql}
     ORDER BY upload_date DESC
@@ -275,6 +281,7 @@ def get_uploaded_files(
                     "active_job_started_at": row[17].isoformat() if row[17] else None,
                     "parent_file_id": str(row[18]) if row[18] else None,
                     "duplicates_found": row[19],
+                    "data_validation_errors": row[20],
                 })
 
             return files
@@ -294,7 +301,7 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at, parent_file_id,
-        duplicates_found
+        duplicates_found, data_validation_errors
     FROM uploaded_files
     WHERE id = :file_id
     """
@@ -328,6 +335,7 @@ def get_uploaded_file_by_id(file_id: str) -> Optional[Dict]:
                 "active_job_started_at": row[17].isoformat() if row[17] else None,
                 "parent_file_id": str(row[18]) if row[18] else None,
                 "duplicates_found": row[19],
+                "data_validation_errors": row[20],
             }
 
     return _run_with_table_retry(_fetch)
@@ -345,7 +353,7 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at, parent_file_id,
-        duplicates_found
+        duplicates_found, data_validation_errors
     FROM uploaded_files
     WHERE file_name = :file_name
     ORDER BY upload_date DESC
@@ -381,6 +389,7 @@ def get_uploaded_file_by_name(file_name: str) -> Optional[Dict]:
                 "active_job_started_at": row[17].isoformat() if row[17] else None,
                 "parent_file_id": str(row[18]) if row[18] else None,
                 "duplicates_found": row[19],
+                "data_validation_errors": row[20],
             }
 
     return _run_with_table_retry(_fetch)
@@ -398,7 +407,7 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
         mapped_date, mapped_rows, error_message,
         active_job_id, active_job_status, active_job_stage,
         active_job_progress, active_job_started_at, parent_file_id,
-        duplicates_found
+        duplicates_found, data_validation_errors
     FROM uploaded_files
     WHERE file_hash = :file_hash
     ORDER BY upload_date DESC
@@ -434,6 +443,7 @@ def get_uploaded_file_by_hash(file_hash: str) -> Optional[Dict]:
                 "active_job_started_at": row[17].isoformat() if row[17] else None,
                 "parent_file_id": str(row[18]) if row[18] else None,
                 "duplicates_found": row[19],
+                "data_validation_errors": row[20],
             }
 
     return _run_with_table_retry(_fetch)
@@ -446,7 +456,8 @@ def update_file_status(
     mapped_rows: Optional[int] = None,
     error_message: Optional[str] = None,
     expected_active_job_id: Optional[str] = None,
-    duplicates_found: Optional[int] = None
+    duplicates_found: Optional[int] = None,
+    data_validation_errors: Optional[int] = None
 ) -> bool:
     """Update the status of an uploaded file."""
     ensure_uploaded_files_table()
@@ -467,6 +478,10 @@ def update_file_status(
     if duplicates_found is not None:
         update_parts.append("duplicates_found = :duplicates_found")
         params["duplicates_found"] = duplicates_found
+
+    if data_validation_errors is not None:
+        update_parts.append("data_validation_errors = :data_validation_errors")
+        params["data_validation_errors"] = data_validation_errors
     
     if error_message:
         update_parts.append("error_message = :error_message")

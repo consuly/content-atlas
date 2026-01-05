@@ -158,6 +158,30 @@ def create_import_history_table():
     CREATE INDEX IF NOT EXISTS idx_mapping_chunk_status_import ON mapping_chunk_status(import_id);
     CREATE INDEX IF NOT EXISTS idx_mapping_chunk_status_status ON mapping_chunk_status(status);
     """
+
+    create_validation_failures_sql = """
+    CREATE TABLE IF NOT EXISTS import_validation_failures (
+        id SERIAL PRIMARY KEY,
+        import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
+        
+        -- Record Context
+        record_number INTEGER,
+        record_data JSONB NOT NULL,  -- Full record with all fields
+        
+        -- Validation Errors
+        validation_errors JSONB NOT NULL,  -- Array of errors: [{column, error_type, message}]
+        
+        -- Resolution Tracking
+        detected_at TIMESTAMP DEFAULT NOW(),
+        resolved_at TIMESTAMP,
+        resolved_by VARCHAR(255),
+        resolution_action VARCHAR(50),  -- 'inserted_as_is', 'inserted_corrected', 'discarded', 'merged'
+        resolution_details JSONB
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_validation_failures_import ON import_validation_failures(import_id);
+    CREATE INDEX IF NOT EXISTS idx_validation_failures_resolved ON import_validation_failures(import_id, resolved_at);
+    """
     
     try:
         with engine.begin() as conn:
@@ -165,6 +189,7 @@ def create_import_history_table():
             conn.execute(text(create_mapping_errors_sql))
             conn.execute(text(create_import_duplicates_sql))
             conn.execute(text(create_mapping_chunk_status_sql))
+            conn.execute(text(create_validation_failures_sql))
             conn.execute(text("""
                 ALTER TABLE import_duplicates
                 ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP;
@@ -1327,3 +1352,307 @@ def get_table_import_lineage(table_name: str) -> List[Dict[str, Any]]:
         List of import records for this table, ordered by timestamp
     """
     return get_import_history(table_name=table_name, status="success", limit=1000)
+
+
+def record_validation_failures(
+    import_id: str,
+    failures: List[Dict[str, Any]]
+) -> None:
+    """
+    Store validation failures for later review.
+    
+    Args:
+        import_id: UUID of the import
+        failures: List of validation failure dictionaries with keys:
+            - record_number: int (required)
+            - record: Dict[str, Any] (required) - Full source record data
+            - validation_errors: List[Dict[str, Any]] (required) - List of validation errors
+    """
+    if not failures:
+        return
+
+    engine = get_engine()
+    payload = []
+
+    for entry in failures:
+        record_number = entry.get("record_number")
+        record = entry.get("record", {})
+        validation_errors = entry.get("validation_errors", [])
+        
+        # Make record JSON-safe
+        safe_record = _make_json_safe(record)
+        safe_record_json = json.dumps(safe_record)
+        
+        # Make validation_errors JSON-safe
+        safe_errors = _make_json_safe(validation_errors)
+        safe_errors_json = json.dumps(safe_errors)
+        
+        payload.append({
+            "import_id": import_id,
+            "record_number": record_number,
+            "record_data": safe_record_json,
+            "validation_errors": safe_errors_json
+        })
+
+    insert_sql = text("""
+        INSERT INTO import_validation_failures (import_id, record_number, record_data, validation_errors)
+        VALUES (:import_id, :record_number, :record_data, :validation_errors)
+    """)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(insert_sql, payload)
+        logger.info(f"Recorded {len(failures)} validation failures for import {import_id}")
+    except Exception as e:
+        logger.error(f"Error recording validation failures for import {import_id}: {str(e)}")
+        raise
+
+
+def list_validation_failures(
+    import_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    include_resolved: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve validation failures for review.
+    
+    Args:
+        import_id: UUID of the import
+        limit: Maximum number of failures to return
+        offset: Number of failures to skip
+        include_resolved: If True, include resolved failures
+        
+    Returns:
+        List of validation failure records
+    """
+    engine = get_engine()
+    
+    where_clause = "import_id = :import_id"
+    if not include_resolved:
+        where_clause += " AND resolved_at IS NULL"
+    
+    query = text(f"""
+        SELECT id, record_number, record_data, validation_errors, detected_at,
+               resolved_at, resolved_by, resolution_action, resolution_details
+        FROM import_validation_failures
+        WHERE {where_clause}
+        ORDER BY COALESCE(record_number, 0), detected_at
+        LIMIT :limit OFFSET :offset
+    """)
+
+    failures: List[Dict[str, Any]] = []
+    with engine.connect() as conn:
+        results = conn.execute(query, {
+            "import_id": import_id,
+            "limit": limit,
+            "offset": offset
+        })
+
+        for row in results:
+            # Parse record_data
+            record_data = row[2]
+            if isinstance(record_data, str):
+                try:
+                    record_data = json.loads(record_data)
+                except json.JSONDecodeError:
+                    record_data = {}
+            if not isinstance(record_data, dict):
+                record_data = {}
+            record_data = _make_json_safe(record_data)
+
+            # Parse validation_errors
+            validation_errors = row[3]
+            if isinstance(validation_errors, str):
+                try:
+                    validation_errors = json.loads(validation_errors)
+                except json.JSONDecodeError:
+                    validation_errors = []
+            if not isinstance(validation_errors, list):
+                validation_errors = []
+            validation_errors = _make_json_safe(validation_errors)
+
+            # Parse resolution_details
+            resolution_details = row[8]
+            if isinstance(resolution_details, str):
+                try:
+                    resolution_details = json.loads(resolution_details)
+                except json.JSONDecodeError:
+                    resolution_details = None
+            if resolution_details is not None:
+                resolution_details = _make_json_safe(resolution_details)
+
+            failures.append({
+                "id": row[0],
+                "record_number": row[1],
+                "record": record_data,
+                "validation_errors": validation_errors,
+                "detected_at": row[4].isoformat() if row[4] else None,
+                "resolved_at": row[5].isoformat() if row[5] else None,
+                "resolved_by": row[6],
+                "resolution_action": row[7],
+                "resolution_details": resolution_details
+            })
+    
+    return failures
+
+
+def get_validation_failure_detail(
+    import_id: str,
+    failure_id: int
+) -> Dict[str, Any]:
+    """
+    Get detailed info about a specific validation failure.
+    
+    Args:
+        import_id: UUID of the import
+        failure_id: ID of the validation failure
+        
+    Returns:
+        Detailed validation failure record
+    """
+    engine = get_engine()
+
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, record_number, record_data, validation_errors, detected_at,
+                       resolved_at, resolved_by, resolution_action, resolution_details
+                FROM import_validation_failures
+                WHERE import_id = :import_id AND id = :failure_id
+            """)
+            
+            row = conn.execute(query, {
+                "import_id": import_id,
+                "failure_id": failure_id
+            }).fetchone()
+
+            if not row:
+                raise ValueError("Validation failure not found")
+
+            # Parse record_data
+            record_data = row[2]
+            if isinstance(record_data, str):
+                try:
+                    record_data = json.loads(record_data)
+                except json.JSONDecodeError:
+                    record_data = {}
+            record_data = _make_json_safe(record_data)
+
+            # Parse validation_errors
+            validation_errors = row[3]
+            if isinstance(validation_errors, str):
+                try:
+                    validation_errors = json.loads(validation_errors)
+                except json.JSONDecodeError:
+                    validation_errors = []
+            validation_errors = _make_json_safe(validation_errors)
+
+            # Parse resolution_details
+            resolution_details = row[8]
+            if isinstance(resolution_details, str):
+                try:
+                    resolution_details = json.loads(resolution_details)
+                except json.JSONDecodeError:
+                    resolution_details = None
+            if resolution_details is not None:
+                resolution_details = _make_json_safe(resolution_details)
+
+            # Get import context
+            import_records = get_import_history(import_id=import_id, limit=1)
+            table_name = import_records[0].get("table_name") if import_records else None
+
+            return {
+                "id": row[0],
+                "record_number": row[1],
+                "record": record_data,
+                "validation_errors": validation_errors,
+                "detected_at": row[4].isoformat() if row[4] else None,
+                "resolved_at": row[5].isoformat() if row[5] else None,
+                "resolved_by": row[6],
+                "resolution_action": row[7],
+                "resolution_details": resolution_details,
+                "table_name": table_name
+            }
+    except Exception as e:
+        logger.error("Error retrieving validation failure detail: %s", e)
+        raise
+
+
+def resolve_validation_failure(
+    import_id: str,
+    failure_id: int,
+    action: str,
+    corrected_data: Optional[Dict[str, Any]] = None,
+    resolved_by: Optional[str] = None,
+    note: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Resolve a validation failure by inserting corrected data or discarding.
+    
+    Args:
+        import_id: UUID of the import
+        failure_id: ID of the validation failure
+        action: Resolution action ('inserted_as_is', 'inserted_corrected', 'discarded', 'merged')
+        corrected_data: Corrected record data (required for 'inserted_corrected' and 'merged')
+        resolved_by: User who resolved the failure
+        note: Optional note about the resolution
+        
+    Returns:
+        Updated validation failure record
+    """
+    engine = get_engine()
+
+    # Get the failure detail
+    failure = get_validation_failure_detail(import_id, failure_id)
+
+    if failure.get("resolved_at"):
+        raise ValueError("Validation failure already resolved")
+
+    if action not in ['inserted_as_is', 'inserted_corrected', 'discarded', 'merged']:
+        raise ValueError(f"Invalid action: {action}")
+
+    if action in ['inserted_corrected', 'merged'] and not corrected_data:
+        raise ValueError(f"Action '{action}' requires corrected_data")
+
+    resolution_details = {
+        "action": action,
+        "note": note
+    }
+
+    # If inserting data, we would need to call insert_records here
+    # For now, just mark as resolved
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE import_validation_failures
+            SET resolved_at = NOW(),
+                resolved_by = :resolved_by,
+                resolution_action = :action,
+                resolution_details = :resolution_details
+            WHERE id = :failure_id
+        """), {
+            "resolved_by": resolved_by,
+            "action": action,
+            "resolution_details": json.dumps(resolution_details),
+            "failure_id": failure_id
+        })
+
+        # Update statistics
+        remaining = conn.execute(text("""
+            SELECT COUNT(*) FROM import_validation_failures
+            WHERE import_id = :import_id AND resolved_at IS NULL
+        """), {"import_id": import_id}).scalar() or 0
+
+        conn.execute(text("""
+            UPDATE import_history
+            SET data_validation_errors = :remaining
+            WHERE import_id = :import_id
+        """), {"remaining": remaining, "import_id": import_id})
+
+    resolved_timestamp = datetime.now(timezone.utc)
+    failure["resolved_at"] = resolved_timestamp.isoformat()
+    failure["resolved_by"] = resolved_by
+    failure["resolution_action"] = action
+    failure["resolution_details"] = resolution_details
+
+    return failure

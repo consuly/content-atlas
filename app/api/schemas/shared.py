@@ -23,6 +23,8 @@ RESERVED_SYSTEM_TABLES = {
     "users",
     "api_keys",
     "llm_instructions",
+    "table_fingerprints",
+    "import_validation_failures",
 }
 
 _RESERVED_TABLES_LOWER = {name.lower() for name in RESERVED_SYSTEM_TABLES}
@@ -540,6 +542,50 @@ class ImportDuplicateRowsResponse(BaseModel):
     offset: int
 
 
+class ValidationFailureRow(BaseModel):
+    """Represents a row that failed validation."""
+    id: int
+    record_number: Optional[int] = None
+    record: Dict[str, Any]
+    validation_errors: List[Dict[str, Any]]
+    detected_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    resolution_action: Optional[str] = None
+    resolution_details: Optional[Dict[str, Any]] = None
+
+
+class ImportValidationFailuresResponse(BaseModel):
+    """Response containing validation failures for an import."""
+    success: bool
+    failures: List[ValidationFailureRow]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class ValidationFailureDetailResponse(BaseModel):
+    """Response for single validation failure detail."""
+    success: bool
+    failure: ValidationFailureRow
+    table_name: Optional[str] = None
+
+
+class ResolveValidationFailureRequest(BaseModel):
+    """Request to resolve a validation failure."""
+    action: Literal['inserted_as_is', 'inserted_corrected', 'discarded', 'merged']
+    corrected_data: Optional[Dict[str, Any]] = None
+    resolved_by: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ResolveValidationFailureResponse(BaseModel):
+    """Response from resolving a validation failure."""
+    success: bool
+    failure: ValidationFailureRow
+    message: str
+
+
 class TableLineageResponse(BaseModel):
     """Response for table import lineage"""
     success: bool
@@ -594,6 +640,7 @@ class AutoExecutionResult(BaseModel):
     type_mismatch_summary: Optional[List[TypeMismatchSummary]] = None
     llm_followup: Optional[str] = None
     schema_migration_results: Optional[List[Dict[str, Any]]] = None
+    validation_errors: Optional[int] = None
     error: Optional[str] = None
 
 
@@ -607,6 +654,7 @@ class ArchiveAutoProcessFileResult(BaseModel):
     table_name: Optional[str] = None
     records_processed: Optional[int] = None
     duplicates_skipped: Optional[int] = None
+    validation_errors: Optional[int] = None
     import_id: Optional[str] = None
     auto_retry_used: bool = False
     message: Optional[str] = None

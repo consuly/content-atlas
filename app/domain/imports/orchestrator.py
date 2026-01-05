@@ -60,7 +60,8 @@ from .history import (
     summarize_chunk_status,
     record_mapping_errors_batch,
     list_duplicate_rows,
-    record_duplicate_rows
+    record_duplicate_rows,
+    record_validation_failures
 )
 from app.db.metadata import store_table_metadata, enrich_table_metadata
 from .schema_mapper import analyze_schema_compatibility, transform_record
@@ -942,6 +943,7 @@ def _execute_streaming_csv_import(
     duplicates_skipped_total = 0
     intra_file_duplicates_skipped = 0
     mapping_errors_count = 0
+    validation_failures_count = 0
     mapping_errors_sample: List[Dict[str, Any]] = []
     MAPPING_ERROR_SAMPLE_LIMIT = 50
     type_mismatch_agg: Dict[str, Dict[str, Any]] = {}
@@ -1020,7 +1022,7 @@ def _execute_streaming_csv_import(
 
             try:
                 map_start = time.time()
-                mapped_records, mapping_errors = map_data(
+                mapped_records, mapping_errors, chunk_validation_failures = map_data(
                     chunk_records,
                     mapping_config,
                     row_offset=chunk_start_row - 1,
@@ -1028,8 +1030,15 @@ def _execute_streaming_csv_import(
                 combined_errors = preprocess_errors + mapping_errors
                 map_time_total += time.time() - map_start
                 mapping_errors_count += len(combined_errors)
+                validation_failures_count += len(chunk_validation_failures)
                 type_summary = _summarize_type_mismatches(mapping_errors)
                 _merge_type_mismatch_summaries(type_mismatch_agg, type_summary)
+
+                if chunk_validation_failures:
+                    try:
+                        record_validation_failures(import_id, chunk_validation_failures)
+                    except Exception as exc:
+                        logger.warning("Unable to persist validation failures for chunk %s: %s", chunk_num, exc)
 
                 if combined_errors:
                     error_records: List[Dict[str, Any]] = []
@@ -1240,6 +1249,7 @@ def _execute_streaming_csv_import(
         rows_inserted=records_inserted_total,
         rows_skipped=duplicates_skipped_total,
         duplicates_found=duplicates_skipped_total,
+        validation_errors=validation_failures_count,
         duration_seconds=duration,
         parsing_time_seconds=parse_time_total,
         insert_time_seconds=insert_time_total,
@@ -1280,7 +1290,7 @@ def _map_chunk(
     chunk_num: int,
     import_id: Optional[str] = None,
     row_offset: int = 0,
-) -> Tuple[int, List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[int, List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map a single chunk of records. Designed to be called in parallel.
     
@@ -1288,9 +1298,11 @@ def _map_chunk(
         chunk_records: Records in this chunk
         config: Mapping configuration
         chunk_num: Chunk number (for logging)
+        import_id: Optional import ID for tracking
+        row_offset: Starting row number for this chunk
     
     Returns:
-        Tuple of (chunk_num, mapped_records, errors)
+        Tuple of (chunk_num, mapped_records, errors, validation_failures)
     """
     chunk_start = time.time()
     logger.info(f"Mapping chunk {chunk_num} ({len(chunk_records)} records)")
@@ -1299,7 +1311,7 @@ def _map_chunk(
         mark_chunk_in_progress(import_id, chunk_num)
     
     try:
-        mapped_records, errors = map_data(
+        mapped_records, errors, validation_failures = map_data(
             chunk_records,
             config,
             row_offset=row_offset,
@@ -1309,10 +1321,10 @@ def _map_chunk(
                 error.setdefault("chunk_number", chunk_num)
         chunk_time = time.time() - chunk_start
         records_per_sec = len(mapped_records) / chunk_time if chunk_time > 0 else 0
-        logger.info(f"⏱️  Chunk {chunk_num}: Mapped {len(mapped_records)} records in {chunk_time:.2f}s ({records_per_sec:.0f} rec/sec, {len(errors)} errors)")
+        logger.info(f"⏱️  Chunk {chunk_num}: Mapped {len(mapped_records)} records in {chunk_time:.2f}s ({records_per_sec:.0f} rec/sec, {len(errors)} errors, {len(validation_failures)} validation failures)")
         if import_id:
             mark_chunk_completed(import_id, chunk_num, errors_count=len(errors))
-        return (chunk_num, mapped_records, errors)
+        return (chunk_num, mapped_records, errors, validation_failures)
     except Exception as e:
         logger.error(f"Error mapping chunk {chunk_num}: {e}")
         if import_id:
@@ -1327,7 +1339,7 @@ def _map_chunks_parallel(
     timeout_seconds: Optional[int] = None,
     job_id: Optional[str] = None,
     import_id: Optional[str] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map multiple chunks in parallel and aggregate results.
     
@@ -1336,10 +1348,11 @@ def _map_chunks_parallel(
         config: Mapping configuration
         max_workers: Maximum number of parallel workers
         timeout_seconds: Optional timeout for the mapping stage in seconds
+        job_id: Optional job ID for progress tracking
         import_id: Optional import tracking id for chunk-level persistence
     
     Returns:
-        Tuple of (all_mapped_records, all_errors)
+        Tuple of (all_mapped_records, all_errors, all_validation_failures)
     """
     if max_workers is None:
         max_workers = MAP_PARALLEL_MAX_WORKERS
@@ -1349,11 +1362,13 @@ def _map_chunks_parallel(
     
     all_mapped_records: List[Dict[str, Any]] = []
     all_errors: List[Dict[str, Any]] = []
-    chunk_results: Dict[int, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
+    all_validation_failures: List[Dict[str, Any]] = []
+    chunk_results: Dict[int, Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
     total_chunks = len(raw_chunks)
     completed_chunks = 0
     records_mapped_running = 0
     errors_running = 0
+    validation_failures_running = 0
 
     deadline = time.time() + timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
     timeout_message = (
@@ -1464,10 +1479,11 @@ def _map_chunks_parallel(
             for future in done:
                 chunk_num = future_to_chunk[future]
                 try:
-                    result_chunk_num, mapped_records, errors = future.result()
-                    chunk_results[result_chunk_num] = (mapped_records, errors)
+                    result_chunk_num, mapped_records, errors, validation_failures = future.result()
+                    chunk_results[result_chunk_num] = (mapped_records, errors, validation_failures)
                     records_mapped_running += len(mapped_records)
                     errors_running += len(errors)
+                    validation_failures_running += len(validation_failures)
                     logger.info(f"Chunk {result_chunk_num} mapping completed")
                     completed_chunks += 1
                     progress_pct = int((completed_chunks / total_chunks) * 100) if total_chunks else None
@@ -1480,6 +1496,7 @@ def _map_chunks_parallel(
                             "total_chunks": total_chunks,
                             "records_mapped_so_far": records_mapped_running,
                             "errors_so_far": errors_running,
+                            "validation_failures_so_far": validation_failures_running,
                             "parallel_workers": max_workers,
                             "timeout_seconds": timeout_seconds,
                         },
@@ -1492,12 +1509,13 @@ def _map_chunks_parallel(
     
     # Aggregate results in order
     for chunk_num in sorted(chunk_results.keys()):
-        mapped_records, errors = chunk_results[chunk_num]
+        mapped_records, errors, validation_failures = chunk_results[chunk_num]
         all_mapped_records.extend(mapped_records)
         all_errors.extend(errors)
+        all_validation_failures.extend(validation_failures)
     
-    logger.info(f"Parallel mapping completed: {len(all_mapped_records)} total records, {len(all_errors)} total errors")
-    return all_mapped_records, all_errors
+    logger.info(f"Parallel mapping completed: {len(all_mapped_records)} total records, {len(all_errors)} total errors, {len(all_validation_failures)} validation failures")
+    return all_mapped_records, all_errors, all_validation_failures
 
 
 def handle_schema_transformation(
@@ -1677,6 +1695,7 @@ def execute_data_import(
     start_time = time.time()
     import_id = None
     records = []
+    validation_failures: List[Dict[str, Any]] = []
     intra_file_duplicates_skipped = 0
     chunk_status_summary: Dict[str, int] = {}
     widened_columns: List[Dict[str, Any]] = []
@@ -1991,7 +2010,7 @@ def execute_data_import(
 
                 # Map chunks in parallel
                 timeout_seconds = MAP_STAGE_TIMEOUT_SECONDS if MAP_STAGE_TIMEOUT_SECONDS > 0 else None
-                mapped_records, mapping_errors = _map_chunks_parallel(
+                mapped_records, mapping_errors, validation_failures = _map_chunks_parallel(
                     chunks,
                     mapping_config,
                     max_workers,
@@ -1999,6 +2018,14 @@ def execute_data_import(
                     job_id=job_id,
                     import_id=import_id,
                 )
+                
+                # Record validation failures
+                if validation_failures:
+                    logger.info(f"Recording {len(validation_failures)} validation failures for import {import_id}")
+                    try:
+                        record_validation_failures(import_id, validation_failures)
+                    except Exception as e:
+                        logger.error(f"Failed to record validation failures: {str(e)}")
             else:
                 # Use sequential mapping for small datasets
                 logger.info(f"Using sequential mapping for {total_rows} records")
@@ -2011,9 +2038,9 @@ def execute_data_import(
                     future = executor.submit(map_data, records, mapping_config, row_offset=0)
                     try:
                         if timeout_seconds is None:
-                            mapped_records, mapping_errors = future.result()
+                            mapped_records, mapping_errors, validation_failures = future.result()
                         else:
-                            mapped_records, mapping_errors = future.result(timeout=timeout_seconds)
+                            mapped_records, mapping_errors, validation_failures = future.result(timeout=timeout_seconds)
                     except FuturesTimeoutError as exc:
                         logger.error(
                             "Sequential mapping timed out after %d seconds",
@@ -2037,6 +2064,15 @@ def execute_data_import(
                     1,
                     errors_count=len(preprocess_errors) + len(mapping_errors),
                 )
+                
+                # Record validation failures
+                if validation_failures:
+                    logger.info(f"Recording {len(validation_failures)} validation failures for import {import_id}")
+                    try:
+                        record_validation_failures(import_id, validation_failures)
+                    except Exception as e:
+                        logger.error(f"Failed to record validation failures: {str(e)}")
+                
                 _update_job_progress(
                     job_id,
                     stage="mapping",
@@ -2385,6 +2421,7 @@ def execute_data_import(
             rows_inserted=records_inserted,
             rows_skipped=duplicates_skipped,
             duplicates_found=duplicates_skipped,
+            validation_errors=len(validation_failures),
             duration_seconds=duration,
             parsing_time_seconds=parse_time,
             insert_time_seconds=insert_time,
@@ -2408,6 +2445,7 @@ def execute_data_import(
             "duplicate_rows_count": duplicate_total if duplicate_total else None,
             "import_id": import_id,
             "row_count_warning": row_count_warning,
+            "validation_errors": len(validation_failures),
         }
         
     except FileAlreadyImportedException as e:

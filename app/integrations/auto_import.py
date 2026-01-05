@@ -1212,6 +1212,7 @@ def execute_llm_import_decision(
             "llm_followup": result.get("llm_followup"),
             "needs_user_input": result.get("needs_user_input"),
             "schema_migration_results": schema_migration_results,
+            "validation_errors": result.get("validation_errors"),
         }
         
     except Exception as e:

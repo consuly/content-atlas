@@ -83,7 +83,7 @@ For advanced deployment options (Docker, Static Hosting, Railway), please see [d
 - **API Documentation:** http://localhost:8000/docs
 
 **First-Time Login:**
-Create an admin user to access the dashboard:
+Create an admin user to access to dashboard:
 ```bash
 python create_admin_user.py
 ```
@@ -105,7 +105,7 @@ python create_admin_user.py
 - 💻 [Console Interface](docs/CONSOLE.md) - Natural language query console
 - 🔧 [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 - 📈 [Scalability and Performance](docs/SCALABILITY_AND_PERFORMANCE.md) - Handling large datasets
-- 🛡️ [Database Reset](docs/DATABASE_RESET.md) - How to reset/clear the database
+- 🛡️ [Database Reset](docs/DATABASE_RESET.md) - How to reset/clear database
 
 ---
 
@@ -134,7 +134,7 @@ curl -X POST "http://localhost:8000/map-data" \
 ### Query with Natural Language
 
 ```bash
-# Start the interactive console
+# Start of interactive console
 python -m app.console
 
 # Ask questions in plain English

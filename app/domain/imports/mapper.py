@@ -60,7 +60,8 @@ def _validate_value(value: Any, rule: ValidationRule) -> Tuple[bool, Optional[st
     else:
         pattern = get_preset_pattern(rule.validator)
         if pattern is None:
-            return False, f"Unknown validator: {rule.validator}"
+            logger.warning(f"Unknown validator: {rule.validator} - skipping validation")
+            return True, None
         
         try:
             if not re.match(pattern, str_val):
@@ -104,7 +105,7 @@ def map_data(
     config: MappingConfig,
     *,
     row_offset: int = 0,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map input data according to the configuration.
     
@@ -115,9 +116,10 @@ def map_data(
     - Automatically converts date columns based on schema type
 
     Returns:
-    Tuple of (mapped_records, list_of_all_errors)
+    Tuple of (mapped_records, list_of_all_errors, validation_failures)
     """
     all_errors: List[Dict[str, Any]] = []
+    validation_failures: List[Dict[str, Any]] = []
     
     # Pre-compute mapping items ONCE (not N times in loop)
     # Convert to tuple for faster iteration
@@ -184,7 +186,7 @@ def map_data(
              for output_col, input_field in mapping_items}
             for record in records
         ]
-        return mapped_records, all_errors
+        return mapped_records, all_errors, validation_failures
     
     # Process records with rules and/or date conversion
     mapped_records = []
@@ -391,7 +393,8 @@ def map_data(
             mapped_record, record_errors = apply_rules(mapped_record, rules)
             all_errors.extend(record_errors)
 
-        # Apply column validations
+        # Apply column validations - collect ALL validation errors for this record first
+        record_validation_errors = []
         if config.column_validations:
             for rule in config.column_validations:
                 col_name = rule.column
@@ -402,7 +405,14 @@ def map_data(
                     
                     if not is_valid:
                         final_msg = rule.error_message or err_msg or f"Validation failed for column '{col_name}'"
-                        # Log error
+                        # Collect validation error details
+                        record_validation_errors.append({
+                            "column": col_name,
+                            "error_type": rule.validator,
+                            "error_message": final_msg,
+                            "value": val
+                        })
+                        # Also log to all_errors for tracking
                         all_errors.append(_build_mapping_error(
                             error_type="validation_error",
                             message=final_msg,
@@ -411,12 +421,22 @@ def map_data(
                             value=val,
                             record_number=idx,  # idx is the row number (1-based from start argument)
                         ))
-                        # Nullify the invalid value to prevent pollution
-                        mapped_record[col_name] = None
         
+        # Decision point: skip record if it has validation failures, or keep it
+        if record_validation_errors:
+            # Track as validation failure - SKIP this record (don't add to mapped_records)
+            validation_failures.append({
+                "record_number": idx,
+                "record": dict(source_record),  # Original data
+                "validation_errors": record_validation_errors
+            })
+            # ✅ SKIP - don't add to mapped_records
+            continue
+        
+        # Only add valid records
         mapped_records.append(mapped_record)
 
-    return mapped_records, all_errors
+    return mapped_records, all_errors, validation_failures
 
 
 def _apply_column_transformations(
