@@ -122,7 +122,7 @@ except Exception as e:
 # Initialize FastAPI application
 app = FastAPI(
     title="Content Atlas API",
-    version="1.0.0",
+    version="1.0.1",
     description=description_text,
     lifespan=lifespan,
     docs_url="/docs",
@@ -167,8 +167,8 @@ app.include_router(export.router)
 async def root():
     """Root endpoint returning API information."""
     return {
-        "message": "Content Atlas by Consuly.ai",
-        "version": "0.9.0"
+        "message": "Content Atlas API",
+        "version": "1.0.1"
     }
 
 

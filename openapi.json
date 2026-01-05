@@ -3,7 +3,7 @@
   "info": {
     "title": "Content Atlas API",
     "description": "A data consolidation platform for SMBs to consolidate data from multiple sources into PostgreSQL",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "paths": {
     "/map-data": {
