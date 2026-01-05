@@ -80,6 +80,32 @@ class DuplicateCheckConfig(BaseModel):
     error_message: Optional[str] = None  # Custom error message for duplicates
 
 
+class ValidationRule(BaseModel):
+    """Configuration for column data validation."""
+    column: str
+    validator: Literal[
+        # Legacy validators (handled inline in mapper)
+        "boolean", "not_empty",
+        # Contact & Communication presets
+        "email", "email_strict", "phone", "phone_us", "phone_international",
+        # Identifiers & Codes presets
+        "uuid", "ssn", "ein", "postal_code", "postal_code_us", "postal_code_ca",
+        # Web & Network presets
+        "url", "domain", "ipv4", "ipv6",
+        # Financial presets
+        "credit_card", "currency_usd", "iban",
+        # Data Formats presets
+        "date_iso", "date_us", "time_24h", "hex_color", "slug",
+        # Custom Business IDs presets
+        "alphanumeric_id", "sku",
+        # Custom regex
+        "regex"
+    ]
+    pattern: Optional[str] = None  # For regex validator
+    allow_null: bool = True
+    error_message: Optional[str] = None
+
+
 class MappingErrorDetail(BaseModel):
     """Structured information about mapping errors surfaced during import."""
     type: str
@@ -104,6 +130,7 @@ class MappingConfig(BaseModel):
     db_schema: Dict[str, str]
     mappings: Dict[str, str]  # Maps target_column -> source_column
     rules: Dict[str, Any] = {}
+    column_validations: List[ValidationRule] = Field(default_factory=list)  # Data validation rules
     unique_columns: Optional[List[str]] = None
     check_duplicates: bool = True  # Legacy field for backward compatibility
     duplicate_check: DuplicateCheckConfig = DuplicateCheckConfig()  # New structured config

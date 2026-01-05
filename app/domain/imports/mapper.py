@@ -7,11 +7,68 @@ import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import numbers
-from app.api.schemas.shared import MappingConfig
+from app.api.schemas.shared import MappingConfig, ValidationRule
 from app.utils.date import parse_flexible_date, detect_date_column
 from app.utils.phone import standardize_phone
+from app.domain.imports.validators import get_preset_pattern, get_preset_description
 
 logger = logging.getLogger(__name__)
+
+GLOBAL_PLACEHOLDERS = {
+    "researching...", "researching", "tbd", "n/a", "null", "none", "undefined", "unknown", "-"
+}
+
+
+def _validate_value(value: Any, rule: ValidationRule) -> Tuple[bool, Optional[str]]:
+    """
+    Validate a single value against a rule.
+    Returns (is_valid, error_message).
+    """
+    if value is None:
+        return rule.allow_null, "Value is null but column requires a value" if not rule.allow_null else None
+    
+    str_val = str(value).strip()
+    if not str_val:
+        return rule.allow_null, "Value is empty but column requires a value" if not rule.allow_null else None
+
+    # Global placeholder check for all validators
+    if str_val.lower() in GLOBAL_PLACEHOLDERS:
+        return False, f"Value '{str_val}' is a known placeholder"
+
+    # Legacy validators (handled inline)
+    if rule.validator == "not_empty":
+        return True, None
+             
+    elif rule.validator == "boolean":
+        # Check if it maps to boolean
+        lower = str_val.lower()
+        if lower not in {'true', '1', 'yes', 'y', 'on', 'false', '0', 'no', 'n', 'off'}:
+             return False, f"Value '{str_val}' is not a valid boolean"
+        return True, None
+
+    elif rule.validator == "regex":
+        # Custom regex pattern
+        if rule.pattern:
+            try:
+                if not re.match(rule.pattern, str_val):
+                    return False, f"Value '{str_val}' does not match pattern '{rule.pattern}'"
+            except re.error:
+                return False, f"Invalid regex pattern '{rule.pattern}'"
+        return True, None
+    
+    # All other validators use preset patterns
+    else:
+        pattern = get_preset_pattern(rule.validator)
+        if pattern is None:
+            return False, f"Unknown validator: {rule.validator}"
+        
+        try:
+            if not re.match(pattern, str_val):
+                description = get_preset_description(rule.validator)
+                return False, f"Value '{str_val}' does not match {description or rule.validator} format"
+            return True, None
+        except re.error as e:
+            return False, f"Regex error for validator '{rule.validator}': {str(e)}"
 
 
 def _build_mapping_error(
@@ -333,6 +390,29 @@ def map_data(
         if has_rules:
             mapped_record, record_errors = apply_rules(mapped_record, rules)
             all_errors.extend(record_errors)
+
+        # Apply column validations
+        if config.column_validations:
+            for rule in config.column_validations:
+                col_name = rule.column
+                # Only validate if the column exists in the mapped record (and wasn't just dropped)
+                if col_name in mapped_record:
+                    val = mapped_record[col_name]
+                    is_valid, err_msg = _validate_value(val, rule)
+                    
+                    if not is_valid:
+                        final_msg = rule.error_message or err_msg or f"Validation failed for column '{col_name}'"
+                        # Log error
+                        all_errors.append(_build_mapping_error(
+                            error_type="validation_error",
+                            message=final_msg,
+                            column=col_name,
+                            expected_type=rule.validator,
+                            value=val,
+                            record_number=idx,  # idx is the row number (1-based from start argument)
+                        ))
+                        # Nullify the invalid value to prevent pollution
+                        mapped_record[col_name] = None
         
         mapped_records.append(mapped_record)
 

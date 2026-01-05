@@ -784,6 +784,7 @@ def execute_llm_import_decision(
         expected_column_types = llm_decision.get("expected_column_types") or {}
         column_transformations = llm_decision.get("column_transformations") or []
         row_transformations = llm_decision.get("row_transformations") or []
+        column_validations = llm_decision.get("column_validations") or []
         instruction_text = llm_decision.get("llm_instruction") or ""
         multi_value_directives = llm_decision.get("multi_value_directives") or []
         require_explicit_multi_value = bool(llm_decision.get("require_explicit_multi_value"))
@@ -924,6 +925,43 @@ def execute_llm_import_decision(
         
         # Get target columns (keys in inverted_mapping, which were values in original column_mapping)
         target_columns = list(inverted_mapping.keys())
+
+        # Auto-generate validations if explicit ones are missing (OR supplement them)
+        # This ensures we catch "Researching..." and invalid formats even if LLM didn't explicitly ask
+        if not column_validations:
+            column_validations = []
+        
+        existing_validation_cols = {v.get("column") for v in column_validations}
+
+        for target_col in target_columns:
+            # Skip if already has a validation rule
+            if target_col in existing_validation_cols:
+                continue
+
+            lower_col = target_col.lower()
+            
+            # 1. Check expected types from LLM (mapped from source)
+            source_col = inverted_mapping.get(target_col)
+            if source_col and source_col in expected_column_types:
+                exp_type = normalize_expected_type(expected_column_types[source_col])
+                if exp_type == "BOOLEAN":
+                    column_validations.append({"column": target_col, "validator": "boolean"})
+                    existing_validation_cols.add(target_col)
+                    continue
+
+            # 2. Check semantic names
+            if "email" in lower_col or "e-mail" in lower_col:
+                column_validations.append({"column": target_col, "validator": "email"})
+                existing_validation_cols.add(target_col)
+            elif "phone" in lower_col or "mobile" in lower_col:
+                column_validations.append({"column": target_col, "validator": "phone"})
+                existing_validation_cols.add(target_col)
+            elif "postal" in lower_col or "zip" in lower_col:
+                column_validations.append({"column": target_col, "validator": "postal_code"})
+                existing_validation_cols.add(target_col)
+
+        if column_validations:
+            logger.info(f"AUTO-IMPORT: Applied column validations: {json.dumps(column_validations)}")
 
         rules_payload: Dict[str, Any] = {}
         if column_transformations:
@@ -1086,6 +1124,7 @@ def execute_llm_import_decision(
                 db_schema=final_table_schema or existing_table_schema or {},
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules=rules_payload,
+                column_validations=column_validations,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=not skip_duplicate_check,  # Disable duplicate checking entirely if flag is set
@@ -1103,6 +1142,7 @@ def execute_llm_import_decision(
                 db_schema=db_schema,
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules=rules_payload,
+                column_validations=column_validations,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=not skip_duplicate_check,  # Disable duplicate checking entirely if flag is set

@@ -1521,6 +1521,7 @@ def make_import_decision(
     schema_migrations: Optional[List[Dict[str, Any]]] = None,
     column_transformations: Optional[List[Dict[str, Any]]] = None,
     row_transformations: Optional[List[Dict[str, Any]]] = None,
+    column_validations: Optional[List[Dict[str, Any]]] = None,
     allow_unique_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
@@ -1547,6 +1548,8 @@ def make_import_decision(
         column_transformations: Optional list of source data transformation instructions
             (e.g., split arrays, compose phone numbers) the executor should perform before mapping.
         row_transformations: Optional list of row-level preprocessing instructions (e.g., explode email columns).
+        column_validations: Optional list of validation rules for target columns.
+            (e.g., [{"column": "email", "validator": "email"}, {"column": "id", "validator": "regex", "pattern": "^ID\\d+$"}])
         
     Returns:
         Confirmation of decision recorded
@@ -1647,6 +1650,7 @@ def make_import_decision(
             if row_transformations is not None
             else context.file_metadata.get("detected_row_transformations")
         ),
+        "column_validations": column_validations or [],
         "forced_target_table": target_table if forced_table else None,
         "forced_table_mode": forced_table_mode if forced_table else None,
         "llm_instruction": context.llm_instruction,
@@ -1797,6 +1801,12 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
   * Always set `allow_unique_override=True` when you want to enforce your specific uniqueness strategy.
 - **has_header**: Required for CSV.
 - **expected_column_types**: {source_col: "TEXT"|"INTEGER"|"TIMESTAMP"...}.
+- **column_validations**: List of validation rules for target columns.
+  - Structure: `{"column": "target_col", "validator": "type", "pattern": "regex_if_needed", "allow_null": bool}`
+  - Validators: "email", "phone", "boolean", "postal_code", "regex", "not_empty".
+  - **Auto-Validate Semantic Types**: ALWAYS add validations for columns you identify as Email, Phone, or Boolean.
+  - **Custom Patterns**: Use "regex" validator for IDs (e.g. `^TTT\d{5}$`) or specific formats requested in instructions.
+  - **Global Placeholder Check**: This system automatically rejects values like "Researching...", "TBD", "N/A" for any validated column.
 - **transformations**: Provide explicit instructions for data cleanup.
 
 **TRANSFORMATIONS GUIDE:**
