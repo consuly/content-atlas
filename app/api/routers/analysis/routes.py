@@ -325,7 +325,7 @@ def _parse_records_for_execution(file_content: bytes, file_type: str) -> List[Di
 
 
 def _execute_cached_archive_decision(
-    entry_bytes: bytes, entry_name: str, llm_decision: Dict[str, Any]
+    entry_bytes: bytes, entry_name: str, llm_decision: Dict[str, Any], source_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Execute a cached LLM decision for an archive entry without re-running analysis.
@@ -339,7 +339,7 @@ def _execute_cached_archive_decision(
             file_name=entry_name,
             all_records=records,
             llm_decision=llm_decision,
-            source_path=None,  # Cached execution doesn't have B2 path context
+            source_path=source_path,
         )
         response = AnalyzeFileResponse(
             success=execution_result.get("success", False),
@@ -680,6 +680,7 @@ def _process_entry_bytes(
                     entry_bytes=entry_bytes,
                     entry_name=entry_name,
                     llm_decision=applied_decision,
+                    source_path=upload_result["file_path"],
                 )
             else:
                 # No plan materialized—fall back to fresh analysis so we still produce a result.
@@ -717,6 +718,7 @@ def _process_entry_bytes(
                         entry_bytes=entry_bytes,
                         entry_name=entry_name,
                         llm_decision=applied_decision,
+                        source_path=upload_result["file_path"],
                     )
                     
                     _log_archive_debug({

@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def extract_raw_csv_rows(file_content: bytes, num_rows: int = 100) -> List[List[str]]:
+def extract_raw_csv_rows(file_content: bytes, num_rows: int = 200) -> List[List[str]]:
     """
     Extract raw CSV rows without making any assumptions about headers.
     
@@ -19,7 +19,7 @@ def extract_raw_csv_rows(file_content: bytes, num_rows: int = 100) -> List[List[
     
     Args:
         file_content: CSV file content as bytes
-        num_rows: Number of rows to extract (default 100)
+        num_rows: Number of rows to extract (default 200)
         
     Returns:
         List of rows, where each row is a list of string values

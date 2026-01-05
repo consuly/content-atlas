@@ -574,20 +574,8 @@ def _check_for_duplicates_db_side(conn, table_name: str, records: List[Dict[str,
                     
                 if count > 0:
                     duplicate_indices.append(global_idx)
-                else:
-                    # Debug logic for specific email we know is duplicated
-                    # Check if any param value contains the email
-                    for k, v in params.items():
-                        if v == 'atreasadenq@ask.com':
-                            print(f"DEBUG_FAIL: Duplicate check failed for {v}")
-                            print(f"Query: {query}")
-                            print(f"Params: {params}")
-                            # Check DB content
-                            try:
-                                db_check = conn.execute(text(f"SELECT email FROM \"{table_name}\" WHERE email = 'atreasadenq@ask.com'")).fetchall()
-                                print(f"DB probe result: {db_check}")
-                            except Exception as dbe:
-                                print(f"DB probe failed: {dbe}")
+                    if len(duplicate_indices) <= 5:
+                        logger.info(f"Duplicate found for record {global_idx} in table '{table_name}'. Query: {query} Params: {params}")
                 
                 # Log first few checks for debugging (without exposing data values)
                 if global_idx < 3:
