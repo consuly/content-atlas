@@ -1803,9 +1803,17 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
 - **expected_column_types**: {source_col: "TEXT"|"INTEGER"|"TIMESTAMP"...}.
 - **column_validations**: List of validation rules for target columns.
   - Structure: `{"column": "target_col", "validator": "type", "pattern": "regex_if_needed", "allow_null": bool}`
-  - Validators: "email", "phone", "boolean", "postal_code", "regex", "not_empty".
-  - **Auto-Validate Semantic Types**: ALWAYS add validations for columns you identify as Email, Phone, or Boolean.
-  - **Custom Patterns**: Use "regex" validator for IDs (e.g. `^TTT\d{5}$`) or specific formats requested in instructions.
+  - **Preset Validators Available:**
+    * **Contact & Communication:** email, email_strict, phone (loose, default), phone_us, phone_international (E.164)
+    * **Identifiers:** uuid, ssn, ein, postal_code_us, postal_code_ca
+    * **Web & Network:** url, domain, ipv4, ipv6
+    * **Financial:** credit_card, currency_usd, iban
+    * **Data Formats:** date_iso, date_us, time_24h, hex_color, slug
+    * **Business IDs:** alphanumeric_id, sku
+    * **Legacy:** boolean, not_empty
+    * **Custom:** regex (requires "pattern" field)
+  - **Auto-Validate Semantic Types**: ALWAYS add validations for columns you identify as Email, Phone, Boolean, URL, UUID, etc.
+  - **Custom Patterns**: Use "regex" validator with "pattern" for IDs (e.g. `^TTT\d{5}$`) or formats not covered by presets.
   - **Global Placeholder Check**: This system automatically rejects values like "Researching...", "TBD", "N/A" for any validated column.
 - **transformations**: Provide explicit instructions for data cleanup.
 
