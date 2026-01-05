@@ -11,7 +11,7 @@ from app.db.metadata import create_table_metadata_table
 from app.domain.imports.history import create_import_history_table
 from app.domain.imports.jobs import ensure_import_jobs_table
 from app.domain.uploads.uploaded_files import create_uploaded_files_table
-from app.db.models import create_file_imports_table_if_not_exists
+from app.db.models import create_file_imports_table_if_not_exists, create_table_fingerprints_table_if_not_exists
 from app.db.session import get_engine
 
 
@@ -30,5 +30,6 @@ def ensure_system_tables_ready(engine: Optional[Engine] = None) -> Engine:
     create_uploaded_files_table()
     ensure_import_jobs_table()
     create_file_imports_table_if_not_exists(engine)
+    create_table_fingerprints_table_if_not_exists(engine)
 
     return engine

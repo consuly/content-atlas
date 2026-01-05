@@ -919,6 +919,15 @@ def execute_llm_import_decision(
                         "AUTO-IMPORT: Updated mapping for transformed column '%s' to read from transformed value instead of original",
                         target_col
                     )
+            elif t_type == "coalesce_columns":
+                target_col = transformation.get("target_column") or transformation.get("target_field") or transformation.get("column")
+                if target_col and target_col not in inverted_mapping:
+                    # Add the new column to the mapping so it gets included in the schema
+                    inverted_mapping[target_col] = target_col
+                    logger.info(
+                        "AUTO-IMPORT: Added new target column '%s' from coalesce_columns transformation",
+                        target_col
+                    )
 
         logger.info(f"AUTO-IMPORT: LLM column_mapping (source->target): {column_mapping}")
         logger.info(f"AUTO-IMPORT: Inverted mapping (target->source): {inverted_mapping}")

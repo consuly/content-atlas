@@ -42,7 +42,7 @@ def test_map_data_splits_multi_value_column():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
 
     assert mapped[0]["email_one"] == "primary@example.com"
@@ -81,7 +81,7 @@ def test_map_data_composes_international_phone():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
     assert mapped[0]["international_phone"] == "+15551234567x101"
 
@@ -113,7 +113,7 @@ def test_map_data_splits_international_phone():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
     assert mapped[0]["country_code"] == "44"
     assert mapped[0]["subscriber_number"] == "2079461234"
@@ -160,7 +160,7 @@ def test_column_regex_replace_runs_before_mapping():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
     assert mapped[0]["phone"] == "5551112222"
     assert mapped[1]["phone"] == "13334445555"
@@ -191,7 +191,7 @@ def test_column_regex_replace_outputs_groups():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
     assert mapped[0]["user"] == "alpha"
     assert mapped[0]["domain"] == "example.com"
@@ -220,7 +220,7 @@ def test_merge_columns_combines_sources_with_defaults():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
     assert mapped[0]["name"] == "Alice Smith"
     assert mapped[1]["name"] == "Bob"
@@ -252,7 +252,7 @@ def test_explode_list_column_splits_into_outputs_without_row_duplication():
         rules=rules,
     )
 
-    mapped, errors = map_data(records, config)
+    mapped, errors, _ = map_data(records, config)
     assert not errors
     assert mapped[0]["tag_primary"] == "red"
     assert mapped[0]["tag_secondary"] == "blue"
@@ -332,7 +332,7 @@ def test_datetime_standardization():
         db_schema={'event_date': 'TIMESTAMP', 'name': 'TEXT'}
     )
 
-    mapped_records, all_errors = map_data(records, config)
+    mapped_records, all_errors, _ = map_data(records, config)
 
     # Check successful conversions
     assert mapped_records[0]['event_date'] == '2025-10-09T20:11:00Z'

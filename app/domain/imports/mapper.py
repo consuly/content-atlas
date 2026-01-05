@@ -476,6 +476,8 @@ def _apply_column_transformations(
             _apply_explode_list_column(updated_record, record, transformation)
         elif t_type == "standardize_phone":
             _apply_standardize_phone(updated_record, record, transformation)
+        elif t_type == "coalesce_columns":
+            _apply_coalesce_columns(updated_record, record, transformation)
         else:
             logger.debug("Unknown column transformation type '%s' skipped", t_type)
 
@@ -743,6 +745,31 @@ def _apply_merge_columns(
         pieces.append(text)
 
     destination[target_column] = separator.join(pieces) if pieces else None
+
+
+def _apply_coalesce_columns(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    """Take the first non-empty value from a list of source columns."""
+    sources = transformation.get("sources") or transformation.get("source_columns") or transformation.get("columns") or []
+    target_column = transformation.get("target_column") or transformation.get("target_field") or transformation.get("column")
+    
+    if not sources or not target_column:
+        return
+
+    for src in sources:
+        value = source_record.get(src)
+        if value is not None and not (isinstance(value, float) and pd.isna(value)):
+            # Check for empty string if it's a string
+            if isinstance(value, str) and not value.strip():
+                continue
+            destination[target_column] = value
+            return
+    
+    # If no value found, set to None (or default if provided)
+    destination[target_column] = transformation.get("default")
 
 
 def _apply_explode_list_column(

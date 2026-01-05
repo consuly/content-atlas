@@ -868,7 +868,12 @@ def insert_records(
     columns = [col for col in records[0].keys() if col not in METADATA_COLS]
     # Add metadata columns (safe - no duplicates possible)
     columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
-    placeholders = ', '.join([f':{col}' for col in columns])
+    
+    # Create safe bind parameter names to handle columns with spaces/special chars
+    # Map original column name -> safe param name (e.g. "Primary Email" -> "p_0")
+    param_map = {col: f"p_{i}" for i, col in enumerate(columns)}
+    
+    placeholders = ', '.join([f':{param_map[col]}' for col in columns])
     columns_sql = ', '.join([f'"{col}"' for col in columns])
 
     insert_sql = f"""
@@ -906,9 +911,12 @@ def insert_records(
                 coerced_record['_source_row_number'] = row_num
                 coerced_record['_corrections_applied'] = json.dumps(corrections) if corrections else None
 
+                # Remap record to use safe parameter names
+                safe_record = {param_map[col]: coerced_record.get(col) for col in columns}
+
                 print(f"DEBUG: Inserting record: {coerced_record}")
-                # Insert the coerced record
-                conn.execute(text(insert_sql), coerced_record)
+                # Insert the coerced record using safe parameters
+                conn.execute(text(insert_sql), safe_record)
 
             # Record file import if file-level checking is enabled (after successful insert)
             if config and config.duplicate_check and config.duplicate_check.check_file_level and file_content:
@@ -1485,7 +1493,11 @@ def _insert_records_chunked(
     columns = [col for col in records[0].keys() if col not in METADATA_COLS]
     # Add metadata columns (safe - no duplicates possible)
     columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
-    placeholders = ', '.join([f':{col}' for col in columns])
+    
+    # Create safe bind parameter names
+    param_map = {col: f"p_{i}" for i, col in enumerate(columns)}
+    
+    placeholders = ', '.join([f':{param_map[col]}' for col in columns])
     columns_sql = ', '.join([f'"{col}"' for col in columns])
     
     insert_sql = f"""
@@ -1497,7 +1509,7 @@ def _insert_records_chunked(
         """Insert a single chunk."""
         print(f"DEBUG: Inserting chunk {chunk_index}/{total_chunks} ({len(chunk_records)} records)")
         
-        coerced_chunk = []
+        safe_chunk = []
         chunk_start_row = chunk_start + 1
         
         for idx, record in enumerate(chunk_records):
@@ -1522,11 +1534,13 @@ def _insert_records_chunked(
             coerced_record['_source_row_number'] = chunk_start_row + idx
             coerced_record['_corrections_applied'] = None  # TODO: Track corrections in chunked mode
             
-            coerced_chunk.append(coerced_record)
+            # Remap to safe parameters
+            safe_record = {param_map[col]: coerced_record.get(col) for col in columns}
+            safe_chunk.append(safe_record)
         
         # Bulk insert the chunk
         with engine.begin() as conn:
-            conn.execute(text(insert_sql), coerced_chunk)
+            conn.execute(text(insert_sql), safe_chunk)
         
         return len(chunk_records)
 
