@@ -379,7 +379,7 @@ docker build -t data-mapper:latest .
 
 **Build with specific tag:**
 ```bash
-docker build -t data-mapper:v1.0.0 .
+docker build -t data-mapper:v1.0.1 .
 ```
 
 **Build with build arguments:**

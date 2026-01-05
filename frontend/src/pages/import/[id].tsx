@@ -25,6 +25,8 @@ import {
   DuplicateExistingRow,
   ArchiveFileResult,
   ArchiveFileStatus,
+  ValidationFailureRow,
+  ValidationFailuresState,
 } from './components/types';
 import { ImportMappedFileSection } from './components/ImportMappedFileSection';
 import { ImportAutoSection } from './components/ImportAutoSection';
@@ -487,6 +489,8 @@ export const ImportMappingPage: React.FC = () => {
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [duplicateData, setDuplicateData] = useState<DuplicateRowsState | null>(null);
   const [loadingDuplicates, setLoadingDuplicates] = useState(false);
+  const [validationFailures, setValidationFailures] = useState<ValidationFailuresState | null>(null);
+  const [loadingValidationFailures, setLoadingValidationFailures] = useState(false);
   const [mergeModalVisible, setMergeModalVisible] = useState(false);
   const [mergeDetail, setMergeDetail] = useState<DuplicateDetail | null>(null);
   const [mergeSelections, setMergeSelections] = useState<Record<string, boolean>>({});
@@ -682,6 +686,34 @@ export const ImportMappingPage: React.FC = () => {
     }
   }, [messageApi]);
 
+  const fetchValidationFailures = useCallback(async (importId: string) => {
+    setLoadingValidationFailures(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.get(`${API_URL}/import-history/${importId}/validation-failures`, {
+        params: { limit: DUPLICATE_PREVIEW_LIMIT },
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+      });
+
+      if (response.data.success) {
+        setValidationFailures({
+          rows: response.data.failures as ValidationFailureRow[],
+          total: response.data.total_count ?? (response.data.failures?.length ?? 0),
+        });
+      } else {
+        setValidationFailures(null);
+      }
+    } catch (err) {
+      console.error('Error fetching validation failures:', err);
+      messageApi.warning('Validation failures were detected, but we could not retrieve the preview.');
+      setValidationFailures(null);
+    } finally {
+      setLoadingValidationFailures(false);
+    }
+  }, [messageApi]);
+
   const resetMergeState = () => {
     setMergeDetail(null);
     setMergeSelections({});
@@ -810,6 +842,46 @@ export const ImportMappingPage: React.FC = () => {
   const handleClearDuplicateSelection = useCallback(() => {
     setSelectedDuplicateRowIds([]);
   }, []);
+
+  const handleResolveValidationFailure = useCallback(async (id: number, action: 'discarded' | 'inserted_as_is' | 'inserted_corrected', note?: string, data?: Record<string, unknown>) => {
+    if (!importHistory) return;
+    
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const payload: Record<string, unknown> = {
+        action,
+        note,
+      };
+      if (data) {
+        payload.corrected_data = data;
+      }
+
+      const response = await axios.post(
+        `${API_URL}/import-history/${importHistory.import_id}/validation-failures/${id}/resolve`,
+        payload,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+        }
+      );
+
+      if (response.data.success) {
+        messageApi.success('Validation failure resolved');
+        await fetchValidationFailures(importHistory.import_id);
+        // Also refresh file details to update stats
+        if (file) {
+          await fetchMappedFileDetails(file);
+        }
+      } else {
+        messageApi.error('Failed to resolve validation failure');
+      }
+    } catch (error) {
+      console.error('Error resolving validation failure:', error);
+      messageApi.error('Failed to resolve validation failure');
+    }
+  }, [importHistory, messageApi, fetchValidationFailures, fetchMappedFileDetails, file]);
 
   const handleBulkDuplicateMerge = useCallback(async () => {
     if (!importHistory || selectedDuplicateRowIds.length === 0 || !duplicateData?.rows) return;
@@ -971,6 +1043,14 @@ export const ImportMappingPage: React.FC = () => {
       setDuplicateData(null);
     }
   }, [importHistory?.import_id, importHistory?.duplicates_found, fetchDuplicateRows]);
+
+  useEffect(() => {
+    if (importHistory?.import_id && (importHistory.data_validation_errors ?? 0) > 0) {
+      fetchValidationFailures(importHistory.import_id);
+    } else {
+      setValidationFailures(null);
+    }
+  }, [importHistory?.import_id, importHistory?.data_validation_errors, fetchValidationFailures]);
 
   useEffect(() => {
     setSelectedDuplicateRowIds([]);
@@ -2229,8 +2309,12 @@ export const ImportMappingPage: React.FC = () => {
             importHistory={importHistory}
             tableData={tableData}
             duplicateData={duplicateData}
+            validationFailures={validationFailures}
             loadingDetails={loadingDetails}
             loadingDuplicates={loadingDuplicates}
+            loadingValidationFailures={loadingValidationFailures}
+            onRefreshValidationFailures={() => importHistory?.import_id && fetchValidationFailures(importHistory.import_id)}
+            onResolveValidationFailure={handleResolveValidationFailure}
             isArchiveFile={isArchiveFile}
             archiveResult={archiveResult}
             archiveHistorySummaryResult={archiveHistorySummary?.result || null}

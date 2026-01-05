@@ -60,6 +60,27 @@ export interface DuplicateRowsState {
   total: number;
 }
 
+export interface ValidationFailureRow {
+  id: number;
+  record_number?: number | null;
+  record: Record<string, unknown>;
+  validation_errors: Array<{
+    column: string;
+    error_type: string;
+    error_message: string;
+  }>;
+  detected_at?: string | null;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  resolution_action?: string | null;
+  resolution_details?: Record<string, unknown> | null;
+}
+
+export interface ValidationFailuresState {
+  rows: ValidationFailureRow[];
+  total: number;
+}
+
 export interface DuplicateExistingRow {
   row_id: number;
   record: Record<string, unknown>;
@@ -108,6 +129,7 @@ export interface ArchiveFileResult {
   table_name?: string | null;
   records_processed?: number | null;
   duplicates_skipped?: number | null;
+  validation_errors?: number | null;
   import_id?: string | null;
   auto_retry_used?: boolean;
   message?: string | null;

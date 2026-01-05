@@ -23,6 +23,8 @@ RESERVED_SYSTEM_TABLES = {
     "users",
     "api_keys",
     "llm_instructions",
+    "table_fingerprints",
+    "import_validation_failures",
 }
 
 _RESERVED_TABLES_LOWER = {name.lower() for name in RESERVED_SYSTEM_TABLES}
@@ -80,6 +82,32 @@ class DuplicateCheckConfig(BaseModel):
     error_message: Optional[str] = None  # Custom error message for duplicates
 
 
+class ValidationRule(BaseModel):
+    """Configuration for column data validation."""
+    column: str
+    validator: Literal[
+        # Legacy validators (handled inline in mapper)
+        "boolean", "not_empty",
+        # Contact & Communication presets
+        "email", "email_strict", "phone", "phone_us", "phone_international",
+        # Identifiers & Codes presets
+        "uuid", "ssn", "ein", "postal_code", "postal_code_us", "postal_code_ca",
+        # Web & Network presets
+        "url", "domain", "ipv4", "ipv6",
+        # Financial presets
+        "credit_card", "currency_usd", "iban",
+        # Data Formats presets
+        "date_iso", "date_us", "time_24h", "hex_color", "slug",
+        # Custom Business IDs presets
+        "alphanumeric_id", "sku",
+        # Custom regex
+        "regex"
+    ]
+    pattern: Optional[str] = None  # For regex validator
+    allow_null: bool = True
+    error_message: Optional[str] = None
+
+
 class MappingErrorDetail(BaseModel):
     """Structured information about mapping errors surfaced during import."""
     type: str
@@ -104,6 +132,7 @@ class MappingConfig(BaseModel):
     db_schema: Dict[str, str]
     mappings: Dict[str, str]  # Maps target_column -> source_column
     rules: Dict[str, Any] = {}
+    column_validations: List[ValidationRule] = Field(default_factory=list)  # Data validation rules
     unique_columns: Optional[List[str]] = None
     check_duplicates: bool = True  # Legacy field for backward compatibility
     duplicate_check: DuplicateCheckConfig = DuplicateCheckConfig()  # New structured config
@@ -513,6 +542,50 @@ class ImportDuplicateRowsResponse(BaseModel):
     offset: int
 
 
+class ValidationFailureRow(BaseModel):
+    """Represents a row that failed validation."""
+    id: int
+    record_number: Optional[int] = None
+    record: Dict[str, Any]
+    validation_errors: List[Dict[str, Any]]
+    detected_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    resolution_action: Optional[str] = None
+    resolution_details: Optional[Dict[str, Any]] = None
+
+
+class ImportValidationFailuresResponse(BaseModel):
+    """Response containing validation failures for an import."""
+    success: bool
+    failures: List[ValidationFailureRow]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class ValidationFailureDetailResponse(BaseModel):
+    """Response for single validation failure detail."""
+    success: bool
+    failure: ValidationFailureRow
+    table_name: Optional[str] = None
+
+
+class ResolveValidationFailureRequest(BaseModel):
+    """Request to resolve a validation failure."""
+    action: Literal['inserted_as_is', 'inserted_corrected', 'discarded', 'merged']
+    corrected_data: Optional[Dict[str, Any]] = None
+    resolved_by: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ResolveValidationFailureResponse(BaseModel):
+    """Response from resolving a validation failure."""
+    success: bool
+    failure: ValidationFailureRow
+    message: str
+
+
 class TableLineageResponse(BaseModel):
     """Response for table import lineage"""
     success: bool
@@ -535,6 +608,7 @@ class UploadedFileInfo(BaseModel):
     mapped_table_name: Optional[str] = None
     mapped_date: Optional[datetime] = None
     mapped_rows: Optional[int] = None
+    duplicates_found: Optional[int] = None
     error_message: Optional[str] = None
     active_job_id: Optional[str] = None
     active_job_status: Optional[str] = None
@@ -566,6 +640,7 @@ class AutoExecutionResult(BaseModel):
     type_mismatch_summary: Optional[List[TypeMismatchSummary]] = None
     llm_followup: Optional[str] = None
     schema_migration_results: Optional[List[Dict[str, Any]]] = None
+    validation_errors: Optional[int] = None
     error: Optional[str] = None
 
 
@@ -579,6 +654,7 @@ class ArchiveAutoProcessFileResult(BaseModel):
     table_name: Optional[str] = None
     records_processed: Optional[int] = None
     duplicates_skipped: Optional[int] = None
+    validation_errors: Optional[int] = None
     import_id: Optional[str] = None
     auto_retry_used: bool = False
     message: Optional[str] = None

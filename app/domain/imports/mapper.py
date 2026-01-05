@@ -7,11 +7,69 @@ import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import numbers
-from app.api.schemas.shared import MappingConfig
+from app.api.schemas.shared import MappingConfig, ValidationRule
 from app.utils.date import parse_flexible_date, detect_date_column
 from app.utils.phone import standardize_phone
+from app.domain.imports.validators import get_preset_pattern, get_preset_description
 
 logger = logging.getLogger(__name__)
+
+GLOBAL_PLACEHOLDERS = {
+    "researching...", "researching", "tbd", "n/a", "null", "none", "undefined", "unknown", "-"
+}
+
+
+def _validate_value(value: Any, rule: ValidationRule) -> Tuple[bool, Optional[str]]:
+    """
+    Validate a single value against a rule.
+    Returns (is_valid, error_message).
+    """
+    if value is None:
+        return rule.allow_null, "Value is null but column requires a value" if not rule.allow_null else None
+    
+    str_val = str(value).strip()
+    if not str_val:
+        return rule.allow_null, "Value is empty but column requires a value" if not rule.allow_null else None
+
+    # Global placeholder check for all validators
+    if str_val.lower() in GLOBAL_PLACEHOLDERS:
+        return False, f"Value '{str_val}' is a known placeholder"
+
+    # Legacy validators (handled inline)
+    if rule.validator == "not_empty":
+        return True, None
+             
+    elif rule.validator == "boolean":
+        # Check if it maps to boolean
+        lower = str_val.lower()
+        if lower not in {'true', '1', 'yes', 'y', 'on', 'false', '0', 'no', 'n', 'off'}:
+             return False, f"Value '{str_val}' is not a valid boolean"
+        return True, None
+
+    elif rule.validator == "regex":
+        # Custom regex pattern
+        if rule.pattern:
+            try:
+                if not re.match(rule.pattern, str_val):
+                    return False, f"Value '{str_val}' does not match pattern '{rule.pattern}'"
+            except re.error:
+                return False, f"Invalid regex pattern '{rule.pattern}'"
+        return True, None
+    
+    # All other validators use preset patterns
+    else:
+        pattern = get_preset_pattern(rule.validator)
+        if pattern is None:
+            logger.warning(f"Unknown validator: {rule.validator} - skipping validation")
+            return True, None
+        
+        try:
+            if not re.match(pattern, str_val):
+                description = get_preset_description(rule.validator)
+                return False, f"Value '{str_val}' does not match {description or rule.validator} format"
+            return True, None
+        except re.error as e:
+            return False, f"Regex error for validator '{rule.validator}': {str(e)}"
 
 
 def _build_mapping_error(
@@ -47,7 +105,7 @@ def map_data(
     config: MappingConfig,
     *,
     row_offset: int = 0,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Map input data according to the configuration.
     
@@ -58,9 +116,10 @@ def map_data(
     - Automatically converts date columns based on schema type
 
     Returns:
-    Tuple of (mapped_records, list_of_all_errors)
+    Tuple of (mapped_records, list_of_all_errors, validation_failures)
     """
     all_errors: List[Dict[str, Any]] = []
+    validation_failures: List[Dict[str, Any]] = []
     
     # Pre-compute mapping items ONCE (not N times in loop)
     # Convert to tuple for faster iteration
@@ -127,7 +186,7 @@ def map_data(
              for output_col, input_field in mapping_items}
             for record in records
         ]
-        return mapped_records, all_errors
+        return mapped_records, all_errors, validation_failures
     
     # Process records with rules and/or date conversion
     mapped_records = []
@@ -333,10 +392,51 @@ def map_data(
         if has_rules:
             mapped_record, record_errors = apply_rules(mapped_record, rules)
             all_errors.extend(record_errors)
+
+        # Apply column validations - collect ALL validation errors for this record first
+        record_validation_errors = []
+        if config.column_validations:
+            for rule in config.column_validations:
+                col_name = rule.column
+                # Only validate if the column exists in the mapped record (and wasn't just dropped)
+                if col_name in mapped_record:
+                    val = mapped_record[col_name]
+                    is_valid, err_msg = _validate_value(val, rule)
+                    
+                    if not is_valid:
+                        final_msg = rule.error_message or err_msg or f"Validation failed for column '{col_name}'"
+                        # Collect validation error details
+                        record_validation_errors.append({
+                            "column": col_name,
+                            "error_type": rule.validator,
+                            "error_message": final_msg,
+                            "value": val
+                        })
+                        # Also log to all_errors for tracking
+                        all_errors.append(_build_mapping_error(
+                            error_type="validation_error",
+                            message=final_msg,
+                            column=col_name,
+                            expected_type=rule.validator,
+                            value=val,
+                            record_number=idx,  # idx is the row number (1-based from start argument)
+                        ))
         
+        # Decision point: skip record if it has validation failures, or keep it
+        if record_validation_errors:
+            # Track as validation failure - SKIP this record (don't add to mapped_records)
+            validation_failures.append({
+                "record_number": idx,
+                "record": dict(source_record),  # Original data
+                "validation_errors": record_validation_errors
+            })
+            # ✅ SKIP - don't add to mapped_records
+            continue
+        
+        # Only add valid records
         mapped_records.append(mapped_record)
 
-    return mapped_records, all_errors
+    return mapped_records, all_errors, validation_failures
 
 
 def _apply_column_transformations(
@@ -376,6 +476,8 @@ def _apply_column_transformations(
             _apply_explode_list_column(updated_record, record, transformation)
         elif t_type == "standardize_phone":
             _apply_standardize_phone(updated_record, record, transformation)
+        elif t_type == "coalesce_columns":
+            _apply_coalesce_columns(updated_record, record, transformation)
         else:
             logger.debug("Unknown column transformation type '%s' skipped", t_type)
 
@@ -643,6 +745,31 @@ def _apply_merge_columns(
         pieces.append(text)
 
     destination[target_column] = separator.join(pieces) if pieces else None
+
+
+def _apply_coalesce_columns(
+    destination: Dict[str, Any],
+    source_record: Dict[str, Any],
+    transformation: Dict[str, Any],
+) -> None:
+    """Take the first non-empty value from a list of source columns."""
+    sources = transformation.get("sources") or transformation.get("source_columns") or transformation.get("columns") or []
+    target_column = transformation.get("target_column") or transformation.get("target_field") or transformation.get("column")
+    
+    if not sources or not target_column:
+        return
+
+    for src in sources:
+        value = source_record.get(src)
+        if value is not None and not (isinstance(value, float) and pd.isna(value)):
+            # Check for empty string if it's a string
+            if isinstance(value, str) and not value.strip():
+                continue
+            destination[target_column] = value
+            return
+    
+    # If no value found, set to None (or default if provided)
+    destination[target_column] = transformation.get("default")
 
 
 def _apply_explode_list_column(

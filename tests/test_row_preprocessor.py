@@ -77,7 +77,7 @@ def test_record_numbers_survive_explosion_for_mapping_errors():
         duplicate_check=DuplicateCheckConfig(),
     )
 
-    _, mapping_errors = map_data(exploded, map_config)
+    _, mapping_errors, _ = map_data(exploded, map_config)
     assert len(mapping_errors) == 2
     assert all(err.get("record_number") == 1 for err in mapping_errors)
 

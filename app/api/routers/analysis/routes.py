@@ -379,6 +379,7 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
             "table_name": retry_result.table_name,
             "records_processed": retry_result.records_processed,
             "duplicates_skipped": retry_result.duplicates_skipped,
+            "validation_errors": len(retry_result.mapping_errors or []),
             "import_id": retry_result.import_id,
             "auto_retry_used": True,
             "message": "Processed via Try Again",
@@ -390,6 +391,7 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
             "table_name": auto_result.table_name,
             "records_processed": auto_result.records_processed,
             "duplicates_skipped": auto_result.duplicates_skipped,
+            "validation_errors": auto_result.validation_errors,
             "import_id": auto_result.import_id,
             "auto_retry_used": False,
             "message": "Processed automatically",
@@ -883,6 +885,7 @@ def _process_entry_bytes(
         table_name=summary.get("table_name"),
         records_processed=summary.get("records_processed"),
         duplicates_skipped=summary.get("duplicates_skipped"),
+        validation_errors=summary.get("validation_errors"),
         import_id=summary.get("import_id"),
         auto_retry_used=summary.get("auto_retry_used", False),
         message=summary.get("message"),
@@ -1197,6 +1200,7 @@ def _run_archive_auto_process_job(
                                     "mapped",
                                     mapped_table_name=getattr(file_result, "table_name", None),
                                     mapped_rows=getattr(file_result, "records_processed", None),
+                                    duplicates_found=getattr(file_result, "duplicates_skipped", None),
                                 )
                             except Exception as status_exc:  # pragma: no cover - defensive
                                 logger.warning(
@@ -1482,6 +1486,7 @@ def _run_workbook_auto_process_job(
                                 "mapped",
                                 mapped_table_name=getattr(file_result, "table_name", None),
                                 mapped_rows=getattr(file_result, "records_processed", None),
+                                duplicates_found=getattr(file_result, "duplicates_skipped", None),
                             )
                         except Exception as status_exc:  # pragma: no cover
                             logger.warning(
@@ -2055,7 +2060,7 @@ async def analyze_file_endpoint(
             raise HTTPException(status_code=400, detail="Unsupported file type")
         
         # Smart sampling
-        sample, total_rows = sample_file_data(records, sample_size, max_sample_size=100)
+        sample, total_rows = sample_file_data(records, sample_size, max_sample_size=50)
         
         # Prepare metadata
         file_metadata = {
@@ -2187,7 +2192,8 @@ async def analyze_file_endpoint(
                                     "records_processed": execution_result["records_processed"]
                                 },
                                 mapped_table_name=execution_result["table_name"],
-                                mapped_rows=execution_result["records_processed"]
+                                mapped_rows=execution_result["records_processed"],
+                                data_validation_errors=len(execution_result.get("mapping_errors", []))
                             )
                             job_id = None
                         else:
@@ -2195,7 +2201,9 @@ async def analyze_file_endpoint(
                                 file_id,
                                 "mapped",
                                 mapped_table_name=execution_result["table_name"],
-                                mapped_rows=execution_result["records_processed"]
+                                mapped_rows=execution_result["records_processed"],
+                                duplicates_found=execution_result.get("duplicates_skipped"),
+                                data_validation_errors=len(execution_result.get("mapping_errors", [])),
                             )
                     
                     # Update response with execution results
@@ -2249,6 +2257,7 @@ async def analyze_file_endpoint(
                                     },
                                     mapped_table_name=retry_result.table_name,
                                     mapped_rows=retry_result.records_processed,
+                                    data_validation_errors=len(retry_result.mapping_errors or [])
                                 )
                                 job_id = None
                             else:
@@ -2257,6 +2266,8 @@ async def analyze_file_endpoint(
                                     "mapped",
                                     mapped_table_name=retry_result.table_name,
                                     mapped_rows=retry_result.records_processed,
+                                    duplicates_found=retry_result.duplicates_skipped,
+                                    data_validation_errors=len(retry_result.mapping_errors or [])
                                 )
                     else:
                         if auto_retry_details:
@@ -2350,6 +2361,7 @@ async def analyze_file_endpoint(
                                 },
                                 mapped_table_name=retry_result.table_name,
                                 mapped_rows=retry_result.records_processed,
+                                data_validation_errors=len(retry_result.mapping_errors or [])
                             )
                             job_id = None
                         else:
@@ -2358,6 +2370,7 @@ async def analyze_file_endpoint(
                                 "mapped",
                                 mapped_table_name=retry_result.table_name,
                                 mapped_rows=retry_result.records_processed,
+                                data_validation_errors=len(retry_result.mapping_errors or [])
                             )
                 else:
                     if auto_retry_details:
@@ -2976,7 +2989,7 @@ async def analyze_storage_file_endpoint(
         require_explicit_multi_value = bool(request.require_explicit_multi_value)
         
         # Smart sampling
-        sample, total_rows = sample_file_data(records, request.sample_size, max_sample_size=100)
+        sample, total_rows = sample_file_data(records, request.sample_size, max_sample_size=50)
         
         # Prepare metadata
         file_metadata = {
@@ -3213,7 +3226,7 @@ async def analyze_file_interactive_endpoint(
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
 
-        sample, total_rows = sample_file_data(records, None, max_sample_size=100)
+        sample, total_rows = sample_file_data(records, None, max_sample_size=50)
         resolved_instruction, saved_instruction_id = _resolve_llm_instruction(
             llm_instruction=request.llm_instruction,
             llm_instruction_id=request.llm_instruction_id,
@@ -3374,7 +3387,8 @@ async def execute_interactive_import_endpoint(
                         "records_processed": execution_result["records_processed"]
                     },
                     mapped_table_name=execution_result["table_name"],
-                    mapped_rows=execution_result["records_processed"]
+                    mapped_rows=execution_result["records_processed"],
+                    data_validation_errors=len(execution_result.get("mapping_errors", []))
                 )
                 job_id = None
             else:
@@ -3382,7 +3396,9 @@ async def execute_interactive_import_endpoint(
                     request.file_id,
                     "mapped",
                     mapped_table_name=execution_result["table_name"],
-                    mapped_rows=execution_result["records_processed"]
+                    mapped_rows=execution_result["records_processed"],
+                    duplicates_found=execution_result.get("duplicates_skipped"),
+                    data_validation_errors=len(execution_result.get("mapping_errors", [])),
                 )
 
             session.status = "completed"

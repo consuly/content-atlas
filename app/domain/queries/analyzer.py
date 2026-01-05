@@ -158,9 +158,15 @@ def sample_file_data(
         logger.info(f"File has {total_rows} rows, using all data")
         return records, total_rows
     
-    # Split sample budget: 50% from beginning, 50% random
-    head_size = min(50, target_sample_size // 2)
-    random_size = target_sample_size - head_size
+    # Split sample budget: Prioritize random sampling after first 15 rows
+    # Always include first 15 rows for header context (if available)
+    # Then fill the rest of the budget with random samples
+    head_size = min(15, target_sample_size)
+    if total_rows <= target_sample_size:
+        head_size = total_rows
+        random_size = 0
+    else:
+        random_size = target_sample_size - head_size
     
     logger.info(f"Sampling {target_sample_size} rows from {total_rows} total "
                 f"({head_size} from start, {random_size} random)")
@@ -217,20 +223,21 @@ def analyze_file_structure(
         null_count = sum(1 for row in sample_data if row.get(col) is None)
         null_percentage = (null_count / len(sample_data)) * 100
         
-        # Calculate uniqueness metrics
-        unique_values = set(str(v) for v in values if v is not None)
-        unique_count = len(unique_values)
-        unique_ratio = unique_count / len(values) if values else 0.0
-        
-        # Dynamic sample size: 25 for small files, up to 100 for large files
-        sample_size = min(25, len(values)) if len(sample_data) < 10000 else min(100, len(values))
-        
+        # Collect sample values with character budget
+        sample_subset = []
+        current_len = 0
+        budget = 500  # Character budget per column
+        for v in values[:100]:
+            s = str(v)
+            if current_len + len(s) > budget and len(sample_subset) >= 5:
+                break
+            sample_subset.append(v)
+            current_len += len(s)
+
         column_analysis[col] = {
             "predominant_type": predominant_type,
             "null_percentage": null_percentage,
-            "unique_count": unique_count,
-            "unique_ratio": unique_ratio,
-            "sample_values": values[:sample_size]  # 25-100 non-null values for better analysis
+            "sample_values": sample_subset
         }
     
     # Identify data quality issues
@@ -393,10 +400,21 @@ def analyze_raw_csv_structure(
     # Analyze first row to determine if it's a header
     has_header = _analyze_if_header_row(first_row, second_row)
     
+    # Collect sample rows with character budget
+    sample_rows = []
+    current_len = 0
+    budget = 10000
+    for row in raw_rows[:20]:
+        s = str(row)
+        if current_len + len(s) > budget and len(sample_rows) >= 5:
+            break
+        sample_rows.append(row)
+        current_len += len(s)
+
     result = {
         "has_header": has_header,
         "num_columns": len(first_row),
-        "sample_rows": raw_rows[:5]  # First 5 rows for context
+        "sample_rows": sample_rows
     }
     
     if has_header:
@@ -510,7 +528,7 @@ def _infer_column_types_from_rows(
         has_phone_keyword = any(keyword in col_name_lower for keyword in phone_keywords)
         
         # Check if values match phone patterns
-        sample_values = [str(v) for v in values[:20]]
+        sample_values = [str(v) for v in values[:100]]
         phone_matches = sum(1 for v in sample_values if phone_pattern.match(v))
         phone_match_ratio = phone_matches / len(sample_values) if sample_values else 0
         
@@ -521,21 +539,21 @@ def _infer_column_types_from_rows(
                 "reasoning": "Contains phone number values" if has_phone_keyword else "Values match phone number patterns"
             }
         # Check for date patterns
-        elif detect_date_column(values[:20]):
+        elif detect_date_column(values[:100]):
             column_types[col_name] = {
                 "data_type": "TIMESTAMP",
                 "confidence": 0.95,
                 "reasoning": "Contains date/timestamp values"
             }
         # Check for email
-        elif any('@' in str(v) for v in values[:10]):
+        elif any('@' in str(v) for v in values[:50]):
             column_types[col_name] = {
                 "data_type": "TEXT",
                 "confidence": 0.90,
                 "reasoning": "Contains email addresses"
             }
         # Check for numeric (only if not phone)
-        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in values[:20]):
+        elif all(str(v).replace('.', '').replace('-', '').isdigit() for v in values[:100]):
             column_types[col_name] = {
                 "data_type": "DECIMAL",
                 "confidence": 0.85,
@@ -599,7 +617,7 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
             }
             continue
         
-        sample_values = values[:20]
+        sample_values = values[:100]
         
         # Check for phone number patterns FIRST (before numeric check)
         phone_matches = sum(1 for v in sample_values if phone_pattern.match(str(v)))
@@ -634,7 +652,7 @@ def _infer_schema_from_data_rows(data_rows: List[List[str]]) -> Dict[str, Any]:
             continue
         
         # Check for email
-        if any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+        if any('@' in str(v) and '.' in str(v) for v in sample_values[:50]):
             email_count = sum(1 for v in sample_values if '@' in str(v))
             inferred_columns[column_id] = {
                 "semantic_name": "email",
@@ -1299,7 +1317,7 @@ def _infer_schema_from_headerless_data_impl(
             continue
         
         # Sample first few values for pattern analysis
-        sample_values = values[:20]
+        sample_values = values[:100]
         
         # Detect data type and semantic meaning
         confidence = 0.0
@@ -1316,7 +1334,7 @@ def _infer_schema_from_headerless_data_impl(
             reasoning = f"Column contains date values in {date_format} format"
         
         # Check for email patterns
-        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:10]):
+        elif any('@' in str(v) and '.' in str(v) for v in sample_values[:50]):
             email_count = sum(1 for v in sample_values if '@' in str(v))
             if email_count / len(sample_values) > 0.7:
                 semantic_name = "email"
@@ -1387,7 +1405,7 @@ def _infer_schema_from_headerless_data_impl(
             "data_type": data_type,
             "confidence": confidence,
             "reasoning": reasoning,
-            "sample_values": [str(v)[:50] for v in sample_values[:3]]  # First 3 values, truncated
+            "sample_values": [str(v)[:50] for v in sample_values[:5]]  # First 5 values, truncated
         }
     
     # Calculate overall confidence
@@ -1448,8 +1466,16 @@ def describe_file_purpose(
     # Check if this is a headerless file
     is_headerless = all(col.startswith('col_') for col in columns)
     
-    # Get a few sample records for context
-    sample_records = sample_data[:5]
+    # Get a few sample records for context with character budget
+    sample_records = []
+    current_len = 0
+    budget = 5000
+    for record in sample_data[:20]:
+        s = str(record)
+        if current_len + len(s) > budget and len(sample_records) >= 5:
+            break
+        sample_records.append(record)
+        current_len += len(s)
     
     result = {
         "columns": columns,
@@ -1495,6 +1521,7 @@ def make_import_decision(
     schema_migrations: Optional[List[Dict[str, Any]]] = None,
     column_transformations: Optional[List[Dict[str, Any]]] = None,
     row_transformations: Optional[List[Dict[str, Any]]] = None,
+    column_validations: Optional[List[Dict[str, Any]]] = None,
     allow_unique_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
@@ -1521,6 +1548,8 @@ def make_import_decision(
         column_transformations: Optional list of source data transformation instructions
             (e.g., split arrays, compose phone numbers) the executor should perform before mapping.
         row_transformations: Optional list of row-level preprocessing instructions (e.g., explode email columns).
+        column_validations: Optional list of validation rules for target columns.
+            (e.g., [{"column": "email", "validator": "email"}, {"column": "id", "validator": "regex", "pattern": "^ID\\d+$"}])
         
     Returns:
         Confirmation of decision recorded
@@ -1621,6 +1650,7 @@ def make_import_decision(
             if row_transformations is not None
             else context.file_metadata.get("detected_row_transformations")
         ),
+        "column_validations": column_validations or [],
         "forced_target_table": target_table if forced_table else None,
         "forced_table_mode": forced_table_mode if forced_table else None,
         "llm_instruction": context.llm_instruction,
@@ -1759,27 +1789,32 @@ Strategies: NEW_TABLE (new data), MERGE_EXACT (schema match), EXTEND_TABLE (add 
 
 **TOOL USAGE: make_import_decision**
 - **column_mapping**: {source_col: target_col}. Map headerless columns (col_0) to semantic names.
-- **unique_columns**: CRITICAL for archive deduplication - choose wisely based on column analysis:
-  * **Analyze uniqueness metrics first**: Check `unique_ratio` and `unique_count` from analyze_file_structure
-  * **High uniqueness threshold**: Prefer columns with unique_ratio > 0.95 (95% of values are unique)
-  * **Example uniqueness analysis**:
-    - email: unique_ratio=0.98, unique_count=1050 → EXCELLENT candidate
-    - phone: unique_ratio=0.92, unique_count=980 → GOOD candidate
-    - department: unique_ratio=0.05, unique_count=8 → BAD candidate (only 8 unique values)
-  * **NEVER use auto-increment IDs** (id, row_id, index) - they repeat across files in archives
-  * **NEVER use low-cardinality columns** (department, status, category) - too many duplicates
-  * **PREFER business-meaningful columns**: email > (first_name + last_name) > phone
-  * **USE MULTIPLE COLUMNS** when no single column has unique_ratio > 0.95:
-    - If email unique_ratio=0.85: combine ["email", "company"] or ["email", "first_name", "last_name"]
-    - If no high-uniqueness columns: use ["first_name", "last_name", "company"] for contacts
-  * **For contact data examples**:
-    - Best: ["email"] when unique_ratio > 0.95
-    - Good: ["first_name", "last_name", "company"] when email has lower uniqueness
-    - Avoid: ["phone"] alone (often shared), ["department"] (very low cardinality)
-  * **Example GOOD choices**: ["email"], ["first_name", "last_name"], ["email", "company"]
-  * **Example BAD choices**: ["id"], ["row_number"], ["department"], ["status"]
+- **unique_columns**: [target_col1, target_col2] for deduplication.
+  * **Recommendation:** Prefer **Strict Check** (Natural Keys) for most datasets (Contacts, Products, etc.). This identifies the entity so it can be updated.
+  * **Strict Check (Merge/Update):** Select NATURAL KEYS (e.g., ["email"] or ["first_name", "last_name"]). If these match, it is a duplicate (allowing merge/update).
+    - **Tip:** If emails might be shared (e.g. "info@company.com") or ambiguous, prefer a composite key like `["email", "last_name"]`.
+  * **Loose Check (History/Log):** Select ALL COLUMNS only if the user explicitly asks for "history" or "log" where identical events are distinct.
+  * **WARNING:** Do NOT use generic sequential IDs (e.g. 1, 2, 3...) or simple row numbers.
+- **allow_unique_override**: **Set to TRUE** if you are specifying `unique_columns`.
+  * The system defaults to "Sticky History" (reusing the uniqueness rules from previous imports to this table).
+  * **CRITICAL:** If you do not set this to True, your `unique_columns` choice will be IGNORED in favor of history.
+  * Always set `allow_unique_override=True` when you want to enforce your specific uniqueness strategy.
 - **has_header**: Required for CSV.
 - **expected_column_types**: {source_col: "TEXT"|"INTEGER"|"TIMESTAMP"...}.
+- **column_validations**: List of validation rules for target columns.
+  - Structure: `{"column": "target_col", "validator": "type", "pattern": "regex_if_needed", "allow_null": bool}`
+  - **Preset Validators Available:**
+    * **Contact & Communication:** email, email_strict, phone (loose, default), phone_us, phone_international (E.164)
+    * **Identifiers:** uuid, ssn, ein, postal_code_us, postal_code_ca
+    * **Web & Network:** url, domain, ipv4, ipv6
+    * **Financial:** credit_card, currency_usd, iban
+    * **Data Formats:** date_iso, date_us, time_24h, hex_color, slug
+    * **Business IDs:** alphanumeric_id, sku
+    * **Legacy:** boolean, not_empty
+    * **Custom:** regex (requires "pattern" field)
+  - **Auto-Validate Semantic Types**: ALWAYS add validations for columns you identify as Email, Phone, Boolean, URL, UUID, etc.
+  - **Custom Patterns**: Use "regex" validator with "pattern" for IDs (e.g. `^TTT\d{5}$`) or formats not covered by presets.
+  - **Global Placeholder Check**: This system automatically rejects values like "Researching...", "TBD", "N/A" for any validated column.
 - **transformations**: Provide explicit instructions for data cleanup.
 
 **TRANSFORMATIONS GUIDE:**

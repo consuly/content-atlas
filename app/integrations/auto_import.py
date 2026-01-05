@@ -134,7 +134,7 @@ def _detect_dayfirst(series: pd.Series) -> Optional[bool]:
     if sample_values.empty:
         return None
 
-    for value in sample_values.astype(str).head(25):
+    for value in sample_values.astype(str).head(100):
         match = _SLASHED_DATE_PATTERN.match(value)
         if not match:
             continue
@@ -480,7 +480,17 @@ def coerce_records_to_expected_types(
                     column_summary["coerced_values"] = coerced_count
                 df[source_col] = converted
             elif normalized_type == "TEXT":
-                df[source_col] = series.astype(str).where(series.notna(), None)
+                if pd.api.types.is_numeric_dtype(series):
+                    # Smart conversion: remove .0 from float-integers (e.g. zip codes)
+                    def _numeric_to_str(val):
+                        if pd.isna(val):
+                            return None
+                        if isinstance(val, float) and val.is_integer():
+                            return str(int(val))
+                        return str(val)
+                    df[source_col] = series.apply(_numeric_to_str)
+                else:
+                    df[source_col] = series.astype(str).where(series.notna(), None)
                 column_summary["status"] = "converted"
             else:
                 column_summary["status"] = "unsupported_type"
@@ -774,6 +784,7 @@ def execute_llm_import_decision(
         expected_column_types = llm_decision.get("expected_column_types") or {}
         column_transformations = llm_decision.get("column_transformations") or []
         row_transformations = llm_decision.get("row_transformations") or []
+        column_validations = llm_decision.get("column_validations") or []
         instruction_text = llm_decision.get("llm_instruction") or ""
         multi_value_directives = llm_decision.get("multi_value_directives") or []
         require_explicit_multi_value = bool(llm_decision.get("require_explicit_multi_value"))
@@ -908,12 +919,58 @@ def execute_llm_import_decision(
                         "AUTO-IMPORT: Updated mapping for transformed column '%s' to read from transformed value instead of original",
                         target_col
                     )
+            elif t_type == "coalesce_columns":
+                target_col = transformation.get("target_column") or transformation.get("target_field") or transformation.get("column")
+                if target_col and target_col not in inverted_mapping:
+                    # Add the new column to the mapping so it gets included in the schema
+                    inverted_mapping[target_col] = target_col
+                    logger.info(
+                        "AUTO-IMPORT: Added new target column '%s' from coalesce_columns transformation",
+                        target_col
+                    )
 
         logger.info(f"AUTO-IMPORT: LLM column_mapping (source->target): {column_mapping}")
         logger.info(f"AUTO-IMPORT: Inverted mapping (target->source): {inverted_mapping}")
         
         # Get target columns (keys in inverted_mapping, which were values in original column_mapping)
         target_columns = list(inverted_mapping.keys())
+
+        # Auto-generate validations if explicit ones are missing (OR supplement them)
+        # This ensures we catch "Researching..." and invalid formats even if LLM didn't explicitly ask
+        if not column_validations:
+            column_validations = []
+        
+        existing_validation_cols = {v.get("column") for v in column_validations}
+
+        for target_col in target_columns:
+            # Skip if already has a validation rule
+            if target_col in existing_validation_cols:
+                continue
+
+            lower_col = target_col.lower()
+            
+            # 1. Check expected types from LLM (mapped from source)
+            source_col = inverted_mapping.get(target_col)
+            if source_col and source_col in expected_column_types:
+                exp_type = normalize_expected_type(expected_column_types[source_col])
+                if exp_type == "BOOLEAN":
+                    column_validations.append({"column": target_col, "validator": "boolean"})
+                    existing_validation_cols.add(target_col)
+                    continue
+
+            # 2. Check semantic names
+            if "email" in lower_col or "e-mail" in lower_col:
+                column_validations.append({"column": target_col, "validator": "email"})
+                existing_validation_cols.add(target_col)
+            elif "phone" in lower_col or "mobile" in lower_col:
+                column_validations.append({"column": target_col, "validator": "phone"})
+                existing_validation_cols.add(target_col)
+            elif "postal" in lower_col or "zip" in lower_col:
+                column_validations.append({"column": target_col, "validator": "postal_code"})
+                existing_validation_cols.add(target_col)
+
+        if column_validations:
+            logger.info(f"AUTO-IMPORT: Applied column validations: {json.dumps(column_validations)}")
 
         rules_payload: Dict[str, Any] = {}
         if column_transformations:
@@ -940,7 +997,7 @@ def execute_llm_import_decision(
             if not schema_type:
                 if source_col and records:
                     sample_values = [r.get(source_col) for r in records[:100] if r.get(source_col) is not None]
-                    subset = sample_values[:20]
+                    subset = sample_values[:100]
                     sample_str = [str(v) for v in subset]
 
                     phone_patterns = [
@@ -1076,6 +1133,7 @@ def execute_llm_import_decision(
                 db_schema=final_table_schema or existing_table_schema or {},
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules=rules_payload,
+                column_validations=column_validations,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=not skip_duplicate_check,  # Disable duplicate checking entirely if flag is set
@@ -1093,6 +1151,7 @@ def execute_llm_import_decision(
                 db_schema=db_schema,
                 mappings=inverted_mapping,  # Use inverted mapping (target->source)
                 rules=rules_payload,
+                column_validations=column_validations,
                 unique_columns=effective_unique_columns,  # For duplicate detection (legacy)
                 duplicate_check=DuplicateCheckConfig(
                     enabled=not skip_duplicate_check,  # Disable duplicate checking entirely if flag is set
@@ -1162,6 +1221,7 @@ def execute_llm_import_decision(
             "llm_followup": result.get("llm_followup"),
             "needs_user_input": result.get("needs_user_input"),
             "schema_migration_results": schema_migration_results,
+            "validation_errors": result.get("validation_errors"),
         }
         
     except Exception as e:
@@ -1205,7 +1265,7 @@ def _looks_like_email_column(source_column: str, target_column: str, records: Li
     if any(hint in str(target_column).lower() for hint in name_hints):
         return True
 
-    for record in records[:25]:
+    for record in records[:100]:
         value = record.get(source_column)
         if isinstance(value, str) and "@" in value:
             return True

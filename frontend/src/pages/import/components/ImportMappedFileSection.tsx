@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Card,
   Button,
@@ -37,6 +37,8 @@ import {
   ImportJobInfo,
   ArchiveFileResult,
   ArchiveFileStatus,
+  ValidationFailuresState,
+  ValidationFailureRow,
 } from './types';
 
 const { Text } = Typography;
@@ -47,8 +49,12 @@ interface ImportMappedFileSectionProps {
   importHistory: ImportHistory | null;
   tableData: TableData | null;
   duplicateData: DuplicateRowsState | null;
+  validationFailures: ValidationFailuresState | null;
   loadingDetails: boolean;
   loadingDuplicates: boolean;
+  loadingValidationFailures: boolean;
+  onRefreshValidationFailures: () => void;
+  onResolveValidationFailure: (id: number, action: 'discarded' | 'inserted_as_is' | 'inserted_corrected', note?: string, data?: Record<string, unknown>) => Promise<void>;
   
   // Archive Props
   isArchiveFile: boolean;
@@ -86,8 +92,12 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
   importHistory,
   tableData,
   duplicateData,
+  validationFailures,
   loadingDetails,
   loadingDuplicates,
+  loadingValidationFailures,
+  onRefreshValidationFailures,
+  onResolveValidationFailure,
   isArchiveFile,
   archiveResult,
   archiveHistorySummaryResult,
@@ -115,6 +125,12 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
   onSelectionChange,
 }) => {
   const effectiveArchiveResult = archiveResult ?? archiveHistorySummaryResult ?? null;
+
+  // Validation Failure Edit State
+  const [editValidationModalVisible, setEditValidationModalVisible] = useState(false);
+  const [editingValidationRow, setEditingValidationRow] = useState<ValidationFailureRow | null>(null);
+  const [editedRecordData, setEditedRecordData] = useState<Record<string, unknown>>({});
+  const [editValidationNote, setEditValidationNote] = useState('');
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -211,18 +227,20 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
         if (item.status === 'processed') {
           acc.totalRecords += item.records_processed ?? 0;
           acc.totalDuplicates += item.duplicates_skipped ?? 0;
+          acc.totalValidationErrors += item.validation_errors ?? 0;
           if (item.table_name) {
             acc.tableNames.add(item.table_name);
           }
         }
         return acc;
       },
-      { totalRecords: 0, totalDuplicates: 0, tableNames: new Set<string>() }
+      { totalRecords: 0, totalDuplicates: 0, totalValidationErrors: 0, tableNames: new Set<string>() }
     );
 
     return {
       totalRecords: aggregate.totalRecords,
       totalDuplicates: aggregate.totalDuplicates,
+      totalValidationErrors: aggregate.totalValidationErrors,
       tablesTouched: aggregate.tableNames.size,
     };
   }, [effectiveArchiveResult]);
@@ -289,6 +307,18 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
       width: 120,
       render: (value?: number | null) =>
         typeof value === 'number' ? value.toLocaleString() : '-',
+    },
+    {
+      title: 'Validation Errors',
+      dataIndex: 'validation_errors',
+      key: 'validation_errors',
+      width: 140,
+      render: (value?: number | null) =>
+        typeof value === 'number' && value > 0 ? (
+          <Text type="danger">{value.toLocaleString()}</Text>
+        ) : (
+          '-'
+        ),
     },
   ];
 
@@ -415,16 +445,23 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
             </Row>
             {archiveAggregates && (
               <Row gutter={16} style={{ marginTop: 16 }}>
-                <Col span={8}>
+                <Col span={6}>
                   <Statistic title="Rows Inserted" value={archiveAggregates.totalRecords} />
                 </Col>
-                <Col span={8}>
+                <Col span={6}>
                   <Statistic
                     title="Duplicates Skipped"
                     value={archiveAggregates.totalDuplicates}
                   />
                 </Col>
-                <Col span={8}>
+                <Col span={6}>
+                  <Statistic
+                    title="Validation Errors"
+                    value={archiveAggregates.totalValidationErrors}
+                    valueStyle={archiveAggregates.totalValidationErrors > 0 ? { color: '#cf1322' } : undefined}
+                  />
+                </Col>
+                <Col span={6}>
                   <Statistic title="Tables Updated" value={archiveAggregates.tablesTouched} />
                 </Col>
               </Row>
@@ -694,6 +731,88 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
       : undefined;
 
   const duplicatesTotal = duplicateData?.total ?? importHistory?.duplicates_found ?? 0;
+  const validationFailuresTotal = validationFailures?.total ?? importHistory?.data_validation_errors ?? 0;
+
+  const validationFailureColumns: ColumnsType<ValidationFailureRow> = [
+    {
+      title: '#',
+      dataIndex: 'record_number',
+      key: 'record_number',
+      width: 70,
+    },
+    {
+      title: 'Errors',
+      dataIndex: 'validation_errors',
+      key: 'validation_errors',
+      render: (errors: Array<{ column: string; error_message: string }>) => (
+        <Space direction="vertical" size={0}>
+          {errors.map((err, idx) => (
+            <Tag color="red" key={idx}>
+              {err.column}: {err.error_message}
+            </Tag>
+          ))}
+        </Space>
+      ),
+    },
+    {
+      title: 'Record Data',
+      dataIndex: 'record',
+      key: 'record',
+      render: (record: Record<string, unknown>) => (
+        <Text type="secondary" ellipsis={{ tooltip: JSON.stringify(record, null, 2) }}>
+          {JSON.stringify(record)}
+        </Text>
+      ),
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 220,
+      render: (_: unknown, row: ValidationFailureRow) => (
+        <Space size="small">
+          <Button
+            size="small"
+            onClick={() => {
+              setEditingValidationRow(row);
+              setEditedRecordData({ ...row.record });
+              setEditValidationNote('');
+              setEditValidationModalVisible(true);
+            }}
+          >
+            Edit
+          </Button>
+          <Button
+            size="small"
+            onClick={() => {
+              Modal.confirm({
+                title: 'Force Import',
+                content: 'Are you sure you want to import this record as-is? This will bypass validation checks.',
+                okText: 'Force Import',
+                onOk: () => onResolveValidationFailure(row.id, 'inserted_as_is'),
+              });
+            }}
+          >
+            Force
+          </Button>
+          <Button 
+            size="small" 
+            danger 
+            onClick={() => {
+              Modal.confirm({
+                title: 'Discard Record',
+                content: 'Are you sure you want to discard this record? It will not be imported.',
+                okText: 'Discard',
+                okButtonProps: { danger: true },
+                onOk: () => onResolveValidationFailure(row.id, 'discarded'),
+              });
+            }}
+          >
+            Discard
+          </Button>
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -777,6 +896,114 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
           )}
         </Card>
       )}
+
+      {validationFailuresTotal > 0 && (
+        <Card
+          title={
+            <>
+              <InfoCircleOutlined /> Validation Failures
+            </>
+          }
+          size="small"
+          loading={loadingValidationFailures}
+          extra={
+            <Button type="text" onClick={onRefreshValidationFailures}>
+              Refresh
+            </Button>
+          }
+        >
+          {validationFailures?.rows && validationFailures.rows.length > 0 ? (
+            <>
+              <Table
+                dataSource={validationFailures.rows}
+                columns={validationFailureColumns}
+                pagination={false}
+                size="small"
+                rowKey="id"
+                scroll={{ x: 'max-content' }}
+              />
+              <Divider />
+              <Text type="secondary">
+                Showing {validationFailures.rows.length} of {validationFailuresTotal}{' '}
+                validation failures
+              </Text>
+            </>
+          ) : (
+            <Text type="secondary">
+              Validation failures were detected, but no preview data is available.
+            </Text>
+          )}
+        </Card>
+      )}
+
+      <Modal
+        open={editValidationModalVisible}
+        title="Edit Record"
+        onCancel={() => {
+          setEditValidationModalVisible(false);
+          setEditingValidationRow(null);
+        }}
+        onOk={() => {
+          if (editingValidationRow) {
+            onResolveValidationFailure(
+              editingValidationRow.id,
+              'inserted_corrected',
+              editValidationNote,
+              editedRecordData
+            );
+            setEditValidationModalVisible(false);
+            setEditingValidationRow(null);
+          }
+        }}
+        width={600}
+      >
+        {editingValidationRow && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Alert
+              message="Validation Errors"
+              description={
+                <ul>
+                  {editingValidationRow.validation_errors.map((err, idx) => (
+                    <li key={idx}>
+                      <strong>{err.column}:</strong> {err.error_message}
+                    </li>
+                  ))}
+                </ul>
+              }
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+              {Object.entries(editedRecordData).map(([key, value]) => {
+                if (key.startsWith('_')) return null;
+                return (
+                  <div key={key} style={{ marginBottom: 12 }}>
+                    <Text strong>{key}</Text>
+                    <Input
+                      value={value as string}
+                      onChange={(e) =>
+                        setEditedRecordData((prev) => ({
+                          ...prev,
+                          [key]: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <Divider />
+            <Text strong>Resolution Note (Optional)</Text>
+            <TextArea
+              value={editValidationNote}
+              onChange={(e) => setEditValidationNote(e.target.value)}
+              rows={2}
+            />
+          </Space>
+        )}
+      </Modal>
+
       <Modal
         open={mergeModalVisible}
         title={

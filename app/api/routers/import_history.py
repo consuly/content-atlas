@@ -11,7 +11,10 @@ from app.api.schemas.shared import (
     ImportHistoryDetailResponse, ImportStatisticsResponse,
     ImportDuplicateRowsResponse, DuplicateDetailResponse,
     DuplicateMergeRequest, DuplicateMergeResponse,
-    ImportMappingErrorsResponse, MappingErrorHistoryRecord
+    ImportMappingErrorsResponse, MappingErrorHistoryRecord,
+    ImportValidationFailuresResponse, ValidationFailureDetailResponse,
+    ResolveValidationFailureRequest, ResolveValidationFailureResponse,
+    MappingConfig
 )
 from app.domain.imports.history import (
     get_import_history,
@@ -19,8 +22,13 @@ from app.domain.imports.history import (
     list_duplicate_rows,
     get_duplicate_row_detail,
     resolve_duplicate_row,
-    get_mapping_errors
+    get_mapping_errors,
+    list_validation_failures,
+    get_validation_failure_detail,
+    resolve_validation_failure
 )
+from app.db.models import insert_records
+import json
 
 router = APIRouter(prefix="/import-history", tags=["import-history"])
 
@@ -281,6 +289,133 @@ async def merge_duplicate_row_endpoint(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to merge duplicate row: {str(exc)}")
+
+
+@router.get("/{import_id}/validation-failures", response_model=ImportValidationFailuresResponse)
+async def list_validation_failures_endpoint(
+    import_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    include_resolved: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    List validation failures for a specific import.
+    """
+    try:
+        failures = list_validation_failures(
+            import_id=import_id,
+            limit=limit,
+            offset=offset,
+            include_resolved=include_resolved
+        )
+        
+        # Get total count (simplified for now)
+        total_count = len(failures) + offset
+        
+        return ImportValidationFailuresResponse(
+            success=True,
+            failures=failures,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list validation failures: {str(e)}")
+
+
+@router.get("/{import_id}/validation-failures/{failure_id}", response_model=ValidationFailureDetailResponse)
+async def get_validation_failure_detail_endpoint(
+    import_id: str,
+    failure_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a specific validation failure.
+    """
+    try:
+        failure = get_validation_failure_detail(
+            import_id=import_id,
+            failure_id=failure_id
+        )
+        
+        return ValidationFailureDetailResponse(
+            success=True,
+            failure=failure,
+            table_name=failure.get("table_name")
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get validation failure detail: {str(e)}")
+
+
+@router.post("/{import_id}/validation-failures/{failure_id}/resolve", response_model=ResolveValidationFailureResponse)
+async def resolve_validation_failure_endpoint(
+    import_id: str,
+    failure_id: int,
+    request: ResolveValidationFailureRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Resolve a validation failure.
+    """
+    try:
+        # If action involves insertion, perform it first
+        if request.action in ['inserted_as_is', 'inserted_corrected']:
+            # Get failure details to access the record
+            failure = get_validation_failure_detail(import_id, failure_id)
+            record_to_insert = failure['record']
+            
+            # If corrected, merge corrections
+            if request.action == 'inserted_corrected' and request.corrected_data:
+                record_to_insert.update(request.corrected_data)
+            
+            # Get import history to retrieve mapping config (needed for type coercion)
+            import_records = get_import_history(import_id=import_id, limit=1)
+            if not import_records:
+                raise ValueError("Import history not found")
+            
+            import_record = import_records[0]
+            table_name = import_record['table_name']
+            mapping_config_data = import_record.get('mapping_config')
+            
+            mapping_config = None
+            if mapping_config_data:
+                if isinstance(mapping_config_data, str):
+                    mapping_config_data = json.loads(mapping_config_data)
+                mapping_config = MappingConfig.model_validate(mapping_config_data)
+            
+            # Insert the record
+            # We pass pre_mapped=False so type coercion happens based on schema
+            # We pass import_id to link the record to the import
+            insert_records(
+                engine=db.get_bind(),
+                table_name=table_name,
+                records=[record_to_insert],
+                config=mapping_config,
+                import_id=import_id,
+                pre_mapped=False 
+            )
+
+        result = resolve_validation_failure(
+            import_id=import_id,
+            failure_id=failure_id,
+            action=request.action,
+            corrected_data=request.corrected_data,
+            resolved_by=request.resolved_by,
+            note=request.note
+        )
+        
+        return ResolveValidationFailureResponse(
+            success=True,
+            failure=result,
+            message=f"Validation failure resolved with action: {request.action}"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve validation failure: {str(e)}")
 
 
 alias_router = APIRouter(tags=['import-history'])

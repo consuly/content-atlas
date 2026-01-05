@@ -235,7 +235,8 @@ def complete_import_job(
     error_message: Optional[str] = None,
     result_metadata: Optional[Dict[str, Any]] = None,
     mapped_table_name: Optional[str] = None,
-    mapped_rows: Optional[int] = None
+    mapped_rows: Optional[int] = None,
+    data_validation_errors: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:
     """Mark a job as completed and clear the active job state on the file."""
     status = "succeeded" if success else "failed"
@@ -260,6 +261,7 @@ def complete_import_job(
             mapped_rows=mapped_rows
             or (result_metadata.get("records_processed") if result_metadata else None),
             expected_active_job_id=job_id,
+            data_validation_errors=data_validation_errors
         )
     else:
         update_file_status(

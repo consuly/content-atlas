@@ -115,11 +115,45 @@ To get the best results from AI, you must provide it with the right context. Thi
 
 ---
 
+## OpenAPI Schema Generation
+
+When making changes to API endpoints or request/response models, regenerate the OpenAPI schema:
+
+```bash
+# Generate schema with change detection
+python scripts/generate_openapi_with_diff.py
+```
+
+**What it does:**
+- Generates fresh OpenAPI schema from FastAPI application
+- Compares with existing `openapi.json`
+- Creates detailed diff report in `docs/openapi-changes/YYYY-MM-DD.md`
+- Overwrites `openapi.json` with updated schema
+
+**Outputs:**
+- `openapi.json` - Clean OpenAPI schema (overwritten)
+- `docs/openapi-changes/YYYY-MM-DD.md` - Detailed change report (appended)
+
+**Diff Report Includes:**
+- Summary statistics (endpoints added/removed/modified, schemas changed)
+- Breaking changes (removed endpoints, removed required fields, incompatible type changes)
+- Endpoint changes (added/removed parameters, modified request/response schemas)
+- Schema changes (added/removed/modified fields, type changes, required changes)
+
+**When to Run:**
+- After adding new endpoints or modifying existing ones
+- After changing request/response models
+- After updating authentication requirements
+- Before committing API changes to review impact
+
+**Review Changes:**
+Check the generated diff report at `docs/openapi-changes/YYYY-MM-DD.md` to review breaking changes before deployment.
+
 ## Pull Request Process
 
 1.  Ensure your code builds and runs locally.
-2.  Run the tests: `pytest`.
-3.  Update the documentation if you changed any behavior or APIs.
+2.  Run tests: `pytest`.
+3.  Update relevant documentation if you changed any behavior or APIs.
 4.  Submit your PR with a clear description of the changes and a link to the issue it resolves.
 
 Happy Coding! 🚀

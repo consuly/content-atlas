@@ -41,7 +41,7 @@ async def list_tables(db: Session = Depends(get_db)):
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
-                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'llm_instructions', 'table_fingerprints')
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'llm_instructions', 'table_fingerprints', 'import_validation_failures')
                 AND table_name NOT LIKE 'pg_%'
                 AND table_name NOT LIKE 'test\_%' ESCAPE '\\'
                 ORDER BY table_name
@@ -190,10 +190,24 @@ async def query_table(
 
             where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-            order_fragment = 'ORDER BY "_row_id"'
+            # Determine sort column
+            order_fragment = ""
             if sort_by:
                 direction = "DESC" if sort_order.lower() == "desc" else "ASC"
                 order_fragment = f'ORDER BY "{sort_by}" {direction}'
+            else:
+                # Check for _row_id or id for default sorting
+                row_id_check = conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = :table_name 
+                    AND column_name IN ('_row_id', 'id')
+                """), {"table_name": table_name}).fetchall()
+                
+                found_cols = {row[0] for row in row_id_check}
+                if '_row_id' in found_cols:
+                    order_fragment = 'ORDER BY "_row_id"'
+                elif 'id' in found_cols:
+                    order_fragment = 'ORDER BY "id"'
 
             count_sql = f'SELECT COUNT(*) FROM "{table_name}" {where_sql}'
             total_rows = conn.execute(text(count_sql), query_params).scalar()
