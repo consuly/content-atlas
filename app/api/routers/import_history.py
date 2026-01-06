@@ -25,7 +25,11 @@ from app.domain.imports.history import (
     get_mapping_errors,
     list_validation_failures,
     get_validation_failure_detail,
-    resolve_validation_failure
+    resolve_validation_failure,
+    list_all_duplicate_rows,
+    list_all_validation_failures,
+    list_all_mapping_errors,
+    create_import_history_table
 )
 from app.db.models import insert_records
 import json
@@ -88,36 +92,6 @@ async def list_import_history(
         raise HTTPException(status_code=500, detail=f"Failed to retrieve import history: {str(e)}")
 
 
-@router.get("/{import_id}", response_model=ImportHistoryDetailResponse)
-async def get_import_detail(
-    import_id: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Get detailed information about a specific import.
-    
-    Parameters:
-    - import_id: UUID of the import to retrieve
-    """
-    try:
-        records = get_import_history(import_id=import_id, limit=1)
-        
-        if not records:
-            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
-        
-        import_record = ImportHistoryRecord(**records[0])
-        
-        return ImportHistoryDetailResponse(
-            success=True,
-            import_record=import_record
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve import details: {str(e)}")
-
-
 @router.get("/statistics", response_model=ImportStatisticsResponse)
 async def get_import_statistics_endpoint(
     table_name: Optional[str] = None,
@@ -155,6 +129,135 @@ async def get_import_statistics_endpoint(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve import statistics: {str(e)}")
+
+
+@router.get("/duplicates", response_model=ImportDuplicateRowsResponse)
+async def list_all_duplicates(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    include_resolved: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    List duplicate rows across all imports.
+    """
+    try:
+        # Ensure schema is up to date to prevent column missing errors
+        create_import_history_table()
+        
+        duplicates, total_count = list_all_duplicate_rows(
+            limit=limit,
+            offset=offset,
+            file_name=file_name,
+            table_name=table_name,
+            include_resolved=include_resolved
+        )
+        
+        return ImportDuplicateRowsResponse(
+            success=True,
+            duplicates=duplicates,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        import traceback
+        print(f"ERROR listing duplicates: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to list duplicates: {str(e)}")
+
+
+@router.get("/validation-failures", response_model=ImportValidationFailuresResponse)
+async def list_all_validation_failures_endpoint(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    include_resolved: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    List validation failures across all imports.
+    """
+    try:
+        failures, total_count = list_all_validation_failures(
+            limit=limit,
+            offset=offset,
+            file_name=file_name,
+            table_name=table_name,
+            include_resolved=include_resolved
+        )
+        
+        return ImportValidationFailuresResponse(
+            success=True,
+            failures=failures,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list validation failures: {str(e)}")
+
+
+@router.get("/mapping-errors", response_model=ImportMappingErrorsResponse)
+async def list_all_mapping_errors_endpoint(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    List mapping errors across all imports.
+    """
+    try:
+        errors, total_count = list_all_mapping_errors(
+            limit=limit,
+            offset=offset,
+            file_name=file_name,
+            table_name=table_name
+        )
+        
+        return ImportMappingErrorsResponse(
+            success=True,
+            errors=errors,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list mapping errors: {str(e)}")
+
+
+@router.get("/{import_id}", response_model=ImportHistoryDetailResponse)
+async def get_import_detail(
+    import_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a specific import.
+    
+    Parameters:
+    - import_id: UUID of the import to retrieve
+    """
+    try:
+        records = get_import_history(import_id=import_id, limit=1)
+        
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+        
+        import_record = ImportHistoryRecord(**records[0])
+        
+        return ImportHistoryDetailResponse(
+            success=True,
+            import_record=import_record
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve import details: {str(e)}")
 
 
 @router.get("/{import_id}/duplicates", response_model=ImportDuplicateRowsResponse)
@@ -273,7 +376,8 @@ async def merge_duplicate_row_endpoint(
             duplicate_id=duplicate_id,
             updates=request.updates or {},
             resolved_by=request.resolved_by,
-            note=request.note
+            note=request.note,
+            strategy=request.strategy or 'merge'
         )
         duplicate = result["duplicate"]
         return DuplicateMergeResponse(

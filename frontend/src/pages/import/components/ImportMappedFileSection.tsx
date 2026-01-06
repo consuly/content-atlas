@@ -449,17 +449,28 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
                   <Statistic title="Rows Inserted" value={archiveAggregates.totalRecords} />
                 </Col>
                 <Col span={6}>
-                  <Statistic
-                    title="Duplicates Skipped"
-                    value={archiveAggregates.totalDuplicates}
-                  />
+                  <div 
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => onNavigate(`/data-issues?tab=duplicates&file_name=${encodeURIComponent(file.file_name)}`)}
+                  >
+                    <Statistic
+                      title="Duplicates Skipped"
+                      value={archiveAggregates.totalDuplicates}
+                      valueStyle={{ color: '#faad14' }}
+                    />
+                  </div>
                 </Col>
                 <Col span={6}>
-                  <Statistic
-                    title="Validation Errors"
-                    value={archiveAggregates.totalValidationErrors}
-                    valueStyle={archiveAggregates.totalValidationErrors > 0 ? { color: '#cf1322' } : undefined}
-                  />
+                  <div 
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => onNavigate(`/data-issues?tab=validation&file_name=${encodeURIComponent(file.file_name)}`)}
+                  >
+                    <Statistic
+                      title="Validation Errors"
+                      value={archiveAggregates.totalValidationErrors}
+                      valueStyle={archiveAggregates.totalValidationErrors > 0 ? { color: '#cf1322' } : undefined}
+                    />
+                  </div>
                 </Col>
                 <Col span={6}>
                   <Statistic title="Tables Updated" value={archiveAggregates.tablesTouched} />
@@ -586,9 +597,14 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
                 key: 'duplicates-found',
                 label: 'Duplicates Found',
                 children: (
-                  <Text type="warning">
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: 'auto', color: '#faad14' }}
+                    onClick={() => onNavigate(`/data-issues?tab=duplicates&file_name=${encodeURIComponent(file.file_name)}`)}
+                  >
                     {importHistory.duplicates_found.toLocaleString()}
-                  </Text>
+                  </Button>
                 ),
                 span: 2,
               } as const,
@@ -601,9 +617,34 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
                 key: 'validation-errors',
                 label: 'Validation Errors',
                 children: (
-                  <Text type="danger">
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: 'auto', color: '#ff4d4f' }}
+                    onClick={() => onNavigate(`/data-issues?tab=validation&file_name=${encodeURIComponent(file.file_name)}`)}
+                  >
                     {importHistory.data_validation_errors.toLocaleString()}
-                  </Text>
+                  </Button>
+                ),
+                span: 2,
+              } as const,
+            ]
+          : []),
+        ...(importHistory.mapping_errors_count !== undefined &&
+        importHistory.mapping_errors_count > 0
+          ? [
+              {
+                key: 'mapping-errors',
+                label: 'Mapping Errors',
+                children: (
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: 'auto', color: '#ff4d4f' }}
+                    onClick={() => onNavigate(`/data-issues?tab=mapping&file_name=${encodeURIComponent(file.file_name)}`)}
+                  >
+                    {importHistory.mapping_errors_count.toLocaleString()}
+                  </Button>
                 ),
                 span: 2,
               } as const,

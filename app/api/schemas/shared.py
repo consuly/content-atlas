@@ -167,6 +167,9 @@ class DuplicateRow(BaseModel):
     resolved_at: Optional[datetime] = None
     resolved_by: Optional[str] = None
     resolution_details: Optional[Dict[str, Any]] = None
+    import_id: Optional[str] = None
+    file_name: Optional[str] = None
+    table_name: Optional[str] = None
 
 
 class DuplicateDetailResponse(BaseModel):
@@ -181,6 +184,7 @@ class DuplicateMergeRequest(BaseModel):
     updates: Dict[str, Any] = Field(default_factory=dict)
     resolved_by: Optional[str] = None
     note: Optional[str] = None
+    strategy: Optional[Literal['merge', 'keep_existing', 'create_new']] = 'merge'
 
 
 class DuplicateMergeResponse(BaseModel):
@@ -496,6 +500,8 @@ class MappingErrorHistoryRecord(BaseModel):
     source_value: Optional[str] = None
     occurred_at: Optional[datetime] = None
     chunk_number: Optional[int] = None
+    file_name: Optional[str] = None
+    table_name: Optional[str] = None
 
 
 class ImportMappingErrorsResponse(BaseModel):
@@ -553,6 +559,9 @@ class ValidationFailureRow(BaseModel):
     resolved_by: Optional[str] = None
     resolution_action: Optional[str] = None
     resolution_details: Optional[Dict[str, Any]] = None
+    import_id: Optional[str] = None
+    file_name: Optional[str] = None
+    table_name: Optional[str] = None
 
 
 class ImportValidationFailuresResponse(BaseModel):

@@ -30,9 +30,11 @@ import { ImportPage } from "./pages/import";
 import { ImportMappingPage } from "./pages/import/[id]";
 import { QueryPage } from "./pages/query";
 import { ApiKeysPage } from "./pages/api-keys";
+import { DataIssuesPage } from "./pages/data-issues";
 import { TableViewerPage } from "./pages/tables/[tableName]";
 import { TablesListPage } from "./pages/tables";
 import { Database, KeyRound, MessageSquareText, UploadCloud } from "lucide-react";
+import { ExclamationCircleOutlined } from "@ant-design/icons";
 
 function App() {
   const appContent = (
@@ -72,6 +74,14 @@ function App() {
           meta: {
             label: "API Keys",
             icon: <KeyRound size={20} />,
+          },
+        },
+        {
+          name: "data-issues",
+          list: "/data-issues",
+          meta: {
+            label: "Data Issues",
+            icon: <ExclamationCircleOutlined />,
           },
         },
       ]}
@@ -119,6 +129,9 @@ function App() {
           </Route>
           <Route path="/api-keys">
             <Route index element={<ApiKeysPage />} />
+          </Route>
+          <Route path="/data-issues">
+            <Route index element={<DataIssuesPage />} />
           </Route>
           <Route path="*" element={<ErrorComponent />} />
         </Route>

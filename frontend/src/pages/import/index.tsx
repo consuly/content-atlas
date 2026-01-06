@@ -22,6 +22,7 @@ interface UploadedFile {
   mapped_rows?: number;
   duplicates_found?: number;
   data_validation_errors?: number;
+  mapping_errors?: number;
   error_message?: string;
   active_job_id?: string;
   active_job_status?: string;
@@ -641,6 +642,31 @@ export const ImportPage: React.FC = () => {
         const errors = record.data_validation_errors;
         if (errors === undefined || errors === null) {
           return 'Unknown';
+        }
+        return errors > 0 ? <span style={{ color: 'red' }}>{errors.toLocaleString()}</span> : '0';
+      },
+    },
+    {
+      title: 'Mapping Errors',
+      dataIndex: 'mapping_errors',
+      key: 'mapping_errors',
+      width: 150,
+      sorter: (a, b) => (a.mapping_errors ?? 0) - (b.mapping_errors ?? 0),
+      filters: [
+        { text: 'Has errors', value: 'has' },
+        { text: 'No errors', value: 'none' },
+      ],
+      onFilter: (value, record) => {
+        const errors = record.mapping_errors ?? 0;
+        return value === 'has' ? errors > 0 : errors === 0;
+      },
+      render: (_: number | undefined, record: UploadedFile) => {
+        if (record.status !== 'mapped') {
+          return '-';
+        }
+        const errors = record.mapping_errors;
+        if (errors === undefined || errors === null) {
+          return '0';
         }
         return errors > 0 ? <span style={{ color: 'red' }}>{errors.toLocaleString()}</span> : '0';
       },

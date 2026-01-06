@@ -379,7 +379,8 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
             "table_name": retry_result.table_name,
             "records_processed": retry_result.records_processed,
             "duplicates_skipped": retry_result.duplicates_skipped,
-            "validation_errors": len(retry_result.mapping_errors or []),
+            "validation_errors": retry_result.validation_errors or 0,
+            "mapping_errors": len(retry_result.mapping_errors or []),
             "import_id": retry_result.import_id,
             "auto_retry_used": True,
             "message": "Processed via Try Again",
@@ -391,7 +392,8 @@ def _summarize_archive_execution(response: AnalyzeFileResponse) -> Dict[str, Any
             "table_name": auto_result.table_name,
             "records_processed": auto_result.records_processed,
             "duplicates_skipped": auto_result.duplicates_skipped,
-            "validation_errors": auto_result.validation_errors,
+            "validation_errors": auto_result.validation_errors or 0,
+            "mapping_errors": len(auto_result.mapping_errors or []) if auto_result.mapping_errors else 0,
             "import_id": auto_result.import_id,
             "auto_retry_used": False,
             "message": "Processed automatically",
@@ -886,6 +888,7 @@ def _process_entry_bytes(
         records_processed=summary.get("records_processed"),
         duplicates_skipped=summary.get("duplicates_skipped"),
         validation_errors=summary.get("validation_errors"),
+        mapping_errors=summary.get("mapping_errors"),
         import_id=summary.get("import_id"),
         auto_retry_used=summary.get("auto_retry_used", False),
         message=summary.get("message"),
@@ -1201,6 +1204,8 @@ def _run_archive_auto_process_job(
                                     mapped_table_name=getattr(file_result, "table_name", None),
                                     mapped_rows=getattr(file_result, "records_processed", None),
                                     duplicates_found=getattr(file_result, "duplicates_skipped", None),
+                                    data_validation_errors=getattr(file_result, "validation_errors", None),
+                                    mapping_errors=getattr(file_result, "mapping_errors", None),
                                 )
                             except Exception as status_exc:  # pragma: no cover - defensive
                                 logger.warning(
@@ -1487,6 +1492,8 @@ def _run_workbook_auto_process_job(
                                 mapped_table_name=getattr(file_result, "table_name", None),
                                 mapped_rows=getattr(file_result, "records_processed", None),
                                 duplicates_found=getattr(file_result, "duplicates_skipped", None),
+                                data_validation_errors=getattr(file_result, "validation_errors", None),
+                                mapping_errors=getattr(file_result, "mapping_errors", None),
                             )
                         except Exception as status_exc:  # pragma: no cover
                             logger.warning(
@@ -2193,7 +2200,9 @@ async def analyze_file_endpoint(
                                 },
                                 mapped_table_name=execution_result["table_name"],
                                 mapped_rows=execution_result["records_processed"],
-                                data_validation_errors=len(execution_result.get("mapping_errors", []))
+                                data_validation_errors=execution_result.get("validation_errors", 0),
+                                duplicates_found=execution_result.get("duplicates_skipped"),
+                                mapping_errors=len(execution_result.get("mapping_errors", []))
                             )
                             job_id = None
                         else:
@@ -2203,7 +2212,8 @@ async def analyze_file_endpoint(
                                 mapped_table_name=execution_result["table_name"],
                                 mapped_rows=execution_result["records_processed"],
                                 duplicates_found=execution_result.get("duplicates_skipped"),
-                                data_validation_errors=len(execution_result.get("mapping_errors", [])),
+                                data_validation_errors=execution_result.get("validation_errors", 0),
+                                mapping_errors=len(execution_result.get("mapping_errors", [])),
                             )
                     
                     # Update response with execution results
@@ -2257,7 +2267,9 @@ async def analyze_file_endpoint(
                                     },
                                     mapped_table_name=retry_result.table_name,
                                     mapped_rows=retry_result.records_processed,
-                                    data_validation_errors=len(retry_result.mapping_errors or [])
+                                    data_validation_errors=retry_result.validation_errors or 0,
+                                    duplicates_found=retry_result.duplicates_skipped,
+                                    mapping_errors=len(retry_result.mapping_errors or [])
                                 )
                                 job_id = None
                             else:
@@ -2267,7 +2279,8 @@ async def analyze_file_endpoint(
                                     mapped_table_name=retry_result.table_name,
                                     mapped_rows=retry_result.records_processed,
                                     duplicates_found=retry_result.duplicates_skipped,
-                                    data_validation_errors=len(retry_result.mapping_errors or [])
+                                    data_validation_errors=retry_result.validation_errors or 0,
+                                    mapping_errors=len(retry_result.mapping_errors or [])
                                 )
                     else:
                         if auto_retry_details:
@@ -2361,7 +2374,9 @@ async def analyze_file_endpoint(
                                 },
                                 mapped_table_name=retry_result.table_name,
                                 mapped_rows=retry_result.records_processed,
-                                data_validation_errors=len(retry_result.mapping_errors or [])
+                                data_validation_errors=retry_result.validation_errors or 0,
+                                duplicates_found=retry_result.duplicates_skipped,
+                                mapping_errors=len(retry_result.mapping_errors or [])
                             )
                             job_id = None
                         else:
@@ -2370,7 +2385,9 @@ async def analyze_file_endpoint(
                                 "mapped",
                                 mapped_table_name=retry_result.table_name,
                                 mapped_rows=retry_result.records_processed,
-                                data_validation_errors=len(retry_result.mapping_errors or [])
+                                duplicates_found=retry_result.duplicates_skipped,
+                                data_validation_errors=retry_result.validation_errors or 0,
+                                mapping_errors=len(retry_result.mapping_errors or [])
                             )
                 else:
                     if auto_retry_details:
@@ -3388,7 +3405,9 @@ async def execute_interactive_import_endpoint(
                     },
                     mapped_table_name=execution_result["table_name"],
                     mapped_rows=execution_result["records_processed"],
-                    data_validation_errors=len(execution_result.get("mapping_errors", []))
+                    data_validation_errors=execution_result.get("validation_errors", 0),
+                    duplicates_found=execution_result.get("duplicates_skipped"),
+                    mapping_errors=len(execution_result.get("mapping_errors", []))
                 )
                 job_id = None
             else:
@@ -3398,7 +3417,8 @@ async def execute_interactive_import_endpoint(
                     mapped_table_name=execution_result["table_name"],
                     mapped_rows=execution_result["records_processed"],
                     duplicates_found=execution_result.get("duplicates_skipped"),
-                    data_validation_errors=len(execution_result.get("mapping_errors", [])),
+                    data_validation_errors=execution_result.get("validation_errors", 0),
+                    mapping_errors=len(execution_result.get("mapping_errors", [])),
                 )
 
             session.status = "completed"

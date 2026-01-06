@@ -40,7 +40,7 @@ Built for small and medium businesses that need data insights without complex da
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/thefoundry-app/content-atlas.git
+git clone https://github.com/consuly/content-atlas.git
 cd content-atlas
 
 # 2. Install Python dependencies

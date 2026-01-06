@@ -11,11 +11,19 @@ from sqlalchemy.exc import ProgrammingError
 from datetime import datetime, timezone
 import uuid
 import json
+from app.db.models import insert_records, record_duplicate_rows
 from app.db.session import get_engine
 from app.api.schemas.shared import MappingConfig
+from app.utils.serialization import _make_json_safe
 from decimal import Decimal
 from datetime import date
 import logging
+
+# Import uploaded_files utilities for sync
+# Use local imports inside functions to avoid circular imports if necessary, 
+# but history is low-level so it might be fine.
+# Checking imports in uploaded_files.py: it imports get_import_history from history.py.
+# So we have a circular import. We MUST use local imports inside functions.
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +213,10 @@ def create_import_history_table():
             conn.execute(text("""
                 CREATE INDEX IF NOT EXISTS idx_import_duplicates_resolved
                 ON import_duplicates(import_id, resolved_at);
+            """))
+            conn.execute(text("""
+                ALTER TABLE import_history
+                ADD COLUMN IF NOT EXISTS rows_inserted INTEGER;
             """))
         logger.info("import_history and mapping_errors tables created/verified successfully")
     except Exception as e:
@@ -717,39 +729,6 @@ def complete_import_tracking(
         raise
 
 
-def record_duplicate_rows(import_id: str, duplicates: List[Dict[str, Any]]) -> None:
-    """
-    Persist duplicate records detected during an import so they can be reviewed later.
-    """
-    if not duplicates:
-        return
-
-    engine = get_engine()
-    payload = []
-
-    for entry in duplicates:
-        record_number = entry.get("record_number")
-        record = entry.get("record", {})
-        safe_record = _make_json_safe(record)
-        # Store as JSON string to avoid DB adapter issues
-        safe_record_json = json.dumps(safe_record)
-        payload.append({
-            "import_id": import_id,
-            "record_number": record_number,
-            "record_data": safe_record_json
-        })
-
-    insert_sql = text("""
-        INSERT INTO import_duplicates (import_id, record_number, record_data)
-        VALUES (:import_id, :record_number, :record_data)
-    """)
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(insert_sql, payload)
-    except Exception as e:
-        logger.error(f"Error recording duplicate rows for import {import_id}: {str(e)}")
-        raise
 
 
 def _needs_duplicate_resolution_columns(exc: ProgrammingError) -> bool:
@@ -1020,7 +999,8 @@ def resolve_duplicate_row(
     duplicate_id: int,
     updates: Dict[str, Any],
     resolved_by: Optional[str] = None,
-    note: Optional[str] = None
+    note: Optional[str] = None,
+    strategy: str = 'merge'
 ) -> Dict[str, Any]:
     """
     Apply updates from a duplicate record to the existing row and mark the
@@ -1035,42 +1015,86 @@ def resolve_duplicate_row(
     if duplicate_record.get("resolved_at"):
         raise ValueError("Duplicate record already resolved")
 
-    valid_updates: Dict[str, Any] = {
-        column: value
-        for column, value in updates.items()
-        if column in duplicate_record["record"]
-    }
+    if strategy != 'create_new' and existing_row is None:
+        raise ValueError("No existing row found to merge into")
+
+    # Fetch mapping config for create_new strategy
+    mapping_config = None
+    if strategy == 'create_new':
+        history_records = get_import_history(import_id=import_id, limit=1)
+        if history_records:
+            mapping_config = _load_mapping_config(history_records[0].get("mapping_config"))
+        
+        # Ensure we force import to bypass duplicate check
+        if mapping_config:
+            mapping_config.duplicate_check.force_import = True
 
     with engine.begin() as conn:
-        if existing_row is None:
-            raise ValueError("No existing row found to merge into")
-
-        row_id = existing_row["row_id"]
         table_name = detail["table_name"]
-
-        # Prepare update statement
-        set_clauses = []
-        params: Dict[str, Any] = {"row_id": row_id}
-        for column, value in valid_updates.items():
-            if column.startswith("_"):
-                continue
-            param_name = f"set_{column}"
-            set_clauses.append(f'"{column}" = :{param_name}')
-            params[param_name] = value
-
-        updated_columns: List[str] = list(valid_updates.keys())
-        if set_clauses:
-            update_sql = text(f'''
-                UPDATE "{table_name}"
-                SET {", ".join(set_clauses)}
-                WHERE _row_id = :row_id
-            ''')
-            conn.execute(update_sql, params)
-
+        row_id = existing_row["row_id"] if existing_row else None
+        
         resolution_details = {
-            "updated_columns": updated_columns,
+            "strategy": strategy,
             "note": note
         }
+        updated_columns: List[str] = []
+
+        if strategy == 'create_new':
+            # Insert the duplicate record as a new row using shared logic
+            # This ensures type coercion, metadata population, and validation
+            record = duplicate_record["record"]
+            
+            # We call insert_records with the engine (it handles its own transaction)
+            # This might be nested or separate, but it ensures data integrity
+            insert_records(
+                engine=engine,
+                table_name=table_name,
+                records=[record],
+                config=mapping_config,
+                import_id=import_id,
+                pre_mapped=False
+            )
+            
+            resolution_details["action"] = "created_new_row"
+            
+            # Increment rows_inserted count
+            # Use CAST to ensure UUID type match
+            conn.execute(text("""
+                UPDATE import_history
+                SET rows_inserted = COALESCE(rows_inserted, 0) + 1
+                WHERE import_id = CAST(:import_id AS UUID)
+            """), {"import_id": import_id})
+
+        elif strategy == 'keep_existing':
+            resolution_details["action"] = "kept_existing"
+
+        else:  # merge
+            valid_updates: Dict[str, Any] = {
+                column: value
+                for column, value in updates.items()
+                if column in duplicate_record["record"]
+            }
+
+            # Prepare update statement
+            set_clauses = []
+            params: Dict[str, Any] = {"row_id": row_id}
+            for column, value in valid_updates.items():
+                if column.startswith("_"):
+                    continue
+                param_name = f"set_{column}"
+                set_clauses.append(f'"{column}" = :{param_name}')
+                params[param_name] = value
+
+            updated_columns = list(valid_updates.keys())
+            if set_clauses:
+                update_sql = text(f'''
+                    UPDATE "{table_name}"
+                    SET {", ".join(set_clauses)}
+                    WHERE _row_id = :row_id
+                ''')
+                conn.execute(update_sql, params)
+            resolution_details["action"] = "merged"
+            resolution_details["updated_columns"] = updated_columns
 
         conn.execute(text("""
             UPDATE import_duplicates
@@ -1104,6 +1128,34 @@ def resolve_duplicate_row(
             SET duplicates_found = :remaining
             WHERE import_id = :import_id
         """), {"remaining": remaining, "import_id": import_id})
+
+        # Sync with uploaded_files table
+        try:
+            # Local import to avoid circular dependency
+            from app.domain.uploads.uploaded_files import (
+                get_uploaded_file_by_hash,
+                get_uploaded_file_by_name,
+                update_file_status
+            )
+            
+            # Fetch file info from history
+            history_rows = conn.execute(text("""
+                SELECT file_hash, file_name FROM import_history WHERE import_id = :import_id
+            """), {"import_id": import_id}).fetchone()
+            
+            if history_rows:
+                file_hash, file_name = history_rows
+                uploaded_file = None
+                if file_hash:
+                    uploaded_file = get_uploaded_file_by_hash(file_hash)
+                if not uploaded_file and file_name:
+                    uploaded_file = get_uploaded_file_by_name(file_name)
+                
+                if uploaded_file:
+                    update_file_status(uploaded_file["id"], uploaded_file["status"], duplicates_found=remaining)
+                    
+        except Exception as e:
+            logger.warning(f"Failed to sync duplicate count to uploaded_files: {e}")
 
         cleaned_record = {
             key: _make_json_safe(value)
@@ -1245,32 +1297,6 @@ def get_import_history(
         raise
 
 
-def _make_json_safe(value: Any) -> Any:
-    """
-    Convert Python objects into JSON-serialisable structures, preserving
-    as much fidelity as possible.
-    """
-    if isinstance(value, dict):
-        return {key: _make_json_safe(val) for key, val in value.items()}
-    if isinstance(value, list):
-        return [_make_json_safe(item) for item in value]
-    if isinstance(value, tuple):
-        return [_make_json_safe(item) for item in value]
-    if isinstance(value, set):
-        return [_make_json_safe(item) for item in value]
-    if isinstance(value, Decimal):
-        # Keep integers as ints, otherwise convert to string to avoid precision loss
-        if value == value.to_integral():
-            return int(value)
-        return str(value)
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, bytes):
-        return value.decode(errors="ignore")
-    if isinstance(value, (int, float, str, bool)) or value is None:
-        return value
-    # Fallback to string representation for unsupported types
-    return str(value)
 
 
 def get_import_statistics(
@@ -1601,6 +1627,9 @@ def resolve_validation_failure(
     Returns:
         Updated validation failure record
     """
+    # Ensure schema is up to date (specifically rows_inserted column)
+    create_import_history_table()
+
     engine = get_engine()
 
     # Get the failure detail
@@ -1649,6 +1678,41 @@ def resolve_validation_failure(
             WHERE import_id = :import_id
         """), {"remaining": remaining, "import_id": import_id})
 
+        if action in ['inserted_as_is', 'inserted_corrected']:
+            conn.execute(text("""
+                UPDATE import_history
+                SET rows_inserted = COALESCE(rows_inserted, 0) + 1
+                WHERE import_id = CAST(:import_id AS UUID)
+            """), {"import_id": import_id})
+
+        # Sync with uploaded_files table
+        try:
+            # Local import to avoid circular dependency
+            from app.domain.uploads.uploaded_files import (
+                get_uploaded_file_by_hash,
+                get_uploaded_file_by_name,
+                update_file_status
+            )
+            
+            # Fetch file info from history
+            history_rows = conn.execute(text("""
+                SELECT file_hash, file_name FROM import_history WHERE import_id = :import_id
+            """), {"import_id": import_id}).fetchone()
+            
+            if history_rows:
+                file_hash, file_name = history_rows
+                uploaded_file = None
+                if file_hash:
+                    uploaded_file = get_uploaded_file_by_hash(file_hash)
+                if not uploaded_file and file_name:
+                    uploaded_file = get_uploaded_file_by_name(file_name)
+                
+                if uploaded_file:
+                    update_file_status(uploaded_file["id"], uploaded_file["status"], data_validation_errors=remaining)
+                    
+        except Exception as e:
+            logger.warning(f"Failed to sync validation error count to uploaded_files: {e}")
+
     resolved_timestamp = datetime.now(timezone.utc)
     failure["resolved_at"] = resolved_timestamp.isoformat()
     failure["resolved_by"] = resolved_by
@@ -1656,3 +1720,267 @@ def resolve_validation_failure(
     failure["resolution_details"] = resolution_details
 
     return failure
+
+
+def list_all_duplicate_rows(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    include_resolved: bool = False
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Retrieve duplicate rows across all imports with file info.
+    """
+    engine = get_engine()
+    
+    where_clauses = []
+    params = {"limit": limit, "offset": offset}
+    
+    if not include_resolved:
+        where_clauses.append("idup.resolved_at IS NULL")
+        
+    if file_name:
+        where_clauses.append("h.file_name ILIKE :file_name")
+        params["file_name"] = f"%{file_name}%"
+        
+    if table_name:
+        where_clauses.append("h.table_name = :table_name")
+        params["table_name"] = table_name
+        
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    
+    # Get total count
+    count_sql = f"""
+        SELECT COUNT(*)
+        FROM import_duplicates idup
+        JOIN import_history h ON idup.import_id = h.import_id
+        WHERE {where_sql}
+    """
+    
+    query = f"""
+        SELECT idup.id, idup.record_number, idup.record_data, idup.detected_at, 
+               idup.resolved_at, idup.resolved_by, idup.resolution_details,
+               h.file_name, h.table_name, h.import_id
+        FROM import_duplicates idup
+        JOIN import_history h ON idup.import_id = h.import_id
+        WHERE {where_sql}
+        ORDER BY idup.detected_at DESC
+        LIMIT :limit OFFSET :offset
+    """
+
+    duplicates: List[Dict[str, Any]] = []
+    total_count = 0
+    
+    with engine.connect() as conn:
+        try:
+            total_count = conn.execute(text(count_sql), params).scalar() or 0
+            results = conn.execute(text(query), params)
+        except ProgrammingError as exc:
+            if _needs_duplicate_resolution_columns(exc):
+                logger.warning("Missing duplicate resolution columns detected; ensuring schema is up to date")
+                conn.rollback()
+                create_import_history_table()
+                total_count = conn.execute(text(count_sql), params).scalar() or 0
+                results = conn.execute(text(query), params)
+            else:
+                raise
+
+        for row in results:
+            record_data = row[2]
+            if isinstance(record_data, str):
+                try:
+                    record_data = json.loads(record_data)
+                except json.JSONDecodeError:
+                    record_data = {}
+            if not isinstance(record_data, dict):
+                record_data = {}
+            record_data = _make_json_safe(record_data)
+
+            resolution_details = row[6]
+            if isinstance(resolution_details, str):
+                try:
+                    resolution_details = json.loads(resolution_details)
+                except json.JSONDecodeError:
+                    resolution_details = None
+            if resolution_details is not None:
+                resolution_details = _make_json_safe(resolution_details)
+
+            duplicates.append({
+                "id": row[0],
+                "record_number": row[1],
+                "record": record_data,
+                "detected_at": row[3].isoformat() if row[3] else None,
+                "resolved_at": row[4].isoformat() if row[4] else None,
+                "resolved_by": row[5],
+                "resolution_details": resolution_details,
+                "file_name": row[7],
+                "table_name": row[8],
+                "import_id": str(row[9])
+            })
+            
+    return duplicates, total_count
+
+
+def list_all_validation_failures(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    include_resolved: bool = False
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Retrieve validation failures across all imports with file info.
+    """
+    engine = get_engine()
+    
+    where_clauses = []
+    params = {"limit": limit, "offset": offset}
+    
+    if not include_resolved:
+        where_clauses.append("vf.resolved_at IS NULL")
+        
+    if file_name:
+        where_clauses.append("h.file_name ILIKE :file_name")
+        params["file_name"] = f"%{file_name}%"
+        
+    if table_name:
+        where_clauses.append("h.table_name = :table_name")
+        params["table_name"] = table_name
+        
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    
+    # Get total count
+    count_sql = f"""
+        SELECT COUNT(*)
+        FROM import_validation_failures vf
+        JOIN import_history h ON vf.import_id = h.import_id
+        WHERE {where_sql}
+    """
+    
+    # Get records
+    query = f"""
+        SELECT vf.id, vf.record_number, vf.record_data, vf.validation_errors, 
+               vf.detected_at, vf.resolved_at, vf.resolved_by, vf.resolution_action,
+               h.file_name, h.table_name, h.import_id
+        FROM import_validation_failures vf
+        JOIN import_history h ON vf.import_id = h.import_id
+        WHERE {where_sql}
+        ORDER BY vf.detected_at DESC
+        LIMIT :limit OFFSET :offset
+    """
+
+    failures: List[Dict[str, Any]] = []
+    total_count = 0
+    
+    with engine.connect() as conn:
+        total_count = conn.execute(text(count_sql), params).scalar() or 0
+        
+        results = conn.execute(text(query), params)
+
+        for row in results:
+            # Parse record_data
+            record_data = row[2]
+            if isinstance(record_data, str):
+                try:
+                    record_data = json.loads(record_data)
+                except json.JSONDecodeError:
+                    record_data = {}
+            record_data = _make_json_safe(record_data)
+
+            # Parse validation_errors
+            validation_errors = row[3]
+            if isinstance(validation_errors, str):
+                try:
+                    validation_errors = json.loads(validation_errors)
+                except json.JSONDecodeError:
+                    validation_errors = []
+            validation_errors = _make_json_safe(validation_errors)
+
+            failures.append({
+                "id": row[0],
+                "record_number": row[1],
+                "record": record_data,
+                "validation_errors": validation_errors,
+                "detected_at": row[4].isoformat() if row[4] else None,
+                "resolved_at": row[5].isoformat() if row[5] else None,
+                "resolved_by": row[6],
+                "resolution_action": row[7],
+                "file_name": row[8],
+                "table_name": row[9],
+                "import_id": str(row[10])
+            })
+    
+    return failures, total_count
+
+
+def list_all_mapping_errors(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Retrieve mapping errors across all imports with file info.
+    """
+    engine = get_engine()
+    
+    where_clauses = []
+    params = {"limit": limit, "offset": offset}
+    
+    if file_name:
+        where_clauses.append("h.file_name ILIKE :file_name")
+        params["file_name"] = f"%{file_name}%"
+        
+    if table_name:
+        where_clauses.append("h.table_name = :table_name")
+        params["table_name"] = table_name
+        
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    
+    # Get total count
+    count_sql = f"""
+        SELECT COUNT(*)
+        FROM mapping_errors me
+        JOIN import_history h ON me.import_id = h.import_id
+        WHERE {where_sql}
+    """
+    
+    query = f"""
+        SELECT me.*, h.file_name, h.table_name
+        FROM mapping_errors me
+        JOIN import_history h ON me.import_id = h.import_id
+        WHERE {where_sql}
+        ORDER BY me.id DESC
+        LIMIT :limit OFFSET :offset
+    """
+    
+    errors: List[Dict[str, Any]] = []
+    total_count = 0
+    
+    try:
+        with engine.connect() as conn:
+            total_count = conn.execute(text(count_sql), params).scalar() or 0
+            result = conn.execute(text(query), params)
+            
+            for row in result:
+                errors.append({
+                    "id": row[0],
+                    "import_id": str(row[1]),
+                    "record_number": row[2],
+                    "source_field": row[3],
+                    "target_field": row[4],
+                    "error_type": row[5],
+                    "error_message": row[6],
+                    "source_value": row[7],
+                    "occurred_at": row[8].isoformat() if row[8] else None,
+                    "chunk_number": row[9],
+                    "file_name": row[10],
+                    "table_name": row[11]
+                })
+            
+            return errors, total_count
+            
+    except Exception as e:
+        logger.error(f"Error retrieving all mapping errors: {str(e)}")
+        raise
