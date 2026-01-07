@@ -485,6 +485,13 @@ def update_file_status(
         if mapped_rows is not None:
             update_parts.append("mapped_rows = :mapped_rows")
             params["mapped_rows"] = mapped_rows
+        
+        # Always set validation errors and mapping errors to 0 if not provided for mapped files
+        # This prevents NULL values that show as "Unknown" in the UI
+        if data_validation_errors is None:
+            data_validation_errors = 0
+        if mapping_errors is None:
+            mapping_errors = 0
             
     if duplicates_found is not None:
         update_parts.append("duplicates_found = :duplicates_found")
