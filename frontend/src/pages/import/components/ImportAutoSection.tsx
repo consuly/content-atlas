@@ -29,6 +29,8 @@ interface ImportAutoSectionProps {
   setSelectedSheets: (value: string[]) => void;
   skipFileDuplicateCheck: boolean;
   setSkipFileDuplicateCheck: (value: boolean) => void;
+  updateOnDuplicate: boolean;
+  setUpdateOnDuplicate: (value: boolean) => void;
   useSharedTable: boolean;
   setUseSharedTable: (value: boolean) => void;
   sharedTableName: string;
@@ -56,6 +58,8 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
   setSelectedSheets,
   skipFileDuplicateCheck,
   setSkipFileDuplicateCheck,
+  updateOnDuplicate,
+  setUpdateOnDuplicate,
   useSharedTable,
   setUseSharedTable,
   sharedTableName,
@@ -140,6 +144,21 @@ export const ImportAutoSection: React.FC<ImportAutoSectionProps> = ({
                     <Text strong>Use single table</Text>
                     <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
                       Map {isArchive ? 'all files' : 'this file'} into one specific table.
+                    </div>
+                  </div>
+                </Space>
+              </Col>
+              <Col span={12}>
+                <Space align="start">
+                  <Switch 
+                    checked={updateOnDuplicate} 
+                    onChange={(checked) => setUpdateOnDuplicate(checked)}
+                    disabled={skipFileDuplicateCheck}
+                  />
+                  <div>
+                    <Text strong>Update duplicates</Text>
+                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                      Update existing rows when duplicates are found.
                     </div>
                   </div>
                 </Space>

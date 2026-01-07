@@ -39,6 +39,7 @@ export interface ImportHistory {
   status: string;
   total_rows_in_file?: number;
   rows_inserted?: number;
+  rows_updated?: number;
   duplicates_found?: number;
   data_validation_errors?: number;
   mapping_errors_count?: number;
@@ -79,6 +80,24 @@ export interface ValidationFailureRow {
 
 export interface ValidationFailuresState {
   rows: ValidationFailureRow[];
+  total: number;
+}
+
+export interface RowUpdateData {
+  id: number;
+  row_id: number;
+  table_name: string;
+  updated_columns: string[];
+  previous_values: Record<string, unknown>;
+  new_values: Record<string, unknown>;
+  updated_at?: string | null;
+  rolled_back_at?: string | null;
+  rolled_back_by?: string | null;
+  has_conflict?: boolean | null;
+}
+
+export interface RowUpdatesState {
+  rows: RowUpdateData[];
   total: number;
 }
 

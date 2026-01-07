@@ -40,6 +40,7 @@ PROTECTED_SYSTEM_TABLES = {
     'query_messages',
     'query_threads',
     'table_fingerprints',
+    'row_updates'
 }
 
 

@@ -14,7 +14,10 @@ from app.api.schemas.shared import (
     ImportMappingErrorsResponse, MappingErrorHistoryRecord,
     ImportValidationFailuresResponse, ValidationFailureDetailResponse,
     ResolveValidationFailureRequest, ResolveValidationFailureResponse,
-    MappingConfig
+    MappingConfig,
+    RowUpdatesListResponse, RowUpdateDetailResponse,
+    RollbackUpdateRequest, RollbackUpdateResponse,
+    RollbackAllUpdatesRequest, RollbackAllUpdatesResponse
 )
 from app.domain.imports.history import (
     get_import_history,
@@ -30,6 +33,13 @@ from app.domain.imports.history import (
     list_all_validation_failures,
     list_all_mapping_errors,
     create_import_history_table
+)
+from app.domain.imports.rollback import (
+    list_row_updates,
+    list_all_row_updates,
+    get_row_update_detail,
+    rollback_single_update,
+    rollback_import_updates
 )
 from app.db.models import insert_records
 import json
@@ -228,6 +238,38 @@ async def list_all_mapping_errors_endpoint(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list mapping errors: {str(e)}")
+
+
+@router.get("/row-updates", response_model=RowUpdatesListResponse)
+async def list_all_row_updates_endpoint(
+    limit: int = 100,
+    offset: int = 0,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    include_rolled_back: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    List row updates across all imports.
+    """
+    try:
+        updates, total_count = list_all_row_updates(
+            limit=limit,
+            offset=offset,
+            file_name=file_name,
+            table_name=table_name,
+            include_rolled_back=include_rolled_back
+        )
+        
+        return RowUpdatesListResponse(
+            success=True,
+            updates=updates,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list row updates: {str(e)}")
 
 
 @router.get("/{import_id}", response_model=ImportHistoryDetailResponse)
@@ -520,6 +562,166 @@ async def resolve_validation_failure_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to resolve validation failure: {str(e)}")
+
+
+@router.get("/{import_id}/updates", response_model=RowUpdatesListResponse)
+async def list_import_row_updates(
+    import_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    include_rolled_back: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    List all row updates from an import with rollback information.
+    
+    Parameters:
+    - import_id: UUID of the import
+    - limit: Maximum number of updates to return (default: 100)
+    - offset: Number of updates to skip (default: 0)
+    - include_rolled_back: Include already rolled back updates (default: False)
+    """
+    try:
+        # Verify import exists
+        records = get_import_history(import_id=import_id, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+        
+        updates, total_count = list_row_updates(
+            import_id=import_id,
+            limit=limit,
+            offset=offset,
+            include_rolled_back=include_rolled_back
+        )
+        
+        return RowUpdatesListResponse(
+            success=True,
+            updates=updates,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list row updates: {str(e)}")
+
+
+@router.get("/{import_id}/updates/{update_id}", response_model=RowUpdateDetailResponse)
+async def get_import_row_update_detail(
+    import_id: str,
+    update_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a specific row update.
+    
+    Parameters:
+    - import_id: UUID of the import
+    - update_id: ID of the row update
+    """
+    try:
+        # Verify import exists
+        records = get_import_history(import_id=import_id, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+        
+        detail = get_row_update_detail(import_id=import_id, update_id=update_id)
+        
+        return RowUpdateDetailResponse(
+            success=True,
+            update=detail["update"],
+            current_row=detail.get("current_row")
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get row update detail: {str(e)}")
+
+
+@router.post("/{import_id}/updates/{update_id}/rollback", response_model=RollbackUpdateResponse)
+async def rollback_import_row_update(
+    import_id: str,
+    update_id: int,
+    request: RollbackUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Rollback a single row update.
+    
+    Parameters:
+    - import_id: UUID of the import
+    - update_id: ID of the row update to rollback
+    - rolled_back_by: User performing the rollback (optional)
+    - force: Force rollback even if there's a conflict (default: False)
+    """
+    try:
+        # Verify import exists
+        records = get_import_history(import_id=import_id, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+        
+        result = rollback_single_update(
+            import_id=import_id,
+            update_id=update_id,
+            rolled_back_by=request.rolled_back_by,
+            force=request.force
+        )
+        
+        return RollbackUpdateResponse(
+            success=result["success"],
+            message=result["message"],
+            update=result["update"],
+            conflict=result.get("conflict")
+        )
+    except ValueError as e:
+        if "already been rolled back" in str(e):
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to rollback update: {str(e)}")
+
+
+@router.post("/{import_id}/rollback-all", response_model=RollbackAllUpdatesResponse)
+async def rollback_all_import_updates(
+    import_id: str,
+    request: RollbackAllUpdatesRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Rollback all row updates from an import.
+    
+    Parameters:
+    - import_id: UUID of the import
+    - rolled_back_by: User performing the rollback (optional)
+    - skip_conflicts: Skip updates with conflicts instead of stopping (default: False)
+    """
+    try:
+        # Verify import exists
+        records = get_import_history(import_id=import_id, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Import {import_id} not found")
+        
+        result = rollback_import_updates(
+            import_id=import_id,
+            rolled_back_by=request.rolled_back_by,
+            skip_conflicts=request.skip_conflicts
+        )
+        
+        return RollbackAllUpdatesResponse(
+            success=result["success"],
+            message=result["message"],
+            updates_rolled_back=result["updates_rolled_back"],
+            conflicts=result.get("conflicts")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to rollback all updates: {str(e)}")
 
 
 alias_router = APIRouter(tags=['import-history'])

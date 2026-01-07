@@ -20,6 +20,7 @@ def test_protected_tables_constant():
         'import_jobs',
         'llm_instructions',
         'table_fingerprints',
+        'row_updates',
     }
     assert PROTECTED_SYSTEM_TABLES == expected_tables
 

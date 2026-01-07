@@ -707,6 +707,330 @@ const MappingErrorsTable = ({ initialFileName }: { initialFileName?: string | nu
     );
   };
 
+interface RollbackUpdateModalProps {
+    visible: boolean;
+    onCancel: () => void;
+    onSuccess: () => void;
+    update: any;
+}
+
+const RollbackUpdateModal: React.FC<RollbackUpdateModalProps> = ({
+    visible,
+    onCancel,
+    onSuccess,
+    update
+}) => {
+    const { token } = theme.useToken();
+    const [force, setForce] = useState(false);
+    const { mutate: rollbackUpdate, mutation } = useCustomMutation<any>();
+    const isSubmitting = (mutation as any).isLoading || (mutation as any).isPending;
+
+    const isEnabled = !!update?.import_id && !!update?.id;
+    const result = useCustom<any>({
+        url: isEnabled ? `import-history/${update.import_id}/updates/${update.id}` : "",
+        method: "get",
+        config: {
+            query: {},
+        },
+        queryOptions: {
+            enabled: isEnabled
+        }
+    });
+
+    const hookResult = (result as any).query || result;
+    const { data: detailData, isLoading, isError, error } = hookResult as any;
+    const detail = detailData?.data || detailData;
+
+    const handleRollback = () => {
+        if (!update) return;
+
+        rollbackUpdate({
+            url: `import-history/${update.import_id}/updates/${update.id}/rollback`,
+            method: "post",
+            values: {
+                rolled_back_by: "user",
+                force: force
+            },
+            successNotification: () => ({
+                message: "Update Rolled Back",
+                description: "The row has been restored to its previous values.",
+                type: "success",
+            }),
+            errorNotification: (error: any) => ({
+                message: "Rollback Failed",
+                description: error?.message || "Something went wrong",
+                type: "error",
+            })
+        }, {
+            onSuccess: () => {
+                onSuccess();
+                onCancel();
+            }
+        });
+    };
+
+    const renderContent = () => {
+        if (isLoading) {
+            return (
+                <div style={{ textAlign: 'center', padding: 20 }}>
+                    <Spin />
+                </div>
+            );
+        }
+
+        if (isError) {
+            return (
+                <Alert
+                    type="error"
+                    message="Failed to load details"
+                    description={error?.message || "An unknown error occurred"}
+                />
+            );
+        }
+
+        if (!isEnabled) {
+            return <Alert type="warning" message="Invalid update record" description="Missing ID or Import ID" />;
+        }
+
+        if (!detail) {
+            return <Empty description="No details found for this update record." />;
+        }
+
+        const updateInfo = detail.update;
+        const currentRow = detail.current_row;
+        const updatedColumns = updateInfo.updated_columns || [];
+
+        // Check if there's a conflict
+        const hasConflict = updateInfo.has_conflict;
+
+        return (
+            <Space direction="vertical" style={{ width: '100%' }} size="large">
+                {hasConflict && (
+                    <Alert
+                        message="Conflict Detected"
+                        description="The row has been modified since this update. The current values differ from expected values."
+                        type="warning"
+                        showIcon
+                    />
+                )}
+
+                <Descriptions title="Update Information" bordered size="small">
+                    <Descriptions.Item label="Table" span={3}>{updateInfo.table_name}</Descriptions.Item>
+                    <Descriptions.Item label="Row ID" span={3}>{updateInfo.row_id}</Descriptions.Item>
+                    <Descriptions.Item label="Updated At" span={3}>
+                        {updateInfo.updated_at ? new Date(updateInfo.updated_at).toLocaleString() : "-"}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Updated Columns" span={3}>
+                        {updatedColumns.map((col: string) => <Tag key={col}>{col}</Tag>)}
+                    </Descriptions.Item>
+                </Descriptions>
+
+                <Table
+                    dataSource={updatedColumns.map((col: string) => ({ column: col }))}
+                    rowKey="column"
+                    pagination={false}
+                    size="small"
+                    scroll={{ y: 400 }}
+                >
+                    <Table.Column
+                        title="Column"
+                        dataIndex="column"
+                        width={150}
+                        fixed="left"
+                    />
+                    <Table.Column
+                        title="Previous Value (Will be restored)"
+                        render={(_, record: any) => {
+                            const val = updateInfo.previous_values?.[record.column];
+                            return (
+                                <div
+                                    style={{
+                                        backgroundColor: token.colorSuccessBg,
+                                        padding: 8,
+                                        border: `1px solid ${token.colorSuccess}`,
+                                        borderRadius: token.borderRadius,
+                                    }}
+                                >
+                                    <Text>{JSON.stringify(val)}</Text>
+                                </div>
+                            );
+                        }}
+                    />
+                    <Table.Column
+                        title="Current Value"
+                        render={(_, record: any) => {
+                            const val = currentRow?.[record.column];
+                            const previousVal = updateInfo.previous_values?.[record.column];
+                            const isDifferent = JSON.stringify(val) !== JSON.stringify(previousVal);
+                            
+                            return (
+                                <div
+                                    style={{
+                                        backgroundColor: isDifferent ? token.colorWarningBg : token.colorFillAlter,
+                                        padding: 8,
+                                        border: `1px solid ${isDifferent ? token.colorWarning : 'transparent'}`,
+                                        borderRadius: token.borderRadius,
+                                    }}
+                                >
+                                    <Text>{JSON.stringify(val)}</Text>
+                                    {isDifferent && (
+                                        <WarningOutlined style={{ color: token.colorWarning, marginLeft: 8 }} />
+                                    )}
+                                </div>
+                            );
+                        }}
+                    />
+                </Table>
+
+                {hasConflict && (
+                    <Checkbox checked={force} onChange={(e) => setForce(e.target.checked)}>
+                        Force rollback even with conflicts
+                    </Checkbox>
+                )}
+            </Space>
+        );
+    };
+
+    return (
+        <Modal
+            title="Rollback Row Update"
+            open={visible}
+            onCancel={onCancel}
+            width={900}
+            footer={[
+                <Button key="cancel" onClick={onCancel}>Cancel</Button>,
+                <Button
+                    key="submit"
+                    type="primary"
+                    danger
+                    onClick={handleRollback}
+                    loading={isSubmitting}
+                    disabled={isLoading || !detail}
+                >
+                    Rollback Update
+                </Button>
+            ]}
+        >
+            {renderContent()}
+        </Modal>
+    );
+};
+
+const UpdatedRowsTable = ({ initialFileName }: { initialFileName?: string | null }) => {
+    const invalidate = useInvalidate();
+    const { tableProps, searchFormProps } = useTable({
+        resource: "import-history/row-updates",
+        pagination: { pageSize: 20 },
+        filters: {
+            initial: initialFileName ? [
+                { field: "file_name", operator: "contains", value: initialFileName }
+            ] : [],
+        },
+        onSearch: (params: any) => {
+            const { file_name } = params;
+            return [{ field: "file_name", operator: "contains", value: file_name }];
+        },
+    });
+
+    const [modalVisible, setModalVisible] = useState(false);
+    const [selectedUpdate, setSelectedUpdate] = useState<any>(null);
+
+    const handleRollback = (record: any) => {
+        setSelectedUpdate(record);
+        setModalVisible(true);
+    };
+
+    const handleModalClose = () => {
+        setModalVisible(false);
+        setSelectedUpdate(null);
+    };
+
+    return (
+        <List title="Row Updates">
+            <Space style={{ marginBottom: 16 }}>
+                <Input
+                    placeholder="Search by File Name"
+                    prefix={<SearchOutlined />}
+                    defaultValue={initialFileName || undefined}
+                    onPressEnter={(e: any) => {
+                        searchFormProps.onFinish?.({ file_name: e.target.value });
+                    }}
+                />
+            </Space>
+            <Table {...tableProps} rowKey="id">
+                <Table.Column
+                    dataIndex="file_name"
+                    title="File Name"
+                    render={(value) => <Tag color="blue">{value}</Tag>}
+                />
+                <Table.Column dataIndex="table_name" title="Table" />
+                <Table.Column
+                    dataIndex="updated_columns"
+                    title="Updated Columns"
+                    render={(columns: string[]) => (
+                        <Space size="small" wrap>
+                            {columns?.map((col, idx) => <Tag key={idx}>{col}</Tag>)}
+                        </Space>
+                    )}
+                />
+                <Table.Column
+                    dataIndex="previous_values"
+                    title="Previous Values"
+                    render={(values) => (
+                        <div style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {JSON.stringify(values)}
+                        </div>
+                    )}
+                />
+                <Table.Column
+                    dataIndex="new_values"
+                    title="New Values"
+                    render={(values) => (
+                        <div style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {JSON.stringify(values)}
+                        </div>
+                    )}
+                />
+                <Table.Column
+                    dataIndex="updated_at"
+                    title="Updated At"
+                    render={(value) => value ? new Date(value).toLocaleString() : "-"}
+                />
+                <Table.Column
+                    dataIndex="rolled_back_at"
+                    title="Status"
+                    render={(value) => (
+                        value ? <Tag color="default">Rolled Back</Tag> : <Tag color="success">Active</Tag>
+                    )}
+                />
+                <Table.Column
+                    title="Actions"
+                    render={(_, record: any) => (
+                        <Button
+                            size="small"
+                            type="link"
+                            danger
+                            onClick={() => handleRollback(record)}
+                            disabled={!!record.rolled_back_at}
+                        >
+                            {record.rolled_back_at ? "Rolled Back" : "Rollback"}
+                        </Button>
+                    )}
+                />
+            </Table>
+
+            {modalVisible && selectedUpdate && (
+                <RollbackUpdateModal
+                    visible={modalVisible}
+                    update={selectedUpdate}
+                    onCancel={handleModalClose}
+                    onSuccess={() => invalidate({ resource: "import-history/row-updates", invalidates: ["list"] })}
+                />
+            )}
+        </List>
+    );
+};
+
 export const DataIssuesPage = () => {
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
@@ -735,6 +1059,11 @@ export const DataIssuesPage = () => {
       key: "mapping",
       label: "Mapping Errors",
       children: <MappingErrorsTable initialFileName={fileNameParam} />,
+    },
+    {
+      key: "updated",
+      label: "Row Updates",
+      children: <UpdatedRowsTable initialFileName={fileNameParam} />,
     },
   ];
 

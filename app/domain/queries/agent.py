@@ -41,6 +41,7 @@ PROTECTED_SYSTEM_TABLES = {
     'import_jobs',
     'llm_instructions',
     'table_fingerprints',
+    'row_updates',
 }
 
 # Extended list used for strict SQL validation inside the agent; covers additional

@@ -982,6 +982,10 @@ def execute_llm_import_decision(
         # This controls row-level duplicate detection, not file-level
         skip_duplicate_check = bool(llm_decision.get("skip_file_duplicate_check", False))
         
+        # Extract update_on_duplicate flag from LLM decision
+        # This controls whether duplicates should be updated or skipped
+        update_on_duplicate = bool(llm_decision.get("update_on_duplicate", False))
+        
         # Build db_schema prioritizing LLM expectations and falling back to heuristics where absent
         import re
         db_schema: Dict[str, str] = {}
@@ -1140,7 +1144,8 @@ def execute_llm_import_decision(
                     check_file_level=True,  # Always check file-level duplicates
                     allow_file_level_retry=False,
                     allow_duplicates=skip_duplicate_check,  # Allow row duplicates if flag is set
-                    uniqueness_columns=effective_unique_columns  # This is what duplicate checking actually uses
+                    uniqueness_columns=effective_unique_columns,  # This is what duplicate checking actually uses
+                    update_on_duplicate=update_on_duplicate  # Update duplicates instead of skipping
                 )
             )
         else:
@@ -1158,7 +1163,8 @@ def execute_llm_import_decision(
                     check_file_level=True,  # Always check file-level duplicates
                     allow_file_level_retry=False,
                     allow_duplicates=skip_duplicate_check,  # Allow row duplicates if flag is set
-                    uniqueness_columns=effective_unique_columns  # This is what duplicate checking actually uses
+                    uniqueness_columns=effective_unique_columns,  # This is what duplicate checking actually uses
+                    update_on_duplicate=update_on_duplicate  # Update duplicates instead of skipping
                 )
             )
         

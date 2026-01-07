@@ -1946,6 +1946,7 @@ async def analyze_file_endpoint(
     llm_instruction_title: Optional[str] = Form(None),
     require_explicit_multi_value: bool = Form(False),
     skip_file_duplicate_check: bool = Form(False),
+    update_on_duplicate: bool = Form(False),
     db: Session = Depends(get_db)
 ):
     """
@@ -2120,6 +2121,7 @@ async def analyze_file_endpoint(
                 llm_decision.setdefault("llm_instruction", normalized_instruction)
             llm_decision["require_explicit_multi_value"] = require_explicit_multi_value
             llm_decision["skip_file_duplicate_check"] = skip_file_duplicate_check
+            llm_decision["update_on_duplicate"] = update_on_duplicate
         
         # Parse LLM response to extract structured data
         response = AnalyzeFileResponse(

@@ -19,6 +19,7 @@ PROTECTED_SYSTEM_TABLES = {
     'users', 'file_imports', 'import_jobs', 'llm_instructions',
     'api_keys', 'import_duplicates',
     'query_messages', 'query_threads', 'table_fingerprints',
+    'row_updates'
 }
 
 

@@ -190,6 +190,28 @@ def create_import_history_table():
     CREATE INDEX IF NOT EXISTS idx_validation_failures_import ON import_validation_failures(import_id);
     CREATE INDEX IF NOT EXISTS idx_validation_failures_resolved ON import_validation_failures(import_id, resolved_at);
     """
+
+    create_row_updates_sql = """
+    CREATE TABLE IF NOT EXISTS row_updates (
+        id SERIAL PRIMARY KEY,
+        import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
+        table_name VARCHAR(255) NOT NULL,
+        row_id INTEGER NOT NULL,
+        previous_values JSONB NOT NULL,
+        new_values JSONB NOT NULL,
+        updated_columns TEXT[] NOT NULL,
+        current_values_hash VARCHAR(64),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        rolled_back_at TIMESTAMP,
+        rolled_back_by VARCHAR(255),
+        rollback_conflict BOOLEAN DEFAULT FALSE,
+        rollback_conflict_details JSONB
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_row_updates_import ON row_updates(import_id);
+    CREATE INDEX IF NOT EXISTS idx_row_updates_table_row ON row_updates(table_name, row_id);
+    CREATE INDEX IF NOT EXISTS idx_row_updates_rolled_back ON row_updates(import_id, rolled_back_at);
+    """
     
     try:
         with engine.begin() as conn:
@@ -198,6 +220,7 @@ def create_import_history_table():
             conn.execute(text(create_import_duplicates_sql))
             conn.execute(text(create_mapping_chunk_status_sql))
             conn.execute(text(create_validation_failures_sql))
+            conn.execute(text(create_row_updates_sql))
             conn.execute(text("""
                 ALTER TABLE import_duplicates
                 ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP;
@@ -217,6 +240,10 @@ def create_import_history_table():
             conn.execute(text("""
                 ALTER TABLE import_history
                 ADD COLUMN IF NOT EXISTS rows_inserted INTEGER;
+            """))
+            conn.execute(text("""
+                ALTER TABLE import_history
+                ADD COLUMN IF NOT EXISTS rows_updated INTEGER DEFAULT 0;
             """))
         logger.info("import_history and mapping_errors tables created/verified successfully")
     except Exception as e:
@@ -1287,7 +1314,8 @@ def get_import_history(
                     "task_id": str(row[33]) if row[33] else None,
                     "metadata": row[34],
                     "created_at": row[35].isoformat() if row[35] else None,
-                    "updated_at": row[36].isoformat() if row[36] else None
+                    "updated_at": row[36].isoformat() if row[36] else None,
+                    "rows_updated": row[37] if len(row) > 37 else 0
                 })
             
             return records

@@ -22,7 +22,7 @@ def get_table_names() -> List[Dict[str, Any]]:
             WHERE table_schema = 'public'
             AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns',
                                  'raster_columns', 'raster_overviews',
-                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'llm_instructions', 'table_fingerprints')
+                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'row_updates')
             AND table_name NOT LIKE 'pg_%'
             AND table_name NOT LIKE 'test!_%' ESCAPE '!'
             ORDER BY table_name
@@ -89,7 +89,7 @@ def get_database_schema(table_names: Optional[List[str]] = None) -> Dict[str, An
             WHERE table_schema = 'public'
             AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns',
                                  'raster_columns', 'raster_overviews',
-                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'llm_instructions', 'table_fingerprints')
+                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'row_updates')
             AND table_name NOT LIKE 'pg_%'
             AND table_name NOT LIKE 'test!_%' ESCAPE '!'
             ORDER BY table_name

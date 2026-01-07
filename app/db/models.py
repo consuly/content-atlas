@@ -350,6 +350,138 @@ def record_duplicate_rows(import_id: str, duplicates: List[Dict[str, Any]]) -> N
         raise
 
 
+def update_existing_row(
+    conn,
+    table_name: str,
+    new_record: Dict[str, Any],
+    uniqueness_columns: List[str],
+    update_columns: Optional[List[str]],
+    config: MappingConfig,
+    import_id: str,
+    record_number: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Update an existing row with new values from a duplicate record.
+    
+    Args:
+        conn: Database connection
+        table_name: Name of the table
+        new_record: New record data
+        uniqueness_columns: Columns used to find the existing row
+        update_columns: Specific columns to update (None = all non-empty)
+        config: Mapping configuration
+        import_id: Import ID for tracking
+        record_number: Source row number
+        
+    Returns:
+        Dictionary with update details (row_id, updated_columns) or None if row not found
+    """
+    # Build WHERE clause to find the existing row
+    where_conditions = []
+    where_params = {}
+    
+    for idx, col in enumerate(uniqueness_columns):
+        param_name = f"find_{idx}"
+        value = new_record.get(col)
+        
+        if value is None:
+            where_conditions.append(f'"{col}" IS NULL')
+        else:
+            where_conditions.append(f'"{col}" = :{param_name}')
+            where_params[param_name] = value
+    
+    where_clause = ' AND '.join(where_conditions)
+    
+    # Fetch the existing row
+    fetch_sql = text(f'SELECT * FROM "{table_name}" WHERE {where_clause} LIMIT 1')
+    existing_row_result = conn.execute(fetch_sql, where_params).mappings().fetchone()
+    
+    if not existing_row_result:
+        logger.warning(f"Could not find existing row to update in table '{table_name}'")
+        return None
+    
+    existing_row = dict(existing_row_result)
+    row_id = existing_row.get("_row_id")
+    
+    if not row_id:
+        logger.error(f"Existing row found but no _row_id in table '{table_name}'")
+        return None
+    
+    # Determine which columns to update
+    if update_columns:
+        # Use specified columns (excluding uniqueness columns)
+        columns_to_update = [
+            col for col in update_columns
+            if col in new_record and not col.startswith("_") and col not in uniqueness_columns
+        ]
+    else:
+        # Update all non-empty columns from new record (excluding uniqueness columns)
+        columns_to_update = [
+            col for col, value in new_record.items()
+            if not col.startswith("_") and value is not None and value != "" and col not in uniqueness_columns
+        ]
+    
+    if not columns_to_update:
+        logger.info(f"No columns to update for row {row_id}")
+        return None
+    
+    # Build UPDATE statement
+    set_clauses = []
+    update_params = {"row_id": row_id}
+    previous_values = {}
+    new_values = {}
+    
+    for col in columns_to_update:
+        param_name = f"upd_{col}"
+        new_value = new_record.get(col)
+        
+        # Apply type coercion
+        if col in config.db_schema:
+            sql_type = config.db_schema[col]
+            new_value = coerce_value_for_sql_type(new_value, sql_type)
+        
+        set_clauses.append(f'"{col}" = :{param_name}')
+        update_params[param_name] = new_value
+        
+        # Store old and new values
+        previous_values[col] = existing_row.get(col)
+        new_values[col] = new_value
+    
+    # Execute UPDATE
+    update_sql = text(f'''
+        UPDATE "{table_name}"
+        SET {", ".join(set_clauses)}
+        WHERE _row_id = :row_id
+    ''')
+    
+    conn.execute(update_sql, update_params)
+    
+    logger.info(f"Updated row {row_id} in table '{table_name}' with {len(columns_to_update)} columns")
+    
+    # Record the update for rollback
+    try:
+        # Import here to avoid circular dependency
+        from app.domain.imports.rollback import record_row_update
+        
+        record_row_update(
+            import_id=import_id,
+            table_name=table_name,
+            row_id=row_id,
+            previous_values=previous_values,
+            new_values=new_values,
+            updated_columns=columns_to_update
+        )
+    except Exception as e:
+        logger.error(f"Failed to record row update for rollback: {e}")
+        # Don't fail the update if rollback recording fails
+    
+    return {
+        "row_id": row_id,
+        "updated_columns": columns_to_update,
+        "record_number": record_number
+    }
+
+
 def create_table_fingerprints_table_if_not_exists(engine: Engine):
     """Create table_fingerprints table to track schema signatures for intelligent merging."""
     create_sql = """
@@ -850,6 +982,9 @@ def insert_records(
         # Row-level duplicate check (unless allow_duplicates is true)
         duplicate_indices: List[int] = []
         duplicate_entries: List[Dict[str, Any]] = []
+        rows_updated = 0
+        updated_rows_preview: List[Dict[str, Any]] = []
+        
         if not config.duplicate_check.allow_duplicates:
             print("DEBUG: Checking for row-level duplicates using database-side method")
             # Use a separate connection to see committed data
@@ -858,28 +993,74 @@ def insert_records(
                 duplicate_indices, duplicates_found = _check_for_duplicates_db_side(check_conn, table_name, records, config)
                 
                 if duplicates_found > 0:
-                    print(f"DEBUG: Found {duplicates_found} duplicates, will skip them and insert only non-duplicates")
-                    duplicate_entries = [
-                        {
-                            "record_number": idx + 1,
-                            "record": records[idx].copy()
-                        }
-                        for idx in duplicate_indices
-                    ]
-                    if duplicate_entries and active_import_tracking:
-                        try:
-                            record_duplicate_rows(active_import_id, duplicate_entries)
-                        except Exception as e:
-                            logger.error("Failed to persist duplicate audit rows: %s", str(e))
-                    elif duplicate_entries:
-                        logger.warning(
-                            "Duplicate rows detected for table '%s' but no active import tracking record is available. "
-                            "Skipping duplicate audit persistence.",
-                            table_name
-                        )
-                    # Filter out duplicate records
-                    records = [rec for idx, rec in enumerate(records) if idx not in duplicate_indices]
-                    print(f"DEBUG: After filtering: {len(records)} non-duplicate records remaining")
+                    # Determine uniqueness columns for updates
+                    uniqueness_columns = config.duplicate_check.uniqueness_columns or list(records[0].keys())
+                    
+                    if config.duplicate_check.update_on_duplicate:
+                        # UPDATE mode: update existing rows instead of skipping
+                        print(f"DEBUG: Found {duplicates_found} duplicates, will update them")
+                        
+                        with engine.begin() as update_conn:
+                            for idx in duplicate_indices:
+                                record = records[idx]
+                                record_number = idx + 1
+                                
+                                try:
+                                    update_result = update_existing_row(
+                                        conn=update_conn,
+                                        table_name=table_name,
+                                        new_record=record,
+                                        uniqueness_columns=uniqueness_columns,
+                                        update_columns=config.duplicate_check.update_columns,
+                                        config=config,
+                                        import_id=active_import_id,
+                                        record_number=record_number
+                                    )
+                                    
+                                    if update_result:
+                                        rows_updated += 1
+                                        updated_rows_preview.append(update_result)
+                                        logger.info(f"Updated row {update_result['row_id']} with {len(update_result['updated_columns'])} columns")
+                                except Exception as e:
+                                    logger.error(f"Failed to update duplicate record {record_number}: {e}")
+                                    # Optionally continue or raise based on requirements
+                        
+                        # Filter out updated records from insertion list
+                        records = [rec for idx, rec in enumerate(records) if idx not in duplicate_indices]
+                        print(f"DEBUG: Updated {rows_updated} rows, {len(records)} non-duplicate records remaining for insert")
+                        
+                        # Update the counter in import_history
+                        if rows_updated > 0:
+                            with engine.begin() as conn:
+                                conn.execute(text("""
+                                    UPDATE import_history
+                                    SET rows_updated = COALESCE(rows_updated, 0) + :rows_updated
+                                    WHERE import_id = CAST(:import_id AS UUID)
+                                """), {"rows_updated": rows_updated, "import_id": active_import_id})
+                    else:
+                        # SKIP mode: traditional behavior - skip duplicates
+                        print(f"DEBUG: Found {duplicates_found} duplicates, will skip them and insert only non-duplicates")
+                        duplicate_entries = [
+                            {
+                                "record_number": idx + 1,
+                                "record": records[idx].copy()
+                            }
+                            for idx in duplicate_indices
+                        ]
+                        if duplicate_entries and active_import_tracking:
+                            try:
+                                record_duplicate_rows(active_import_id, duplicate_entries)
+                            except Exception as e:
+                                logger.error("Failed to persist duplicate audit rows: %s", str(e))
+                        elif duplicate_entries:
+                            logger.warning(
+                                "Duplicate rows detected for table '%s' but no active import tracking record is available. "
+                                "Skipping duplicate audit persistence.",
+                                table_name
+                            )
+                        # Filter out duplicate records
+                        records = [rec for idx, rec in enumerate(records) if idx not in duplicate_indices]
+                        print(f"DEBUG: After filtering: {len(records)} non-duplicate records remaining")
         
         # If no records left after filtering, return early
         if not records:
@@ -1014,6 +1195,9 @@ def insert_records(
                 ) from exc
             raise
 
+    # Return tuple: (records_inserted, duplicates_skipped, rows_updated, updated_rows_preview)
+    # Note: We need to return 4 values now, but to maintain backward compatibility,
+    # we'll return the first 2 for now and modify callers separately
     return len(records), duplicates_found
 
 

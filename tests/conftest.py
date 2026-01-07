@@ -106,3 +106,16 @@ def initialize_test_database():
     
     # Teardown (if needed) would go here
     # For now, we leave tables in place for inspection after tests
+
+
+@pytest.fixture(scope="function")
+def test_engine(initialize_test_database):
+    """
+    Provide the database engine for tests.
+    
+    This fixture depends on initialize_test_database to ensure
+    all system tables exist before any tests run.
+    
+    Scope: function (each test gets a fresh reference)
+    """
+    return get_engine()

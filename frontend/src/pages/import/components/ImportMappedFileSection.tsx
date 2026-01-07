@@ -39,6 +39,8 @@ import {
   ArchiveFileStatus,
   ValidationFailuresState,
   ValidationFailureRow,
+  RowUpdateData,
+  RowUpdatesState,
 } from './types';
 
 const { Text } = Typography;
@@ -50,9 +52,11 @@ interface ImportMappedFileSectionProps {
   tableData: TableData | null;
   duplicateData: DuplicateRowsState | null;
   validationFailures: ValidationFailuresState | null;
+  rowUpdatesData: RowUpdatesState | null;
   loadingDetails: boolean;
   loadingDuplicates: boolean;
   loadingValidationFailures: boolean;
+  loadingRowUpdates: boolean;
   onRefreshValidationFailures: () => void;
   onResolveValidationFailure: (id: number, action: 'discarded' | 'inserted_as_is' | 'inserted_corrected', note?: string, data?: Record<string, unknown>) => Promise<void>;
   
@@ -93,9 +97,11 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
   tableData,
   duplicateData,
   validationFailures,
+  rowUpdatesData,
   loadingDetails,
   loadingDuplicates,
   loadingValidationFailures,
+  loadingRowUpdates,
   onRefreshValidationFailures,
   onResolveValidationFailure,
   isArchiveFile,
@@ -590,6 +596,21 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
           label: 'Rows Inserted',
           children: importHistory.rows_inserted?.toLocaleString() || '-',
         },
+        ...(importHistory.rows_updated !== undefined &&
+        importHistory.rows_updated > 0
+          ? [
+              {
+                key: 'rows-updated',
+                label: 'Rows Updated',
+                children: (
+                  <Text style={{ color: '#52c41a' }}>
+                    {importHistory.rows_updated.toLocaleString()}
+                  </Text>
+                ),
+                span: 2,
+              } as const,
+            ]
+          : []),
         ...(importHistory.duplicates_found !== undefined &&
         importHistory.duplicates_found > 0
           ? [
@@ -773,6 +794,7 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
 
   const duplicatesTotal = duplicateData?.total ?? importHistory?.duplicates_found ?? 0;
   const validationFailuresTotal = validationFailures?.total ?? importHistory?.data_validation_errors ?? 0;
+  const rowUpdatesTotal = rowUpdatesData?.total ?? importHistory?.rows_updated ?? 0;
 
   const validationFailureColumns: ColumnsType<ValidationFailureRow> = [
     {
@@ -972,6 +994,105 @@ export const ImportMappedFileSection: React.FC<ImportMappedFileSectionProps> = (
           ) : (
             <Text type="secondary">
               Validation failures were detected, but no preview data is available.
+            </Text>
+          )}
+        </Card>
+      )}
+
+      {rowUpdatesTotal > 0 && (
+        <Card
+          title={
+            <>
+              <InfoCircleOutlined /> Rows Updated
+            </>
+          }
+          size="small"
+          loading={loadingRowUpdates}
+        >
+          {rowUpdatesData?.rows && rowUpdatesData.rows.length > 0 ? (
+            <>
+              <Table
+                dataSource={rowUpdatesData.rows}
+                columns={[
+                  {
+                    title: 'Row ID',
+                    dataIndex: 'row_id',
+                    key: 'row_id',
+                    width: 100,
+                  },
+                  {
+                    title: 'Updated Columns',
+                    dataIndex: 'updated_columns',
+                    key: 'updated_columns',
+                    render: (columns: string[]) => (
+                      <Space size={[4, 4]} wrap>
+                        {columns.map((col, idx) => (
+                          <Tag color="green" key={idx}>
+                            {col}
+                          </Tag>
+                        ))}
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: 'Changes',
+                    key: 'changes',
+                    render: (_: unknown, record: RowUpdateData) => (
+                      <Space direction="vertical" size={0}>
+                        {record.updated_columns.slice(0, 3).map((col, idx) => (
+                          <Text key={idx} style={{ fontSize: '12px' }}>
+                            <Text strong>{col}:</Text>{' '}
+                            <Text type="secondary" delete>
+                              {renderDuplicateValue(record.previous_values[col])}
+                            </Text>
+                            {' → '}
+                            <Text type="success">
+                              {renderDuplicateValue(record.new_values[col])}
+                            </Text>
+                          </Text>
+                        ))}
+                        {record.updated_columns.length > 3 && (
+                          <Text type="secondary" style={{ fontSize: '11px' }}>
+                            +{record.updated_columns.length - 3} more
+                          </Text>
+                        )}
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: 'Updated At',
+                    dataIndex: 'updated_at',
+                    key: 'updated_at',
+                    width: 200,
+                    render: (value: string | null | undefined) =>
+                      value ? formatDate(value) : '-',
+                  },
+                  {
+                    title: 'Status',
+                    key: 'status',
+                    width: 100,
+                    render: (_: unknown, record: RowUpdateData) =>
+                      record.rolled_back_at ? (
+                        <Tag color="orange">Rolled Back</Tag>
+                      ) : (
+                        <Tag color="green">Applied</Tag>
+                      ),
+                  },
+                ]}
+                pagination={false}
+                size="small"
+                rowKey="id"
+                scroll={{ x: 'max-content' }}
+              />
+              <Divider />
+              <Text type="secondary">
+                Showing {rowUpdatesData.rows.length} of {rowUpdatesTotal}{' '}
+                updated rows
+              </Text>
+            </>
+          ) : (
+            <Text type="secondary">
+              Row updates were detected, but no preview data is available.
             </Text>
           )}
         </Card>

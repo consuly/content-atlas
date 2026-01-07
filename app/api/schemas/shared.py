@@ -80,6 +80,8 @@ class DuplicateCheckConfig(BaseModel):
     dedupe_within_file: bool = False  # Opt-in: quickly drop duplicates inside the uploaded file before mapping
     uniqueness_columns: Optional[List[str]] = None  # Columns to check for uniqueness
     error_message: Optional[str] = None  # Custom error message for duplicates
+    update_on_duplicate: bool = False  # If True, update existing rows instead of skipping
+    update_columns: Optional[List[str]] = None  # Columns to update (None = all non-empty columns)
 
 
 class ValidationRule(BaseModel):
@@ -195,16 +197,25 @@ class DuplicateMergeResponse(BaseModel):
     resolution_details: Optional[Dict[str, Any]] = None
 
 
+class UpdatedRowPreview(BaseModel):
+    """Preview of a row that was updated during import."""
+    row_id: int
+    updated_columns: List[str]
+    record_number: Optional[int] = None
+
+
 class MapDataResponse(BaseModel):
     success: bool
     message: str
     records_processed: int
     duplicates_skipped: int = 0
     intra_file_duplicates_skipped: int = 0
+    rows_updated: int = 0
     table_name: str
     import_id: Optional[str] = None
     duplicate_rows: Optional[List[DuplicateRow]] = None
     duplicate_rows_count: Optional[int] = None
+    updated_rows_preview: Optional[List[UpdatedRowPreview]] = None
     llm_followup: Optional[str] = None
     needs_user_input: Optional[bool] = None
     can_execute: Optional[bool] = None
@@ -473,6 +484,7 @@ class ImportHistoryRecord(BaseModel):
     user_id: Optional[str] = None
     status: str
     rows_inserted: Optional[int] = None
+    rows_updated: Optional[int] = None
     duplicates_found: Optional[int] = None
     duration_seconds: Optional[float] = None
     parsing_time_seconds: Optional[float] = None
@@ -907,3 +919,71 @@ class ExecuteInteractiveImportRequest(BaseModel):
     """Request to execute import from interactive session"""
     file_id: str
     thread_id: str
+
+
+class RowUpdateInfo(BaseModel):
+    """Information about a row update during import."""
+    id: int
+    row_id: int
+    table_name: str
+    updated_columns: List[str]
+    previous_values: Dict[str, Any]
+    new_values: Dict[str, Any]
+    updated_at: datetime
+    rolled_back_at: Optional[datetime] = None
+    rolled_back_by: Optional[str] = None
+    has_conflict: Optional[bool] = None
+
+
+class RollbackConflict(BaseModel):
+    """Details about a conflict preventing rollback."""
+    update_id: int
+    row_id: int
+    original_values: Dict[str, Any]
+    values_at_update: Dict[str, Any]
+    current_values: Dict[str, Any]
+    message: str
+
+
+class RowUpdatesListResponse(BaseModel):
+    """Response for listing row updates."""
+    success: bool
+    updates: List[RowUpdateInfo]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class RowUpdateDetailResponse(BaseModel):
+    """Response for single row update detail."""
+    success: bool
+    update: RowUpdateInfo
+    current_row: Optional[Dict[str, Any]] = None
+
+
+class RollbackUpdateRequest(BaseModel):
+    """Request to rollback a single update."""
+    rolled_back_by: Optional[str] = None
+    force: bool = False
+
+
+class RollbackUpdateResponse(BaseModel):
+    """Response from rollback operation."""
+    success: bool
+    message: str
+    update: RowUpdateInfo
+    conflict: Optional[RollbackConflict] = None
+
+
+class RollbackAllUpdatesRequest(BaseModel):
+    """Request to rollback all updates from an import."""
+    rolled_back_by: Optional[str] = None
+    skip_conflicts: bool = False
+
+
+class RollbackAllUpdatesResponse(BaseModel):
+    """Response from rollback all operation."""
+    success: bool
+    message: str
+    updates_rolled_back: int
+    conflicts: Optional[List[RollbackConflict]] = None

@@ -47,6 +47,8 @@ interface ImportInteractiveSectionProps {
   // New props for configuration
   skipFileDuplicateCheck: boolean;
   setSkipFileDuplicateCheck: (value: boolean) => void;
+  updateOnDuplicate: boolean;
+  setUpdateOnDuplicate: (value: boolean) => void;
   useSharedTable: boolean;
   setUseSharedTable: (value: boolean) => void;
   sharedTableName: string;
@@ -80,6 +82,8 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
   disableMappingActions,
   skipFileDuplicateCheck,
   setSkipFileDuplicateCheck,
+  updateOnDuplicate,
+  setUpdateOnDuplicate,
   useSharedTable,
   setUseSharedTable,
   sharedTableName,
@@ -143,6 +147,21 @@ export const ImportInteractiveSection: React.FC<ImportInteractiveSectionProps> =
                     <Text strong>Use single table</Text>
                     <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
                       Map this file into a specific table.
+                    </div>
+                  </div>
+                </Space>
+              </Col>
+              <Col span={12}>
+                <Space align="start">
+                  <Switch 
+                    checked={updateOnDuplicate} 
+                    onChange={(checked) => setUpdateOnDuplicate(checked)}
+                    disabled={skipFileDuplicateCheck}
+                  />
+                  <div>
+                    <Text strong>Update duplicates</Text>
+                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                      Update existing rows when duplicates are found.
                     </div>
                   </div>
                 </Space>

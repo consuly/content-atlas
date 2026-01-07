@@ -27,6 +27,8 @@ import {
   ArchiveFileStatus,
   ValidationFailureRow,
   ValidationFailuresState,
+  RowUpdateData,
+  RowUpdatesState,
 } from './components/types';
 import { ImportMappedFileSection } from './components/ImportMappedFileSection';
 import { ImportAutoSection } from './components/ImportAutoSection';
@@ -107,6 +109,7 @@ export const ImportMappingPage: React.FC = () => {
   const [sharedTableName, setSharedTableName] = useState('');
   const [sharedTableMode, setSharedTableMode] = useState<'existing' | 'new'>('new');
   const [skipFileDuplicateCheck, setSkipFileDuplicateCheck] = useState(false);
+  const [updateOnDuplicate, setUpdateOnDuplicate] = useState(false);
   const [existingTables, setExistingTables] = useState<Array<{ table_name: string; row_count: number }>>([]);
   const [loadingTables, setLoadingTables] = useState(false);
   const [sheetNames, setSheetNames] = useState<string[]>([]);
@@ -491,6 +494,8 @@ export const ImportMappingPage: React.FC = () => {
   const [loadingDuplicates, setLoadingDuplicates] = useState(false);
   const [validationFailures, setValidationFailures] = useState<ValidationFailuresState | null>(null);
   const [loadingValidationFailures, setLoadingValidationFailures] = useState(false);
+  const [rowUpdatesData, setRowUpdatesData] = useState<RowUpdatesState | null>(null);
+  const [loadingRowUpdates, setLoadingRowUpdates] = useState(false);
   const [mergeModalVisible, setMergeModalVisible] = useState(false);
   const [mergeDetail, setMergeDetail] = useState<DuplicateDetail | null>(null);
   const [mergeSelections, setMergeSelections] = useState<Record<string, boolean>>({});
@@ -711,6 +716,34 @@ export const ImportMappingPage: React.FC = () => {
       setValidationFailures(null);
     } finally {
       setLoadingValidationFailures(false);
+    }
+  }, [messageApi]);
+
+  const fetchRowUpdates = useCallback(async (importId: string) => {
+    setLoadingRowUpdates(true);
+    try {
+      const token = localStorage.getItem('refine-auth');
+      const response = await axios.get(`${API_URL}/import-history/${importId}/updates`, {
+        params: { limit: DUPLICATE_PREVIEW_LIMIT },
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+      });
+
+      if (response.data.success) {
+        setRowUpdatesData({
+          rows: response.data.updates as RowUpdateData[],
+          total: response.data.total_count ?? (response.data.updates?.length ?? 0),
+        });
+      } else {
+        setRowUpdatesData(null);
+      }
+    } catch (err) {
+      console.error('Error fetching row updates:', err);
+      messageApi.warning('Row updates were detected, but we could not retrieve the preview.');
+      setRowUpdatesData(null);
+    } finally {
+      setLoadingRowUpdates(false);
     }
   }, [messageApi]);
 
@@ -1053,6 +1086,14 @@ export const ImportMappingPage: React.FC = () => {
   }, [importHistory?.import_id, importHistory?.data_validation_errors, fetchValidationFailures]);
 
   useEffect(() => {
+    if (importHistory?.import_id && (importHistory.rows_updated ?? 0) > 0) {
+      fetchRowUpdates(importHistory.import_id);
+    } else {
+      setRowUpdatesData(null);
+    }
+  }, [importHistory?.import_id, importHistory?.rows_updated, fetchRowUpdates]);
+
+  useEffect(() => {
     setSelectedDuplicateRowIds([]);
   }, [duplicateData]);
 
@@ -1256,6 +1297,9 @@ export const ImportMappingPage: React.FC = () => {
     }
     if (skipFileDuplicateCheck) {
       formData.append('skip_file_duplicate_check', 'true');
+    }
+    if (updateOnDuplicate) {
+      formData.append('update_on_duplicate', 'true');
     }
   };
 
@@ -1670,6 +1714,9 @@ export const ImportMappingPage: React.FC = () => {
       if (skipFileDuplicateCheck) {
         payload.skip_file_duplicate_check = true;
       }
+      if (updateOnDuplicate) {
+        payload.update_on_duplicate = true;
+      }
 
       const response = await axios.post(
         `${API_URL}/analyze-file-interactive`,
@@ -2016,6 +2063,8 @@ export const ImportMappingPage: React.FC = () => {
           setSelectedSheets={setSelectedSheets}
           skipFileDuplicateCheck={skipFileDuplicateCheck}
           setSkipFileDuplicateCheck={setSkipFileDuplicateCheck}
+          updateOnDuplicate={updateOnDuplicate}
+          setUpdateOnDuplicate={setUpdateOnDuplicate}
           useSharedTable={useSharedTable}
           setUseSharedTable={setUseSharedTable}
           sharedTableName={sharedTableName}
@@ -2067,6 +2116,8 @@ export const ImportMappingPage: React.FC = () => {
           disableMappingActions={disableMappingActions}
           skipFileDuplicateCheck={skipFileDuplicateCheck}
           setSkipFileDuplicateCheck={setSkipFileDuplicateCheck}
+          updateOnDuplicate={updateOnDuplicate}
+          setUpdateOnDuplicate={setUpdateOnDuplicate}
           useSharedTable={useSharedTable}
           setUseSharedTable={setUseSharedTable}
           sharedTableName={sharedTableName}
@@ -2310,9 +2361,11 @@ export const ImportMappingPage: React.FC = () => {
             tableData={tableData}
             duplicateData={duplicateData}
             validationFailures={validationFailures}
+            rowUpdatesData={rowUpdatesData}
             loadingDetails={loadingDetails}
             loadingDuplicates={loadingDuplicates}
             loadingValidationFailures={loadingValidationFailures}
+            loadingRowUpdates={loadingRowUpdates}
             onRefreshValidationFailures={() => importHistory?.import_id && fetchValidationFailures(importHistory.import_id)}
             onResolveValidationFailure={handleResolveValidationFailure}
             isArchiveFile={isArchiveFile}
