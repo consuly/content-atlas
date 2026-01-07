@@ -62,6 +62,27 @@ export const dataProvider: DataProvider = {
         };
       }
 
+      if (resource === "import-history/duplicates") {
+        return {
+          data: response.data.duplicates || [],
+          total: response.data.total_count || 0,
+        };
+      }
+
+      if (resource === "import-history/validation-failures") {
+        return {
+          data: response.data.failures || [],
+          total: response.data.total_count || 0,
+        };
+      }
+
+      if (resource === "import-history/mapping-errors") {
+        return {
+          data: response.data.errors || [],
+          total: response.data.total_count || 0,
+        };
+      }
+
       // Default format for table data
       return {
         data: response.data.data || [],

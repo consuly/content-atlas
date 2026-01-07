@@ -40,6 +40,7 @@ from app.db.models import (
     DuplicateDataException,
     FileAlreadyImportedException,
     check_file_already_imported,
+    record_duplicate_rows,
 )
 from app.db.session import get_engine
 from app.domain.imports.jobs import (
@@ -60,7 +61,6 @@ from .history import (
     summarize_chunk_status,
     record_mapping_errors_batch,
     list_duplicate_rows,
-    record_duplicate_rows,
     record_validation_failures
 )
 from app.db.metadata import store_table_metadata, enrich_table_metadata

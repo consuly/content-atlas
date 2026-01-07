@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from difflib import get_close_matches
 from app.api.schemas.shared import MappingConfig
-from app.domain.imports.history import record_duplicate_rows
+from app.db.session import get_engine
+from app.utils.serialization import _make_json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +313,41 @@ def record_file_import(engine: Engine, file_hash: str, file_name: str, table_nam
             "table_name": table_name,
             "record_count": record_count
         })
+
+
+def record_duplicate_rows(import_id: str, duplicates: List[Dict[str, Any]]) -> None:
+    """
+    Persist duplicate records detected during an import so they can be reviewed later.
+    """
+    if not duplicates:
+        return
+
+    engine = get_engine()
+    payload = []
+
+    for entry in duplicates:
+        record_number = entry.get("record_number")
+        record = entry.get("record", {})
+        safe_record = _make_json_safe(record)
+        # Store as JSON string to avoid DB adapter issues
+        safe_record_json = json.dumps(safe_record)
+        payload.append({
+            "import_id": import_id,
+            "record_number": record_number,
+            "record_data": safe_record_json
+        })
+
+    insert_sql = text("""
+        INSERT INTO import_duplicates (import_id, record_number, record_data)
+        VALUES (:import_id, :record_number, :record_data)
+    """)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(insert_sql, payload)
+    except Exception as e:
+        logger.error(f"Error recording duplicate rows for import {import_id}: {str(e)}")
+        raise
 
 
 def create_table_fingerprints_table_if_not_exists(engine: Engine):

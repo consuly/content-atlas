@@ -178,8 +178,8 @@ def map_data(
     has_integer_columns = bool(integer_columns)
     has_numeric_columns = bool(numeric_columns - integer_columns)
     
-    # Fast path: no rules and no date/integer columns to convert
-    if not has_rules and not has_date_columns and not has_integer_columns and not has_numeric_columns and not has_pre_map_transformations:
+    # Fast path: no rules, no date/integer columns, and no validations
+    if not has_rules and not has_date_columns and not has_integer_columns and not has_numeric_columns and not has_pre_map_transformations and not config.column_validations:
         # Use list comprehension - significantly faster than append loop
         mapped_records = [
             {output_col: record.get(input_field) 
@@ -191,6 +191,9 @@ def map_data(
     # Process records with rules and/or date conversion
     mapped_records = []
     for idx, record in enumerate(records, start=row_offset + 1):
+        # Track initial error count for this record so we can rollback if validation fails
+        initial_error_count = len(all_errors)
+        
         record_number = record.get("_source_record_number") or idx
         source_record = record
         if has_pre_map_transformations:
@@ -412,18 +415,14 @@ def map_data(
                             "error_message": final_msg,
                             "value": val
                         })
-                        # Also log to all_errors for tracking
-                        all_errors.append(_build_mapping_error(
-                            error_type="validation_error",
-                            message=final_msg,
-                            column=col_name,
-                            expected_type=rule.validator,
-                            value=val,
-                            record_number=idx,  # idx is the row number (1-based from start argument)
-                        ))
         
         # Decision point: skip record if it has validation failures, or keep it
         if record_validation_errors:
+            # Rollback any mapping errors logged for this record (e.g. type mismatches)
+            # since the row is being rejected entirely.
+            if len(all_errors) > initial_error_count:
+                del all_errors[initial_error_count:]
+
             # Track as validation failure - SKIP this record (don't add to mapped_records)
             validation_failures.append({
                 "record_number": idx,

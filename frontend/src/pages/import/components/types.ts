@@ -41,6 +41,7 @@ export interface ImportHistory {
   rows_inserted?: number;
   duplicates_found?: number;
   data_validation_errors?: number;
+  mapping_errors_count?: number;
   duration_seconds?: number;
   mapping_config?: Record<string, unknown>;
 }
