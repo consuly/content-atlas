@@ -16,6 +16,9 @@ from app.api.schemas.shared import (
     TablesListResponse, TableInfo, TableDataResponse,
     TableSchemaResponse, ColumnInfo, TableStatsResponse,
     is_reserved_system_table,
+    TemporaryTablesListResponse, TemporaryTableInfo,
+    MarkTableTemporaryRequest, MarkTableTemporaryResponse,
+    ExtendTemporaryTableRequest, CleanupTemporaryTablesResponse,
 )
 from app.api.dependencies import get_current_organization
 
@@ -45,7 +48,7 @@ async def list_tables(
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
-                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'import_validation_failures')
+                                     'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'import_validation_failures', 'temporary_tables', 'organizations')
                 AND table_name NOT LIKE 'pg_%'
                 AND table_name NOT LIKE 'test\_%' ESCAPE '\'
                 ORDER BY table_name
@@ -608,6 +611,325 @@ async def get_table_lineage(
         raise HTTPException(status_code=500, detail=f"Failed to retrieve table lineage: {str(e)}")
 
 
+@router.get("/temporary", response_model=TemporaryTablesListResponse)
+async def list_temporary_tables(
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
+):
+    """
+    List all temporary tables for the current organization.
+    
+    Returns temporary tables with their expiration dates, row counts,
+    and other metadata.
+    
+    Returns:
+    - List of temporary tables with detailed information
+    """
+    from app.db.temporary_tables import list_temporary_tables as list_temp_tables
+    
+    try:
+        engine = get_engine()
+        temp_tables = list_temp_tables(organization_id=organization_id, engine=engine)
+        
+        # Enrich with row counts
+        tables_info = []
+        with engine.connect() as conn:
+            for table in temp_tables:
+                table_name = table["table_name"]
+                
+                # Get row count
+                try:
+                    count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+                    row_count = count_result.scalar()
+                except Exception:
+                    row_count = None
+                
+                tables_info.append(TemporaryTableInfo(
+                    table_name=table_name,
+                    created_at=table["created_at"],
+                    expires_at=table["expires_at"],
+                    created_by_user_id=table["created_by_user_id"],
+                    organization_id=table["organization_id"],
+                    allow_additional_imports=table["allow_additional_imports"],
+                    purpose=table["purpose"],
+                    row_count=row_count
+                ))
+        
+        return TemporaryTablesListResponse(
+            success=True,
+            tables=tables_info,
+            total_count=len(tables_info)
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list temporary tables: {str(e)}")
+
+
+@router.post("/{table_name}/mark-temporary", response_model=MarkTableTemporaryResponse)
+async def mark_table_temporary(
+    table_name: str,
+    request: MarkTableTemporaryRequest,
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
+):
+    """
+    Mark an existing table as temporary with automatic expiration.
+    
+    Temporary tables:
+    - Are hidden from LLM/RAG context by default
+    - Auto-expire after the specified number of days
+    - Block additional data imports by default (configurable)
+    - Are automatically cleaned up when expired
+    
+    Parameters:
+    - table_name: Name of the table to mark as temporary
+    - expires_days: Days until expiration (1-365)
+    - allow_additional_imports: Whether to allow more data imports
+    - purpose: Optional description of the table's purpose
+    
+    Returns:
+    - Success status and temporary table information
+    """
+    from app.db.temporary_tables import mark_table_as_temporary, get_temporary_table_info
+    
+    try:
+        if is_reserved_system_table(table_name):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot mark system table '{table_name}' as temporary"
+            )
+        
+        engine = get_engine()
+        
+        # Check if table exists
+        with engine.connect() as conn:
+            table_check = conn.execute(text("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = :table_name
+            """), {"table_name": table_name})
+            
+            if not table_check.fetchone():
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+        
+        # Mark as temporary
+        success = mark_table_as_temporary(
+            table_name=table_name,
+            organization_id=organization_id,
+            expires_days=request.expires_days,
+            allow_additional_imports=request.allow_additional_imports,
+            purpose=request.purpose,
+            engine=engine
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to mark table '{table_name}' as temporary"
+            )
+        
+        # Get table info
+        table_info = get_temporary_table_info(table_name, engine=engine)
+        
+        if not table_info:
+            raise HTTPException(
+                status_code=500,
+                detail="Table marked as temporary but failed to retrieve info"
+            )
+        
+        # Get row count
+        with engine.connect() as conn:
+            count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+            row_count = count_result.scalar()
+        
+        return MarkTableTemporaryResponse(
+            success=True,
+            message=f"Table '{table_name}' marked as temporary",
+            table_info=TemporaryTableInfo(
+                table_name=table_info["table_name"],
+                created_at=table_info["created_at"],
+                expires_at=table_info["expires_at"],
+                created_by_user_id=table_info["created_by_user_id"],
+                organization_id=table_info["organization_id"],
+                allow_additional_imports=table_info["allow_additional_imports"],
+                purpose=table_info["purpose"],
+                row_count=row_count
+            )
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to mark table as temporary: {str(e)}")
+
+
+@router.delete("/{table_name}/mark-temporary")
+async def unmark_table_temporary(
+    table_name: str,
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
+):
+    """
+    Convert a temporary table to a permanent table.
+    
+    This removes the temporary status, preventing automatic deletion
+    and making the table visible to LLM/RAG context again.
+    
+    Parameters:
+    - table_name: Name of the temporary table to convert
+    
+    Returns:
+    - Success message
+    """
+    from app.db.temporary_tables import unmark_temporary_table, is_temporary_table
+    
+    try:
+        engine = get_engine()
+        
+        # Check if table is temporary
+        if not is_temporary_table(table_name, engine=engine):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table '{table_name}' is not marked as temporary"
+            )
+        
+        # Unmark as temporary
+        success = unmark_temporary_table(table_name, engine=engine)
+        
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to convert table '{table_name}' to permanent"
+            )
+        
+        return {
+            "success": True,
+            "table_name": table_name,
+            "message": f"Table '{table_name}' converted to permanent"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to unmark temporary table: {str(e)}")
+
+
+@router.post("/{table_name}/extend-expiration")
+async def extend_temporary_table_expiration(
+    table_name: str,
+    request: ExtendTemporaryTableRequest,
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
+):
+    """
+    Extend the expiration date of a temporary table.
+    
+    Parameters:
+    - table_name: Name of the temporary table
+    - additional_days: Number of days to extend the expiration (1-365)
+    
+    Returns:
+    - Updated temporary table information
+    """
+    from app.db.temporary_tables import (
+        extend_temporary_table_expiration as extend_expiration,
+        is_temporary_table,
+        get_temporary_table_info
+    )
+    
+    try:
+        engine = get_engine()
+        
+        # Check if table is temporary
+        if not is_temporary_table(table_name, engine=engine):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table '{table_name}' is not marked as temporary"
+            )
+        
+        # Extend expiration
+        success = extend_expiration(
+            table_name=table_name,
+            additional_days=request.additional_days,
+            engine=engine
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to extend expiration for table '{table_name}'"
+            )
+        
+        # Get updated table info
+        table_info = get_temporary_table_info(table_name, engine=engine)
+        
+        if not table_info:
+            raise HTTPException(
+                status_code=500,
+                detail="Expiration extended but failed to retrieve updated info"
+            )
+        
+        # Get row count
+        with engine.connect() as conn:
+            count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+            row_count = count_result.scalar()
+        
+        return {
+            "success": True,
+            "table_name": table_name,
+            "message": f"Expiration extended by {request.additional_days} days",
+            "table_info": TemporaryTableInfo(
+                table_name=table_info["table_name"],
+                created_at=table_info["created_at"],
+                expires_at=table_info["expires_at"],
+                created_by_user_id=table_info["created_by_user_id"],
+                organization_id=table_info["organization_id"],
+                allow_additional_imports=table_info["allow_additional_imports"],
+                purpose=table_info["purpose"],
+                row_count=row_count
+            )
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to extend expiration: {str(e)}")
+
+
+@router.post("/cleanup-expired", response_model=CleanupTemporaryTablesResponse)
+async def cleanup_expired_temporary_tables_endpoint(
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
+):
+    """
+    Manually trigger cleanup of expired temporary tables.
+    
+    This endpoint allows administrators to force cleanup of expired
+    temporary tables instead of waiting for the automatic daily cleanup.
+    
+    Note: This operation affects all organizations, not just the current one.
+    
+    Returns:
+    - Cleanup statistics including deleted tables and any failures
+    """
+    from app.db.temporary_tables import cleanup_expired_temporary_tables
+    
+    try:
+        engine = get_engine()
+        result = cleanup_expired_temporary_tables(engine=engine)
+        
+        return CleanupTemporaryTablesResponse(
+            success=result["success"],
+            deleted_count=result["deleted_count"],
+            failed_count=result["failed_count"],
+            deleted_tables=result["deleted_tables"],
+            failed_tables=result["failed_tables"],
+            error=result.get("error")
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup expired tables: {str(e)}")
+
+
 @router.delete("/{table_name}")
 async def delete_table(
     table_name: str,
@@ -620,7 +942,8 @@ async def delete_table(
     1. Drops the table from the database
     2. Cleans up import_history records
     3. Cleans up file_imports records
-    4. Resets uploaded_files status to 'uploaded' (unmapped)
+    4. Cleans up temporary_tables tracking (if applicable)
+    5. Resets uploaded_files status to 'uploaded' (unmapped)
     
     Parameters:
     - table_name: Name of the table to delete
@@ -665,6 +988,13 @@ async def delete_table(
             """), {"table_name": table_name})
             file_imports_deleted = file_imports_result.rowcount
             
+            # Clean up temporary_tables tracking (if applicable)
+            temp_tables_result = conn.execute(text("""
+                DELETE FROM temporary_tables
+                WHERE table_name = :table_name
+            """), {"table_name": table_name})
+            temp_tables_deleted = temp_tables_result.rowcount
+            
             # Reset uploaded_files status to 'uploaded' (unmapped state)
             uploaded_files_result = conn.execute(text("""
                 UPDATE uploaded_files
@@ -684,6 +1014,7 @@ async def delete_table(
             "cleanup_summary": {
                 "import_history_deleted": import_history_deleted,
                 "file_imports_deleted": file_imports_deleted,
+                "temporary_tables_deleted": temp_tables_deleted,
                 "uploaded_files_reset": uploaded_files_reset
             }
         }

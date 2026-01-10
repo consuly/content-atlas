@@ -2177,6 +2177,34 @@ def execute_data_import(
         # Create table if needed
         engine = get_engine()
         
+        # Check if target table is temporary and blocks imports
+        from app.db.temporary_tables import is_temporary_table, allows_additional_imports
+        
+        if is_temporary_table(mapping_config.table_name, engine=engine):
+            if not allows_additional_imports(mapping_config.table_name, engine=engine):
+                error_message = (
+                    f"Cannot import to temporary table '{mapping_config.table_name}'. "
+                    f"This table is marked as temporary and does not allow additional imports. "
+                    f"To import data, either: (1) enable additional imports for this table via "
+                    f"POST /tables/{mapping_config.table_name}/mark-temporary with allow_additional_imports=true, "
+                    f"or (2) convert it to a permanent table via DELETE /tables/{mapping_config.table_name}/mark-temporary, "
+                    f"or (3) import to a different table."
+                )
+                logger.warning(error_message)
+                
+                if import_id:
+                    complete_import_tracking(
+                        import_id=import_id,
+                        status="failed",
+                        total_rows_in_file=len(records) if records else 0,
+                        rows_processed=0,
+                        rows_inserted=0,
+                        duration_seconds=time.time() - start_time,
+                        error_message=error_message
+                    )
+                
+                raise ValueError(error_message)
+        
         # Acquire table lock for safe sequential insertion
         # This prevents race conditions when multiple files target the same table in parallel
         insert_start = time.time()

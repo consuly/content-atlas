@@ -30,12 +30,15 @@ from .domain.queries.analyzer import analyze_file_for_import  # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown events."""
+    import asyncio
+    
     if os.getenv("SKIP_DB_INIT") == "1":
         print("SKIP_DB_INIT=1 detected; skipping database bootstrap during startup")
         yield
         return
 
     # Startup: Initialize database tables
+    cleanup_task = None
     try:
         from .domain.uploads.uploaded_files import create_uploaded_files_table
         from .core.api_key_auth import init_api_key_tables
@@ -47,6 +50,10 @@ async def lifespan(app: FastAPI):
         from .db.llm_instructions import create_llm_instruction_table
         from .db.models import create_table_fingerprints_table_if_not_exists, create_file_imports_table_if_not_exists
         from .db.session import get_engine
+        from .db.temporary_tables import (
+            create_temporary_tables_tracking_table_if_not_exists,
+            cleanup_expired_temporary_tables
+        )
         
         print("Initializing database tables...")
         create_table_metadata_table()
@@ -79,6 +86,36 @@ async def lifespan(app: FastAPI):
         
         create_file_imports_table_if_not_exists(engine)
         print("✓ file_imports table ready")
+        
+        create_temporary_tables_tracking_table_if_not_exists(engine)
+        print("✓ temporary_tables tracking table ready")
+
+        # Start background task for cleaning up expired temporary tables
+        async def cleanup_expired_tables_task():
+            """Background task that cleans up expired temporary tables every 24 hours."""
+            while True:
+                try:
+                    await asyncio.sleep(86400)  # Sleep for 24 hours
+                    print("Running scheduled cleanup of expired temporary tables...")
+                    result = cleanup_expired_temporary_tables(engine)
+                    if result["success"]:
+                        if result["deleted_count"] > 0:
+                            print(f"✓ Cleaned up {result['deleted_count']} expired temporary tables: {result['deleted_tables']}")
+                        else:
+                            print("✓ No expired temporary tables to clean up")
+                        if result["failed_count"] > 0:
+                            print(f"⚠ Failed to clean up {result['failed_count']} tables: {result['failed_tables']}")
+                    else:
+                        print(f"✗ Cleanup task failed: {result.get('error')}")
+                except asyncio.CancelledError:
+                    print("Cleanup task cancelled")
+                    break
+                except Exception as e:
+                    print(f"Error in cleanup task: {e}")
+                    # Continue running even if one cleanup fails
+        
+        cleanup_task = asyncio.create_task(cleanup_expired_tables_task())
+        print("✓ Started background cleanup task for temporary tables")
 
         # Surface bootstrap requirement when no users exist
         try:
@@ -106,8 +143,14 @@ async def lifespan(app: FastAPI):
     
     yield  # Application runs here
     
-    # Shutdown: Add cleanup logic here if needed in future
-    pass
+    # Shutdown: Cancel background tasks
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        print("✓ Cleanup task stopped")
 
 
 # Read API guide for documentation

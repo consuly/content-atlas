@@ -268,9 +268,12 @@ def list_tables_tool() -> str:
     """
     List all available tables in the database with brief descriptions.
     Use this FIRST to identify which tables might contain the data you need.
+    
+    Note: Temporary tables are hidden by default. If a user explicitly mentions
+    a specific table name, use get_table_schema_tool with that name to access it.
     """
     try:
-        tables = get_table_names()
+        tables = get_table_names(include_temporary=False)
         return format_table_list_for_prompt(tables)
     except Exception as e:
         return f"Error listing tables: {str(e)}"
@@ -284,8 +287,13 @@ def get_table_schema_tool(table_names: List[str]) -> str:
     
     Args:
         table_names: List of table names to fetch schema for (e.g., ["orders", "customers"])
+    
+    Note: This tool will include temporary tables if they are explicitly named,
+    even though they don't appear in list_tables_tool.
     """
     try:
+        # When specific tables are requested, temporary tables are automatically included
+        # if they're in the list (handled by get_database_schema logic)
         schema_info = get_database_schema(table_names=table_names)
         return format_schema_for_prompt(schema_info)
     except Exception as e:

@@ -5,12 +5,20 @@ from sqlalchemy.engine import Engine
 from .session import get_engine
 from .metadata import get_all_table_metadata
 from .models import SYSTEM_COLUMNS
+from .temporary_tables import list_temporary_tables
 
 
-def get_table_names() -> List[Dict[str, Any]]:
+def get_table_names(
+    include_temporary: bool = False,
+    explicitly_requested_tables: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
     """
     Get a lightweight list of user tables with basic metadata.
     Used for initial discovery before fetching detailed schema.
+    
+    Args:
+        include_temporary: Whether to include temporary tables in results
+        explicitly_requested_tables: List of table names explicitly requested (temporary tables in this list will be included)
     """
     engine = get_engine()
     
@@ -22,13 +30,28 @@ def get_table_names() -> List[Dict[str, Any]]:
             WHERE table_schema = 'public'
             AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns',
                                  'raster_columns', 'raster_overviews',
-                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'row_updates')
+                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'row_updates', 'temporary_tables')
             AND table_name NOT LIKE 'pg_%'
             AND table_name NOT LIKE 'test!_%' ESCAPE '!'
             ORDER BY table_name
         """))
         
         tables = [row[0] for row in tables_result]
+        
+        # Filter out temporary tables unless explicitly requested or include_temporary=True
+        if not include_temporary:
+            temp_tables_list = list_temporary_tables(engine=engine)
+            temp_table_names = {t["table_name"] for t in temp_tables_list}
+            
+            # Keep tables that are either not temporary, or explicitly requested
+            if explicitly_requested_tables:
+                explicitly_requested_set = {t.lower() for t in explicitly_requested_tables}
+                tables = [
+                    t for t in tables
+                    if t not in temp_table_names or t.lower() in explicitly_requested_set
+                ]
+            else:
+                tables = [t for t in tables if t not in temp_table_names]
         
         # Get basic metadata (purposes)
         all_metadata = {}
@@ -72,12 +95,16 @@ def format_table_list_for_prompt(tables: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def get_database_schema(table_names: Optional[List[str]] = None) -> Dict[str, Any]:
+def get_database_schema(
+    table_names: Optional[List[str]] = None,
+    include_temporary: bool = False
+) -> Dict[str, Any]:
     """
     Get comprehensive database schema information.
     
     Args:
         table_names: Optional list of specific tables to fetch. If None, fetches all.
+        include_temporary: Whether to include temporary tables (default: False, unless explicitly requested by name)
     """
     engine = get_engine()
 
@@ -89,7 +116,7 @@ def get_database_schema(table_names: Optional[List[str]] = None) -> Dict[str, An
             WHERE table_schema = 'public'
             AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns',
                                  'raster_columns', 'raster_overviews',
-                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'row_updates')
+                                 'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'row_updates', 'temporary_tables')
             AND table_name NOT LIKE 'pg_%'
             AND table_name NOT LIKE 'test!_%' ESCAPE '!'
             ORDER BY table_name
@@ -104,6 +131,13 @@ def get_database_schema(table_names: Optional[List[str]] = None) -> Dict[str, An
             tables = [t for t in all_tables if t.lower() in requested_lower]
         else:
             tables = all_tables
+            
+        # Filter out temporary tables unless explicitly requested or include_temporary=True
+        if not include_temporary and not table_names:
+            # Only filter when fetching all tables (not when specific tables requested)
+            temp_tables_list = list_temporary_tables(engine=engine)
+            temp_table_names = {t["table_name"] for t in temp_tables_list}
+            tables = [t for t in tables if t not in temp_table_names]
 
         schema_info = {
             "tables": {},

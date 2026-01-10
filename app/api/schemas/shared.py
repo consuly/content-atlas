@@ -25,6 +25,8 @@ RESERVED_SYSTEM_TABLES = {
     "llm_instructions",
     "table_fingerprints",
     "import_validation_failures",
+    # Temporary tables tracking
+    "temporary_tables",
 }
 
 _RESERVED_TABLES_LOWER = {name.lower() for name in RESERVED_SYSTEM_TABLES}
@@ -138,6 +140,10 @@ class MappingConfig(BaseModel):
     unique_columns: Optional[List[str]] = None
     check_duplicates: bool = True  # Legacy field for backward compatibility
     duplicate_check: DuplicateCheckConfig = DuplicateCheckConfig()  # New structured config
+    is_temporary: bool = False  # Mark table as temporary
+    temporary_expires_days: int = 7  # Days until temporary table expires
+    temporary_allow_imports: bool = False  # Allow additional imports to temporary table
+    temporary_purpose: Optional[str] = None  # Purpose description for temporary table
 
     @field_validator("table_name")
     def validate_table_name(cls, value: str) -> str:
@@ -261,6 +267,8 @@ class DetectB2MappingResponse(BaseModel):
 class TableInfo(BaseModel):
     table_name: str
     row_count: int
+    is_temporary: Optional[bool] = None
+    expires_at: Optional[datetime] = None
 
 
 class TablesListResponse(BaseModel):
@@ -987,3 +995,51 @@ class RollbackAllUpdatesResponse(BaseModel):
     message: str
     updates_rolled_back: int
     conflicts: Optional[List[RollbackConflict]] = None
+
+
+class TemporaryTableInfo(BaseModel):
+    """Information about a temporary table."""
+    table_name: str
+    created_at: Optional[datetime] = None
+    expires_at: datetime
+    created_by_user_id: Optional[int] = None
+    organization_id: int
+    allow_additional_imports: bool = False
+    purpose: Optional[str] = None
+    row_count: Optional[int] = None
+
+
+class TemporaryTablesListResponse(BaseModel):
+    """Response for temporary tables list."""
+    success: bool
+    tables: List[TemporaryTableInfo]
+    total_count: int
+
+
+class MarkTableTemporaryRequest(BaseModel):
+    """Request to mark a table as temporary."""
+    expires_days: int = Field(default=7, ge=1, le=365, description="Days until expiration (1-365)")
+    allow_additional_imports: bool = Field(default=False, description="Allow additional data imports")
+    purpose: Optional[str] = Field(None, description="Purpose of this temporary table")
+
+
+class MarkTableTemporaryResponse(BaseModel):
+    """Response from marking table as temporary."""
+    success: bool
+    message: str
+    table_info: Optional[TemporaryTableInfo] = None
+
+
+class ExtendTemporaryTableRequest(BaseModel):
+    """Request to extend temporary table expiration."""
+    additional_days: int = Field(..., ge=1, le=365, description="Days to extend expiration")
+
+
+class CleanupTemporaryTablesResponse(BaseModel):
+    """Response from cleanup operation."""
+    success: bool
+    deleted_count: int
+    failed_count: int
+    deleted_tables: List[str]
+    failed_tables: List[str]
+    error: Optional[str] = None
