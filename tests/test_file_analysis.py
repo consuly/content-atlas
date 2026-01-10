@@ -41,7 +41,7 @@ def mock_failed_analysis():
 
 # Basic endpoint existence tests
 
-def test_analyze_file_endpoint_exists(require_llm):
+def test_analyze_file_endpoint_exists(require_llm, auth_headers):
     """Test that /analyze-file endpoint exists and accepts requests."""
     # Create a small test CSV
     csv_content = b"name,email\nJohn,john@example.com\n"
@@ -50,7 +50,8 @@ def test_analyze_file_endpoint_exists(require_llm):
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "manual"}
+        data={"analysis_mode": "manual"},
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -105,7 +106,7 @@ def test_execute_import_endpoint_placeholder():
 
 # Mocked LLM analysis tests
 
-def test_analyze_file_manual_mode_real_llm(require_llm):
+def test_analyze_file_manual_mode_real_llm(require_llm, auth_headers):
     """Test file analysis with the real LLM using manual review mode."""
     csv_content = b"customer_id,name,email\n1,John,john@example.com\n"
     files = {"file": ("customers.csv", io.BytesIO(csv_content), "text/csv")}
@@ -117,7 +118,8 @@ def test_analyze_file_manual_mode_real_llm(require_llm):
             "analysis_mode": "manual",
             "conflict_resolution": "llm_decide",
             "max_iterations": 5
-        }
+        },
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -131,7 +133,7 @@ def test_analyze_file_manual_mode_real_llm(require_llm):
     assert data["can_auto_execute"] is False  # manual mode
 
 
-def test_analyze_new_table_recommendation_real_llm(require_llm):
+def test_analyze_new_table_recommendation_real_llm(require_llm, auth_headers):
     """Ensure novel datasets receive a structured recommendation from the live LLM."""
     csv_content = b"product_id,sku,name\n1,ABC123,Widget\n"
     files = {"file": ("products.csv", io.BytesIO(csv_content), "text/csv")}
@@ -139,7 +141,8 @@ def test_analyze_new_table_recommendation_real_llm(require_llm):
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "manual"}
+        data={"analysis_mode": "manual"},
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -152,7 +155,7 @@ def test_analyze_new_table_recommendation_real_llm(require_llm):
     assert "new table" in response_lower or "create a new" in response_lower
 
 
-def test_analyze_failed_analysis(mock_failed_analysis):
+def test_analyze_failed_analysis(mock_failed_analysis, auth_headers):
     """Test handling of failed analysis."""
     csv_content = b"name,email\nJohn,john@example.com\n"
     files = {"file": ("test.csv", io.BytesIO(csv_content), "text/csv")}
@@ -163,13 +166,14 @@ def test_analyze_failed_analysis(mock_failed_analysis):
         response = client.post(
             "/analyze-file",
             files=files,
-            data={"analysis_mode": "manual"}
+            data={"analysis_mode": "manual"},
+            headers=auth_headers
         )
         
         assert response.status_code == 502
 
 
-def test_analyze_file_honors_forced_table(monkeypatch):
+def test_analyze_file_honors_forced_table(monkeypatch, auth_headers):
     """target_table_name should override the LLM decision and adjust strategy for existing tables."""
     forced_table = "forced_existing_table"
 
@@ -190,7 +194,7 @@ def test_analyze_file_honors_forced_table(monkeypatch):
 
     captured = {}
 
-    def fake_execute(file_content, file_name, all_records, llm_decision, source_path=None):
+    def fake_execute(file_content, file_name, all_records, llm_decision, source_path=None, organization_id=None):
         captured["llm_decision"] = llm_decision
         assert llm_decision["target_table"] == forced_table
         assert llm_decision["strategy"] == "ADAPT_DATA"  # switched because mode=existing
@@ -216,6 +220,7 @@ def test_analyze_file_honors_forced_table(monkeypatch):
             "target_table_name": forced_table,
             "target_table_mode": "existing",
         },
+        headers=auth_headers,
     )
 
     assert response.status_code == 200, response.text
@@ -229,7 +234,7 @@ def test_analyze_file_honors_forced_table(monkeypatch):
 
 # Configuration tests
 
-def test_analysis_mode_manual(require_llm):
+def test_analysis_mode_manual(require_llm, auth_headers):
     """Manual analysis mode should disable auto-execute despite a successful LLM call."""
     csv_content = b"name,email\nJohn,john@example.com\n"
     files = {"file": ("test.csv", io.BytesIO(csv_content), "text/csv")}
@@ -237,7 +242,8 @@ def test_analysis_mode_manual(require_llm):
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "manual"}
+        data={"analysis_mode": "manual"},
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -246,7 +252,7 @@ def test_analysis_mode_manual(require_llm):
     assert data["can_auto_execute"] is False
 
 
-def test_analysis_mode_auto_always(require_llm):
+def test_analysis_mode_auto_always(require_llm, auth_headers):
     """Auto-always mode should mark the recommendation as executable."""
     import uuid
     # Use unique content to avoid hash collision/duplicate detection
@@ -257,7 +263,8 @@ def test_analysis_mode_auto_always(require_llm):
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "auto_always"}
+        data={"analysis_mode": "auto_always"},
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -266,7 +273,7 @@ def test_analysis_mode_auto_always(require_llm):
     assert data["can_auto_execute"] is True
 
 
-def test_conflict_resolution_modes(require_llm):
+def test_conflict_resolution_modes(require_llm, auth_headers):
     """All conflict resolution modes should succeed with the live LLM."""
     csv_content = b"name,email\nJohn,john@example.com\n"
     files = {"file": ("test.csv", io.BytesIO(csv_content), "text/csv")}
@@ -280,7 +287,8 @@ def test_conflict_resolution_modes(require_llm):
             data={
                 "analysis_mode": "manual",
                 "conflict_resolution": mode
-            }
+            },
+            headers=auth_headers
         )
         
         assert response.status_code == 200
@@ -288,7 +296,7 @@ def test_conflict_resolution_modes(require_llm):
         assert data["success"] is True
 
 
-def test_custom_sample_size(require_llm):
+def test_custom_sample_size(require_llm, auth_headers):
     """Test custom sample size parameter with live LLM."""
     csv_content = b"name,email\n" + b"John,john@example.com\n" * 1000
     files = {"file": ("large.csv", io.BytesIO(csv_content), "text/csv")}
@@ -299,7 +307,8 @@ def test_custom_sample_size(require_llm):
         data={
             "analysis_mode": "manual",
             "sample_size": 100
-        }
+        },
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -307,7 +316,7 @@ def test_custom_sample_size(require_llm):
     assert data["success"] is True
 
 
-def test_max_iterations_parameter(require_llm):
+def test_max_iterations_parameter(require_llm, auth_headers):
     """Test max_iterations parameter using live LLM."""
     csv_content = b"name,email\nJohn,john@example.com\n"
     files = {"file": ("test.csv", io.BytesIO(csv_content), "text/csv")}
@@ -318,7 +327,8 @@ def test_max_iterations_parameter(require_llm):
         data={
             "analysis_mode": "manual",
             "max_iterations": 3
-        }
+        },
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -402,7 +412,7 @@ def test_calculate_sample_size():
 
 # Error handling tests
 
-def test_analyze_unsupported_file_type():
+def test_analyze_unsupported_file_type(auth_headers):
     """Test analysis with unsupported file type."""
     # Create a fake .txt file
     txt_content = b"This is a text file"
@@ -411,14 +421,15 @@ def test_analyze_unsupported_file_type():
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "manual"}
+        data={"analysis_mode": "manual"},
+        headers=auth_headers
     )
     
     # Should fail with unsupported file type
     assert response.status_code == 400
 
 
-def test_analyze_corrupted_csv():
+def test_analyze_corrupted_csv(auth_headers):
     """Test analysis with corrupted CSV file."""
     # Malformed CSV
     csv_content = b"name,email\nJohn,john@example.com\nBroken line without comma"
@@ -436,14 +447,15 @@ def test_analyze_corrupted_csv():
         response = client.post(
             "/analyze-file",
             files=files,
-            data={"analysis_mode": "manual"}
+            data={"analysis_mode": "manual"},
+            headers=auth_headers
         )
         
         # Should handle gracefully
         assert response.status_code in [200, 500, 502]
 
 
-def test_analyze_empty_file():
+def test_analyze_empty_file(auth_headers):
     """Test analysis with empty file."""
     csv_content = b""
     files = {"file": ("empty.csv", io.BytesIO(csv_content), "text/csv")}
@@ -451,7 +463,8 @@ def test_analyze_empty_file():
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "manual"}
+        data={"analysis_mode": "manual"},
+        headers=auth_headers
     )
     
     # Should handle gracefully
@@ -475,7 +488,7 @@ def test_execute_import_without_analysis():
 
 # Response structure tests
 
-def test_analyze_response_structure(require_llm):
+def test_analyze_response_structure(require_llm, auth_headers):
     """Test that analysis response has all expected fields using the live LLM."""
     csv_content = b"name,email\nJohn,john@example.com\n"
     files = {"file": ("test.csv", io.BytesIO(csv_content), "text/csv")}
@@ -483,7 +496,8 @@ def test_analyze_response_structure(require_llm):
     response = client.post(
         "/analyze-file",
         files=files,
-        data={"analysis_mode": "manual"}
+        data={"analysis_mode": "manual"},
+        headers=auth_headers
     )
     
     assert response.status_code == 200
@@ -502,7 +516,7 @@ def test_analyze_response_structure(require_llm):
     assert "error" in data or data["error"] is None
 
 
-def test_storage_analyze_response_structure(require_llm):
+def test_storage_analyze_response_structure(require_llm, auth_headers):
     """Test B2 analysis response structure with the real LLM."""
     with patch('app.api.routers.analysis.routes._download_file_from_storage') as mock_download:
         mock_download.return_value = b"name,email\nJohn,john@example.com\n"
@@ -512,7 +526,8 @@ def test_storage_analyze_response_structure(require_llm):
             json={
                 "file_name": "test.csv",
                 "analysis_mode": "manual"
-            }
+            },
+            headers=auth_headers
         )
     
     assert response.status_code == 200

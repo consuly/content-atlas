@@ -14,6 +14,7 @@ from app.api.schemas.shared import MapDataRequest, MapDataResponse, MappingConfi
 from app.api.dependencies import records_cache, CACHE_TTL_SECONDS
 from app.integrations.storage import download_file
 from app.core.security import get_optional_user, User
+from app.api.dependencies import get_current_organization
 
 router = APIRouter(tags=["imports"])
 
@@ -62,6 +63,7 @@ async def map_data_endpoint(
     mapping_json: str = Form(...),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
+    organization_id: int = Depends(get_current_organization)
 ):
     """
     Map and import data from an uploaded file.
@@ -145,7 +147,8 @@ async def map_data_endpoint(
             mapping_config=config,
             source_type="local_upload",
             pre_parsed_records=cached_records,
-            pre_mapped=use_mapped_cache
+            pre_mapped=use_mapped_cache,
+            organization_id=organization_id
         )
         
         # Update cache with mapped records if we didn't use mapped cache
@@ -192,6 +195,7 @@ async def map_storage_data_endpoint(
     request: MapB2DataRequest,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
+    organization_id: int = Depends(get_current_organization)
 ):
     """
     Map and import data from a file stored in Backblaze B2.
@@ -224,7 +228,8 @@ async def map_storage_data_endpoint(
             file_name=request.file_name,
             mapping_config=request.mapping,
             source_type="b2_storage",
-            source_path=request.file_name
+            source_path=request.file_name,
+            organization_id=organization_id
         )
 
         return MapDataResponse(

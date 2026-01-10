@@ -30,7 +30,7 @@ from app.api.schemas.shared import (
     ArchiveAutoProcessResponse, ArchiveAutoProcessFileResult, WorkbookSheetsResponse,
     ensure_safe_table_name
 )
-from app.api.dependencies import detect_file_type, analysis_storage, interactive_sessions
+from app.api.dependencies import detect_file_type, analysis_storage, interactive_sessions, get_current_organization
 from app.integrations.storage import (
     download_file as _download_file_from_storage,
     upload_file as upload_file_to_storage,
@@ -325,7 +325,8 @@ def _parse_records_for_execution(file_content: bytes, file_type: str) -> List[Di
 
 
 def _execute_cached_archive_decision(
-    entry_bytes: bytes, entry_name: str, llm_decision: Dict[str, Any], source_path: Optional[str] = None
+    entry_bytes: bytes, entry_name: str, llm_decision: Dict[str, Any], source_path: Optional[str] = None,
+    organization_id: int = None
 ) -> Dict[str, Any]:
     """
     Execute a cached LLM decision for an archive entry without re-running analysis.
@@ -340,6 +341,7 @@ def _execute_cached_archive_decision(
             all_records=records,
             llm_decision=llm_decision,
             source_path=source_path,
+            organization_id=organization_id,
         )
         response = AnalyzeFileResponse(
             success=execution_result.get("success", False),
@@ -454,6 +456,7 @@ def _process_entry_bytes(
     forced_table_mode: Optional[str],
     llm_instruction: Optional[str],
     db_session,
+    organization_id: int,
     sheet_name: Optional[str] = None,
     parent_file_id: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
@@ -683,6 +686,7 @@ def _process_entry_bytes(
                     entry_name=entry_name,
                     llm_decision=applied_decision,
                     source_path=upload_result["file_path"],
+                    organization_id=organization_id,
                 )
             else:
                 # No plan materialized—fall back to fresh analysis so we still produce a result.
@@ -913,6 +917,7 @@ def _process_archive_entry(
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
     llm_instruction: Optional[str],
+    organization_id: int,
     parent_file_id: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
     """Process a single archive entry in a thread."""
@@ -949,6 +954,7 @@ def _process_archive_entry(
             forced_table_mode=forced_table_mode,
             llm_instruction=llm_instruction,
             db_session=db_session,
+            organization_id=organization_id,
             parent_file_id=parent_file_id,
         )
 
@@ -972,6 +978,7 @@ def _process_workbook_sheet_entry(
     forced_table_name: Optional[str],
     forced_table_mode: Optional[str],
     llm_instruction: Optional[str],
+    organization_id: int,
     parent_file_id: Optional[str] = None,
 ) -> ArchiveAutoProcessFileResult:
     """Process a single Excel sheet as an independent import."""
@@ -994,6 +1001,7 @@ def _process_workbook_sheet_entry(
             forced_table_mode=forced_table_mode,
             llm_instruction=llm_instruction,
             db_session=db_session,
+            organization_id=organization_id,
             sheet_name=sheet_name,
             parent_file_id=parent_file_id,
         )
@@ -1075,6 +1083,7 @@ def _run_archive_auto_process_job(
     forced_table_mode: Optional[str] = None,
     llm_instruction: Optional[str] = None,
     prefilled_results: Optional[List[ArchiveAutoProcessFileResult]] = None,
+    organization_id: int = None,
 ) -> None:
     """Execute archive auto-processing off the main event loop."""
     import threading
@@ -1157,6 +1166,7 @@ def _run_archive_auto_process_job(
                         forced_table_name=forced_table_name,
                         forced_table_mode=forced_table_mode,
                         llm_instruction=llm_instruction,
+                        organization_id=organization_id,
                         parent_file_id=file_id,
                     )
                     futures[future] = archive_path
@@ -1389,6 +1399,7 @@ def _run_workbook_auto_process_job(
     forced_table_name: Optional[str] = None,
     forced_table_mode: Optional[str] = None,
     llm_instruction: Optional[str] = None,
+    organization_id: int = None,
 ) -> None:
     """Execute auto-processing for each sheet in a workbook."""
     processed_files = 0
@@ -1947,7 +1958,8 @@ async def analyze_file_endpoint(
     require_explicit_multi_value: bool = Form(False),
     skip_file_duplicate_check: bool = Form(False),
     update_on_duplicate: bool = Form(False),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
 ):
     """
     Analyze uploaded file and recommend import strategy using AI.
@@ -2183,7 +2195,8 @@ async def analyze_file_endpoint(
                     file_name=file_name,
                     all_records=records,  # Use all records, not just sample
                     llm_decision=llm_decision,
-                    source_path=file_record.get("b2_file_path") if file_id else None
+                    source_path=file_record.get("b2_file_path") if file_id else None,
+                    organization_id=organization_id
                 )
                 
                 response.auto_execution_result = AutoExecutionResult(**execution_result)
@@ -2476,6 +2489,7 @@ async def auto_process_archive_endpoint(
     llm_instruction_id: Optional[str] = Form(None),
     save_llm_instruction: bool = Form(False),
     llm_instruction_title: Optional[str] = Form(None),
+    organization_id: int = Depends(get_current_organization),
 ):
     """
     Queue background processing for every supported file contained within a ZIP archive.
@@ -2580,6 +2594,7 @@ async def auto_process_archive_endpoint(
             forced_table_name=forced_table_name,
             forced_table_mode=forced_table_mode,
             llm_instruction=normalized_instruction,
+            organization_id=organization_id,
         ),
     )
 

@@ -34,6 +34,7 @@ class UserResponse(BaseModel):
     created_at: datetime
     is_active: bool
     role: str
+    organization_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

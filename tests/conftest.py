@@ -11,6 +11,8 @@ import os
 os.environ.setdefault("SKIP_DB_INIT", "0")
 
 import pytest
+import uuid
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 from app.db.session import get_engine
 from app.db.metadata import create_table_metadata_table
@@ -20,6 +22,13 @@ from app.db.models import create_file_imports_table_if_not_exists, create_table_
 from app.domain.imports.jobs import ensure_import_jobs_table
 from app.domain.queries.history import create_query_history_tables
 from app.db.llm_instructions import create_llm_instruction_table
+from app.core.security import (
+    init_auth_tables,
+    create_user,
+    delete_user,
+    create_access_token,
+)
+from app.db.organization import init_organization_tables, create_organization
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -84,6 +93,10 @@ def initialize_test_database():
         print("  Creating table_fingerprints table...")
         create_table_fingerprints_table_if_not_exists(engine)
 
+        print("  Creating auth and organization tables...")
+        init_auth_tables()
+        init_organization_tables()
+
         print("  ✓ All system tables initialized successfully")
         print("="*80 + "\n")
         
@@ -119,3 +132,70 @@ def test_engine(initialize_test_database):
     Scope: function (each test gets a fresh reference)
     """
     return get_engine()
+
+
+@pytest.fixture(scope="function")
+def auth_headers(initialize_test_database):
+    """
+    Create a test user with organization and return auth headers.
+    
+    This fixture provides authenticated request headers for tests that need
+    to call endpoints requiring authentication (e.g., /tables, /map-data).
+    
+    Returns:
+        dict: Authorization headers with Bearer token
+    """
+    engine = get_engine()
+    session = Session(engine)
+    user_id = None
+    org_id = None
+    
+    try:
+        # Initialize auth and organization tables
+        init_auth_tables()
+        init_organization_tables()
+        
+        # Create test organization
+        org_name = f"Test Org {uuid.uuid4().hex[:8]}"
+        org = create_organization(db=session, name=org_name)
+        org_id = org.id
+        
+        # Create test user with organization
+        email = f"test_{uuid.uuid4().hex}@example.com"
+        user = create_user(
+            db=session,
+            email=email,
+            password="TestPass123!",
+            full_name="Test User",
+            role="user"
+        )
+        user_id = user.id
+        
+        # Assign organization to user
+        user.organization_id = org_id
+        session.commit()
+        session.refresh(user)
+        
+        # Generate JWT token
+        token = create_access_token({"sub": user.email})
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        yield headers
+        
+    except Exception as e:
+        # If database is not available, skip the test
+        pytest.skip(f"Database not available for authentication: {e}")
+    finally:
+        # Cleanup: delete user and organization
+        try:
+            if user_id:
+                delete_user(session, user_id)
+            if org_id:
+                from sqlalchemy import text
+                session.execute(text("DELETE FROM organizations WHERE id = :org_id"), {"org_id": org_id})
+                session.commit()
+        except Exception as e:
+            print(f"Warning: Cleanup failed in auth_headers fixture: {e}")
+        finally:
+            session.close()

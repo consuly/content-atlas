@@ -17,12 +17,16 @@ from app.api.schemas.shared import (
     TableSchemaResponse, ColumnInfo, TableStatsResponse,
     is_reserved_system_table,
 )
+from app.api.dependencies import get_current_organization
 
 router = APIRouter(prefix="/tables", tags=["tables"])
 
 
 @router.get("", response_model=TablesListResponse)
-async def list_tables(db: Session = Depends(get_db)):
+async def list_tables(
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
+):
     """
     List all dynamically created tables.
     
@@ -36,14 +40,14 @@ async def list_tables(db: Session = Depends(get_db)):
         engine = get_engine()
         with engine.connect() as conn:
             # Query information_schema for user-created tables (exclude system tables)
-            result = conn.execute(text("""
+            result = conn.execute(text(r"""
                 SELECT table_name
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('spatial_ref_sys', 'geography_columns', 'geometry_columns', 'raster_columns', 'raster_overviews',
                                      'file_imports', 'table_metadata', 'import_history', 'uploaded_files', 'users', 'mapping_errors', 'import_jobs', 'import_duplicates', 'mapping_chunk_status', 'api_keys', 'query_messages', 'query_threads', 'row_updates', 'llm_instructions', 'table_fingerprints', 'import_validation_failures')
                 AND table_name NOT LIKE 'pg_%'
-                AND table_name NOT LIKE 'test\_%' ESCAPE '\\'
+                AND table_name NOT LIKE 'test\_%' ESCAPE '\'
                 ORDER BY table_name
             """))
 
@@ -51,9 +55,30 @@ async def list_tables(db: Session = Depends(get_db)):
             for row in result:
                 table_name = row[0]
 
-                # Get row count for each table
-                count_result = conn.execute(text(f"SELECT COUNT(*) FROM \"{table_name}\""))
-                row_count = count_result.scalar()
+                # Check if table has _organization_id column (dynamically created tables)
+                org_col_check = conn.execute(text("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                    AND column_name = '_organization_id'
+                """), {"table_name": table_name})
+                
+                has_org_column = org_col_check.fetchone() is not None
+                
+                # Get row count filtered by organization if applicable
+                if has_org_column:
+                    count_result = conn.execute(text(f"""
+                        SELECT COUNT(*) FROM "{table_name}"
+                        WHERE _organization_id = :org_id
+                    """), {"org_id": organization_id})
+                    row_count = count_result.scalar()
+                    
+                    # Skip tables with no data for this organization
+                    if row_count == 0:
+                        continue
+                else:
+                    # For tables without organization column, show all data
+                    count_result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+                    row_count = count_result.scalar()
 
                 tables.append(TableInfo(
                     table_name=table_name,
@@ -79,7 +104,8 @@ async def query_table(
         default=None,
         description='JSON list of filters: [{"column":"status","operator":"eq","value":"Active"}]',
     ),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
 ):
     """
     Query table data with pagination, optional search, sorting, and filtering.
@@ -131,7 +157,7 @@ async def query_table(
             if not table_check.fetchone():
                 raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-            columns_result = conn.execute(text("""
+            columns_result = conn.execute(text(r"""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
@@ -157,6 +183,20 @@ async def query_table(
 
             where_clauses: List[str] = []
             query_params: Dict[str, Any] = {}
+
+            # Check if table has _organization_id column for filtering
+            org_col_check = conn.execute(text("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table_name
+                AND column_name = '_organization_id'
+            """), {"table_name": table_name})
+            
+            has_org_column = org_col_check.fetchone() is not None
+            
+            # Filter by organization if column exists
+            if has_org_column:
+                where_clauses.append('"_organization_id" = :org_id')
+                query_params["org_id"] = organization_id
 
             # Filter by import_id if provided
             if import_id:
@@ -255,6 +295,7 @@ async def export_table(
     ),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    organization_id: int = Depends(get_current_organization)
 ):
     """
     Stream the full contents of a user table as CSV.
@@ -283,8 +324,7 @@ async def export_table(
                 raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
             columns_result = conn.execute(
-                text(
-                    """
+                text(r"""
                     SELECT column_name
                     FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = :table_name
@@ -299,6 +339,20 @@ async def export_table(
             if not user_columns:
                 raise HTTPException(status_code=400, detail="Table has no exportable columns.")
 
+            # Check if table has _organization_id column for filtering
+            org_col_check = conn.execute(
+                text(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                    AND column_name = '_organization_id'
+                    """
+                ),
+                {"table_name": table_name},
+            ).first()
+            
+            has_org_column = org_col_check is not None
+
             row_id_exists = conn.execute(
                 text(
                     """
@@ -312,9 +366,17 @@ async def export_table(
                 {"table_name": table_name},
             ).first()
 
+            # Build WHERE clause for organization filtering
+            where_parts = []
+            query_params: Dict[str, Any] = {}
+            if has_org_column:
+                where_parts.append('_organization_id = :org_id')
+                query_params["org_id"] = organization_id
+            
+            where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+            
             order_fragment = 'ORDER BY "_row_id"' if row_id_exists else ""
             limit_fragment = []
-            query_params: Dict[str, Any] = {}
             if limit is not None:
                 limit_fragment.append("LIMIT :limit")
                 query_params["limit"] = limit
@@ -325,6 +387,8 @@ async def export_table(
             columns_sql = ", ".join([f'"{col}"' for col in user_columns])
             base_sql = f'SELECT {columns_sql} FROM "{table_name}"'
             sql_parts = [base_sql]
+            if where_clause:
+                sql_parts.append(where_clause)
             if order_fragment:
                 sql_parts.append(order_fragment)
             if limit_fragment:
@@ -414,7 +478,7 @@ async def get_table_schema(table_name: str, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
             # Get column information
-            columns_result = conn.execute(text("""
+            columns_result = conn.execute(text(r"""
                 SELECT column_name, data_type, is_nullable
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name
@@ -476,7 +540,7 @@ async def get_table_stats(table_name: str, db: Session = Depends(get_db)):
             total_rows = count_result.scalar()
 
             # Get column count and data types
-            columns_result = conn.execute(text("""
+            columns_result = conn.execute(text(r"""
                 SELECT column_name, data_type
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table_name

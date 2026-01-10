@@ -695,7 +695,8 @@ def execute_llm_import_decision(
     file_name: str,
     all_records: List[Dict[str, Any]],
     llm_decision: Dict[str, Any],
-    source_path: Optional[str] = None
+    source_path: Optional[str] = None,
+    organization_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Execute an import based on LLM's decision.
@@ -706,6 +707,7 @@ def execute_llm_import_decision(
         all_records: All records from the file (not just sample)
         llm_decision: LLM's decision with strategy, target_table, column_mapping, etc.
         source_path: Optional B2 file path for tracking (enables duplicate count matching)
+        organization_id: Organization ID for multi-tenancy
         
     Returns:
         Execution result with success status and details
@@ -1198,7 +1200,8 @@ def execute_llm_import_decision(
             import_strategy=strategy,
             metadata_info=metadata_info,
             pre_parsed_records=records,  # Use records parsed according to LLM instructions
-            pre_mapped=False  # Records need to be mapped using column_mapping
+            pre_mapped=False,  # Records need to be mapped using column_mapping
+            organization_id=organization_id  # Pass organization context for multi-tenancy
         )
         
         logger.info(f"AUTO-IMPORT: Import completed successfully")

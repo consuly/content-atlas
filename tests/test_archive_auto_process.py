@@ -33,11 +33,12 @@ def _build_zip(file_map: Dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
-def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip") -> str:
+def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip", headers: dict = None) -> str:
     response = client.post(
         "/upload-to-b2",
         data={"allow_duplicate": "true"},
         files={"file": (filename, io.BytesIO(zip_bytes), "application/zip")},
+        headers=headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -46,12 +47,12 @@ def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip") -> str:
     return payload["files"][0]["id"]
 
 
-def _wait_for_job(job_id: str, timeout: float = 5.0) -> dict:
+def _wait_for_job(job_id: str, timeout: float = 5.0, headers: dict = None) -> dict:
     """Poll import job until completion or timeout."""
     deadline = time.monotonic() + timeout
     last_payload = None
     while time.monotonic() < deadline:
-        resp = client.get(f"/import-jobs/{job_id}")
+        resp = client.get(f"/import-jobs/{job_id}", headers=headers)
         assert resp.status_code == 200, resp.text
         last_payload = resp.json()
         job = last_payload.get("job") or {}
@@ -117,7 +118,7 @@ def fake_storage_storage(monkeypatch):
     return storage
 
 
-def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage_storage):
+def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage_storage, auth_headers):
     def fake_analyze(**_kwargs):
         return {
             "success": True,
@@ -159,7 +160,7 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage
         zf.writestr("simple.csv", csv_bytes)
         zf.writestr("notes.txt", b"skip me")
 
-    archive_id = _upload_zip(buffer.getvalue(), filename="mixed.zip")
+    archive_id = _upload_zip(buffer.getvalue(), filename="mixed.zip", headers=auth_headers)
     response = client.post(
         "/auto-process-archive",
         data={
@@ -168,6 +169,7 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage
             "conflict_resolution": "llm_decide",
         "max_iterations": "5",
     },
+        headers=auth_headers,
 )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -175,7 +177,7 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage
     job_id = payload["job_id"]
     assert job_id
 
-    job = _wait_for_job(job_id)
+    job = _wait_for_job(job_id, headers=auth_headers)
     assert job["status"] == "failed"
     metadata = job["result_metadata"]
     assert metadata["processed_files"] == 0
@@ -183,7 +185,7 @@ def test_auto_process_archive_continues_after_failures(monkeypatch, fake_storage
     assert metadata["skipped_files"] == 1
 
 
-def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_storage, tmp_path):
+def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_storage, tmp_path, auth_headers):
     forced_table = "forced_archive_table"
 
     def fake_analyze(**_kwargs):
@@ -229,7 +231,7 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
     csv_path = tmp_path / "simple.csv"
     csv_path.write_text("name\nalpha\nbeta\n", encoding="utf-8")
     zip_bytes = _build_zip({"simple.csv": str(csv_path)})
-    archive_id = _upload_zip(zip_bytes, filename="forced.zip")
+    archive_id = _upload_zip(zip_bytes, filename="forced.zip", headers=auth_headers)
 
     response = client.post(
         "/auto-process-archive",
@@ -241,12 +243,13 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
             "target_table_name": forced_table,
             "target_table_mode": "existing",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
     job_id = payload["job_id"]
 
-    job = _wait_for_job(job_id)
+    job = _wait_for_job(job_id, headers=auth_headers)
     if job["status"] != "succeeded":
         print("JOB FAILED DETAILS:", job)
     assert job["status"] == "succeeded"
@@ -260,7 +263,7 @@ def test_auto_process_archive_forces_target_table(monkeypatch, fake_storage_stor
     assert metadata["skipped_files"] == 0
 
 
-def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_storage):
+def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_storage, auth_headers):
     analysis_calls = {"count": 0}
     execution_calls = {"count": 0}
 
@@ -305,7 +308,7 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_s
         zf.writestr("first.csv", csv_bytes)
         zf.writestr("second.csv", csv_bytes)
 
-    archive_id = _upload_zip(buffer.getvalue(), filename="cached.zip")
+    archive_id = _upload_zip(buffer.getvalue(), filename="cached.zip", headers=auth_headers)
     response = client.post(
         "/auto-process-archive",
         data={
@@ -314,12 +317,13 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_s
             "conflict_resolution": "llm_decide",
             "max_iterations": "5",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["success"] is True
     job_id = payload["job_id"]
-    job = _wait_for_job(job_id)
+    job = _wait_for_job(job_id, headers=auth_headers)
     assert job["status"] == "succeeded"
 
     metadata = job["result_metadata"]
@@ -329,7 +333,7 @@ def test_auto_process_archive_reuses_cached_decision(monkeypatch, fake_storage_s
     assert execution_calls["count"] == 2  # still executes both files
 
 
-def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fake_storage_storage):
+def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fake_storage_storage, auth_headers):
     """If a cached fingerprint lacks a decision, the worker should still analyze and return a result."""
     analysis_module = importlib.import_module("app.api.routers.analysis")
     cached_event = threading.Event()
@@ -368,6 +372,16 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
     session_local = get_session_local()
     db_session = session_local()
     try:
+        # Get organization_id from the auth fixture (requires database access)
+        from sqlalchemy import text
+        from app.db.session import get_engine
+        engine = get_engine()
+        with engine.connect() as conn:
+            # Get the organization ID from the token or default to 1
+            result = conn.execute(text("SELECT id FROM organizations LIMIT 1"))
+            row = result.fetchone()
+            organization_id = row[0] if row else 1
+
         result = analysis_module.routes._process_entry_bytes(
             entry_bytes=entry_bytes,
             archive_path="shared.csv",
@@ -384,6 +398,7 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
             forced_table_mode="existing",
             llm_instruction=None,
             db_session=db_session,
+            organization_id=organization_id,
         )
     finally:
         db_session.close()
@@ -394,7 +409,7 @@ def test_auto_process_archive_recovers_when_cached_plan_missing(monkeypatch, fak
     assert fingerprint_cache["shared-fp"].get("llm_decision")
 
 
-def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_storage):
+def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_storage, auth_headers):
     execution_calls = {"count": 0}
 
     def fake_analyze(**_kwargs):
@@ -446,7 +461,7 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_st
         zf.writestr("first.csv", csv_bytes)
         zf.writestr("second.csv", csv_bytes)
 
-    archive_id = _upload_zip(buffer.getvalue(), filename="resume.zip")
+    archive_id = _upload_zip(buffer.getvalue(), filename="resume.zip", headers=auth_headers)
     response = client.post(
         "/auto-process-archive",
         data={
@@ -455,11 +470,12 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_st
             "conflict_resolution": "llm_decide",
             "max_iterations": "5",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     first_job_id = response.json()["job_id"]
 
-    first_job = _wait_for_job(first_job_id)
+    first_job = _wait_for_job(first_job_id, headers=auth_headers)
     assert first_job["status"] == "failed"
     first_metadata = first_job["result_metadata"]
     assert first_metadata["processed_files"] == 1
@@ -474,12 +490,13 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_st
             "conflict_resolution": "llm_decide",
             "max_iterations": "5",
         },
+        headers=auth_headers,
     )
     assert resume_response.status_code == 200, resume_response.text
     second_job_id = resume_response.json()["job_id"]
     assert second_job_id
 
-    resumed_job = _wait_for_job(second_job_id)
+    resumed_job = _wait_for_job(second_job_id, headers=auth_headers)
     assert resumed_job["status"] == "succeeded"
     resumed_metadata = resumed_job["result_metadata"]
     assert resumed_metadata["processed_files"] == 2
@@ -488,7 +505,7 @@ def test_auto_process_archive_resume_failed_entries(monkeypatch, fake_storage_st
     assert all(result["status"] == "processed" for result in resumed_metadata["results"])
 
 
-def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage):
+def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage, auth_headers):
     """
     When resume_failed_entries_only=False, the endpoint should reprocess the entire archive
     regardless of prior success/failure state.
@@ -544,7 +561,7 @@ def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage):
         zf.writestr("first.csv", csv_bytes)
         zf.writestr("second.csv", csv_bytes)
 
-    archive_id = _upload_zip(buffer.getvalue(), filename="resume-all.zip")
+    archive_id = _upload_zip(buffer.getvalue(), filename="resume-all.zip", headers=auth_headers)
     response = client.post(
         "/auto-process-archive",
         data={
@@ -553,11 +570,12 @@ def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage):
             "conflict_resolution": "llm_decide",
             "max_iterations": "5",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     first_job_id = response.json()["job_id"]
 
-    first_job = _wait_for_job(first_job_id)
+    first_job = _wait_for_job(first_job_id, headers=auth_headers)
     assert first_job["status"] == "failed"
     first_metadata = first_job["result_metadata"]
     assert first_metadata["processed_files"] == 1
@@ -573,12 +591,13 @@ def test_auto_process_archive_resume_all(monkeypatch, fake_storage_storage):
             "conflict_resolution": "llm_decide",
             "max_iterations": "5",
         },
+        headers=auth_headers,
     )
     assert resume_response.status_code == 200, resume_response.text
     second_job_id = resume_response.json()["job_id"]
     assert second_job_id
 
-    resumed_job = _wait_for_job(second_job_id)
+    resumed_job = _wait_for_job(second_job_id, headers=auth_headers)
     assert resumed_job["status"] == "succeeded"
     resumed_metadata = resumed_job["result_metadata"]
     assert resumed_metadata["processed_files"] == 2

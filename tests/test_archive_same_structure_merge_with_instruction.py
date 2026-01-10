@@ -38,12 +38,13 @@ def _build_zip(file_map: Dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
-def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip") -> str:
+def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip", headers: dict = None) -> str:
     """Upload ZIP file and return the file_id."""
     response = client.post(
         "/upload-to-b2",
         data={"allow_duplicate": "true"},
         files={"file": (filename, io.BytesIO(zip_bytes), "application/zip")},
+        headers=headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -51,12 +52,12 @@ def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip") -> str:
     return payload["files"][0]["id"]
 
 
-def _wait_for_job(job_id: str, timeout: float = 10.0) -> dict:
+def _wait_for_job(job_id: str, timeout: float = 10.0, headers: dict = None) -> dict:
     """Poll import job until completion or timeout."""
     deadline = time.monotonic() + timeout
     last_payload = None
     while time.monotonic() < deadline:
-        resp = client.get(f"/import-jobs/{job_id}")
+        resp = client.get(f"/import-jobs/{job_id}", headers=headers)
         assert resp.status_code == 200, resp.text
         last_payload = resp.json()
         job = last_payload.get("job") or {}
@@ -137,7 +138,7 @@ def fake_storage_storage(monkeypatch):
 
 
 def test_archive_same_structure_merges_single_table(
-    monkeypatch, fake_storage_storage, tmp_path
+    monkeypatch, fake_storage_storage, tmp_path, auth_headers
 ):
     """
     Two CSVs with identical structure should merge into ONE table.
@@ -156,7 +157,7 @@ def test_archive_same_structure_merges_single_table(
         "contacts_a.csv": "tests/csv/multi_email_contacts_a.csv",
         "contacts_b.csv": "tests/csv/multi_email_contacts_b.csv",
     })
-    archive_id = _upload_zip(zip_bytes, filename="same_structure.zip")
+    archive_id = _upload_zip(zip_bytes, filename="same_structure.zip", headers=auth_headers)
 
     # Process archive with instruction to keep only primary columns
     response = client.post(
@@ -168,6 +169,7 @@ def test_archive_same_structure_merges_single_table(
             "max_iterations": "5",
             "llm_instruction": "Keep only the primary email and phone number",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -175,7 +177,7 @@ def test_archive_same_structure_merges_single_table(
     job_id = payload["job_id"]
 
     # Wait for job to complete
-    job = _wait_for_job(job_id, timeout=15.0)
+    job = _wait_for_job(job_id, timeout=15.0, headers=auth_headers)
     
     # Job should succeed
     if job["status"] != "succeeded":
@@ -207,7 +209,7 @@ def test_archive_same_structure_merges_single_table(
 
 
 def test_archive_respects_keep_only_primary_instruction(
-    monkeypatch, fake_storage_storage
+    monkeypatch, fake_storage_storage, auth_headers
 ):
     """
     LLM instruction 'Keep only primary email and phone' should exclude other columns.
@@ -241,7 +243,7 @@ def test_archive_respects_keep_only_primary_instruction(
         "contacts_a.csv": "tests/csv/multi_email_contacts_a.csv",
         "contacts_b.csv": "tests/csv/multi_email_contacts_b.csv",
     })
-    archive_id = _upload_zip(zip_bytes, filename="primary_only.zip")
+    archive_id = _upload_zip(zip_bytes, filename="primary_only.zip", headers=auth_headers)
 
     # Process with explicit instruction
     response = client.post(
@@ -253,11 +255,12 @@ def test_archive_respects_keep_only_primary_instruction(
             "max_iterations": "5",
             "llm_instruction": "Keep only the primary email and phone number",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]
 
-    job = _wait_for_job(job_id, timeout=15.0)
+    job = _wait_for_job(job_id, timeout=15.0, headers=auth_headers)
     assert job["status"] == "succeeded", f"Job failed: {job.get('error_message')}"
 
     # Verify column mappings respect the instruction
@@ -295,7 +298,7 @@ def test_archive_respects_keep_only_primary_instruction(
 
 
 def test_archive_no_row_explosion_with_multi_email_columns(
-    monkeypatch, fake_storage_storage
+    monkeypatch, fake_storage_storage, auth_headers
 ):
     """
     Files with multiple email columns should NOT create rows per email value.
@@ -328,7 +331,7 @@ def test_archive_no_row_explosion_with_multi_email_columns(
         "contacts_a.csv": "tests/csv/multi_email_contacts_a.csv",
         "contacts_b.csv": "tests/csv/multi_email_contacts_b.csv",
     })
-    archive_id = _upload_zip(zip_bytes, filename="no_explosion.zip")
+    archive_id = _upload_zip(zip_bytes, filename="no_explosion.zip", headers=auth_headers)
 
     response = client.post(
         "/auto-process-archive",
@@ -339,11 +342,12 @@ def test_archive_no_row_explosion_with_multi_email_columns(
             "max_iterations": "5",
             "llm_instruction": "Keep only the primary email and phone number",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]
 
-    job = _wait_for_job(job_id, timeout=15.0)
+    job = _wait_for_job(job_id, timeout=15.0, headers=auth_headers)
     assert job["status"] == "succeeded", f"Job failed: {job.get('error_message')}"
 
     # Verify NO explode_columns transformation was applied
@@ -373,7 +377,7 @@ def test_archive_no_row_explosion_with_multi_email_columns(
         )
 
 
-def test_fingerprint_cache_forces_merge_strategy(monkeypatch, fake_storage_storage):
+def test_fingerprint_cache_forces_merge_strategy(monkeypatch, fake_storage_storage, auth_headers):
     """
     When table exists from first file, second file MUST use ADAPT_DATA strategy.
     
@@ -412,7 +416,7 @@ def test_fingerprint_cache_forces_merge_strategy(monkeypatch, fake_storage_stora
         "contacts_a.csv": "tests/csv/multi_email_contacts_a.csv",
         "contacts_b.csv": "tests/csv/multi_email_contacts_b.csv",
     })
-    archive_id = _upload_zip(zip_bytes, filename="merge_strategy.zip")
+    archive_id = _upload_zip(zip_bytes, filename="merge_strategy.zip", headers=auth_headers)
 
     response = client.post(
         "/auto-process-archive",
@@ -423,11 +427,12 @@ def test_fingerprint_cache_forces_merge_strategy(monkeypatch, fake_storage_stora
             "max_iterations": "5",
             "llm_instruction": "Keep only the primary email and phone number",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]
 
-    job = _wait_for_job(job_id, timeout=15.0)
+    job = _wait_for_job(job_id, timeout=15.0, headers=auth_headers)
     assert job["status"] == "succeeded", f"Job failed: {job.get('error_message')}"
 
     # Verify strategies: both files should merge into the SAME table

@@ -40,7 +40,10 @@ def _requires_admin_setup(db: Session) -> bool:
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     print(f"DEBUG: Entering register endpoint for {user_data.email}", flush=True)
     """
-    Register a new user.
+    Register a new user and create their organization.
+    
+    Each new user gets their own organization automatically created.
+    Organization name is derived from user's full name or email.
     
     Parameters:
     - email: User's email address
@@ -49,13 +52,23 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     
     Returns:
     - JWT access token
-    - User information
+    - User information with organization_id
     """
+    from app.db.organization import create_organization, init_organization_tables
+    
     try:
+        # Ensure organization tables exist
+        init_organization_tables()
+        
         # First user becomes an admin so new deployments require manual setup
         role = "admin" if _requires_admin_setup(db) else "user"
 
-        # Create user
+        # Create organization for this user
+        # Use full name or derive from email
+        org_name = user_data.full_name or user_data.email.split('@')[0]
+        organization = create_organization(db=db, name=org_name)
+        
+        # Create user linked to organization
         user = create_user(
             db=db,
             email=user_data.email,
@@ -64,14 +77,19 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
             role=role,
         )
         
+        # Link user to organization
+        user.organization_id = organization.id
+        db.commit()
+        db.refresh(user)
+        
         # Generate JWT token
         access_token = create_access_token(
             data={"sub": user.email},
             expires_delta=timedelta(minutes=60 * 24)  # 24 hours
         )
         
-        print(f"DEBUG: User registered successfully: {user.email} (Role: {role})", flush=True)
-        logger.info("User registered successfully: %s (Role: %s)", user.email, role)
+        print(f"DEBUG: User registered successfully: {user.email} (Role: {role}, Org: {organization.name})", flush=True)
+        logger.info("User registered successfully: %s (Role: %s, Organization: %s)", user.email, role, organization.name)
 
         return AuthResponse(
             success=True,

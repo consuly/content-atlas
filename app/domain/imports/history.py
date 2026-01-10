@@ -264,7 +264,8 @@ def start_import_tracking(
     user_email: Optional[str] = None,
     analysis_id: Optional[str] = None,
     task_id: Optional[str] = None,
-    import_strategy: Optional[str] = None
+    import_strategy: Optional[str] = None,
+    organization_id: Optional[int] = None
 ) -> str:
     """
     Start tracking a new import operation.
@@ -309,13 +310,13 @@ def start_import_tracking(
                 file_size_bytes, file_type, file_hash, source_path,
                 mapping_config, duplicate_check_enabled,
                 user_id, user_email, analysis_id, task_id,
-                import_strategy, status
+                import_strategy, organization_id, status
             ) VALUES (
                 :import_id, :source_type, :file_name, :table_name,
                 :file_size_bytes, :file_type, :file_hash, :source_path,
                 :mapping_config, :duplicate_check_enabled,
                 :user_id, :user_email, :analysis_id, :task_id,
-                :import_strategy, 'in_progress'
+                :import_strategy, :organization_id, 'in_progress'
             )
             """
             
@@ -334,7 +335,8 @@ def start_import_tracking(
                 "user_email": user_email,
                 "analysis_id": analysis_id,
                 "task_id": task_id,
-                "import_strategy": import_strategy
+                "import_strategy": import_strategy,
+                "organization_id": organization_id
             })
         
         logger.info(f"Started import tracking: {import_id}")

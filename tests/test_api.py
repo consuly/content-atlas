@@ -8,7 +8,6 @@ import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-os.environ["SKIP_DB_INIT"] = "1"
 from app.main import app
 from app.db.session import get_db
 
@@ -23,29 +22,30 @@ def test_root():
     assert response.json() == {"message": "Content Atlas API", "version": app.version}
 
 
-def test_api_endpoints_exist():
+@pytest.mark.skipif(os.getenv("SKIP_DB_INIT") == "1", reason="Requires database for authentication")
+def test_api_endpoints_exist(auth_headers):
     """Test that all new API endpoints exist and return proper response."""
     # Test /tables endpoint - should return 200 with list of tables
-    response = client.get("/tables")
+    response = client.get("/tables", headers=auth_headers)
     assert response.status_code == 200
     data = response.json()
     assert "success" in data
     assert "tables" in data
 
     # Test /tables/{table_name} endpoint - should return 404 for non-existent table
-    response = client.get("/tables/test_table")
+    response = client.get("/tables/test_table", headers=auth_headers)
     assert response.status_code == 404
 
     # Test /tables/{table_name}/export endpoint - should return 404 for non-existent table
-    response = client.get("/tables/test_table/export")
+    response = client.get("/tables/test_table/export", headers=auth_headers)
     assert response.status_code == 404
 
     # Test /tables/{table_name}/schema endpoint - should return 404 for non-existent table
-    response = client.get("/tables/test_table/schema")
+    response = client.get("/tables/test_table/schema", headers=auth_headers)
     assert response.status_code == 404
 
     # Test /tables/{table_name}/stats endpoint - should return 404 for non-existent table
-    response = client.get("/tables/test_table/stats")
+    response = client.get("/tables/test_table/stats", headers=auth_headers)
     assert response.status_code == 404
 
 
@@ -180,7 +180,8 @@ def test_query_database_endpoint_exists():
 
 
 
-def test_file_imports_table_created():
+@pytest.mark.skipif(os.getenv("SKIP_DB_INIT") == "1", reason="Requires database for authentication")
+def test_file_imports_table_created(auth_headers):
     """Test that file_imports table is created and populated correctly."""
     import io
 
@@ -210,7 +211,7 @@ John,john@example.com
         }"""
     }
 
-    response = client.post("/map-data", files=files, data=data)
+    response = client.post("/map-data", files=files, data=data, headers=auth_headers)
     # Test that file_imports table exists and has records (if DB is available)
     if response.status_code == 200:
         try:

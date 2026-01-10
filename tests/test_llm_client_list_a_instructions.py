@@ -78,7 +78,7 @@ def require_llm():
 
 
 @pytest.mark.skipif(os.getenv("CI"), reason="Skip expensive LLM tests in CI")
-def test_llm_mapping_with_email_explode_instruction(require_llm):
+def test_llm_mapping_with_email_explode_instruction(require_llm, auth_headers):
     """
     Ensure the LLM honors the explode-email instruction and returns rows with a single email each.
     """
@@ -101,6 +101,7 @@ def test_llm_mapping_with_email_explode_instruction(require_llm):
             # Force the LLM path to only split columns it explicitly names.
             "require_explicit_multi_value": True,
         },
+        headers=auth_headers,
     )
 
     assert response.status_code == 200, response.text

@@ -41,6 +41,7 @@ class User(Base):
     created_at = Column(DateTime, default=_utcnow)
     is_active = Column(Integer, default=1)
     role = Column(String, nullable=False, server_default="user", default="user")
+    organization_id = Column(Integer, nullable=True)  # Foreign key to organizations
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

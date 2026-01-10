@@ -19,7 +19,7 @@ client = TestClient(app)
 
 
 @pytest.mark.skipif(os.getenv('CI'), reason="Skip expensive LLM tests in CI")
-def test_llm_sequential_file_merge():
+def test_llm_sequential_file_merge(auth_headers):
     """
     Test that LLM can intelligently merge two similar files into one table.
     
@@ -111,7 +111,8 @@ def test_llm_sequential_file_merge():
             "analysis_mode": "auto_always",
             "conflict_resolution": "llm_decide",
             "max_iterations": 5
-        }
+        },
+        headers=auth_headers
     )
     
     print(f"  Response status: {response_a.status_code}")
@@ -132,7 +133,7 @@ def test_llm_sequential_file_merge():
     print("  " + "-"*76)
     
     # Check tables after first file
-    tables_response_1 = client.get("/tables")
+    tables_response_1 = client.get("/tables", headers=auth_headers)
     assert tables_response_1.status_code == 200
     tables_data_1 = tables_response_1.json()
     
@@ -184,7 +185,8 @@ def test_llm_sequential_file_merge():
             "analysis_mode": "auto_always",
             "conflict_resolution": "llm_decide",
             "max_iterations": 5
-        }
+        },
+        headers=auth_headers
     )
     
     print(f"  Response status: {response_b.status_code}")
@@ -212,7 +214,7 @@ def test_llm_sequential_file_merge():
     print("="*80)
     
     # Check tables after second file
-    tables_response_2 = client.get("/tables")
+    tables_response_2 = client.get("/tables", headers=auth_headers)
     assert tables_response_2.status_code == 200
     tables_data_2 = tables_response_2.json()
     
@@ -255,7 +257,7 @@ def test_llm_sequential_file_merge():
         f"Row count didn't increase! Was {first_table_rows}, now {final_table_rows}"
     
     # Get table schema
-    schema_response = client.get(f"/tables/{final_table_name}/schema")
+    schema_response = client.get(f"/tables/{final_table_name}/schema", headers=auth_headers)
     assert schema_response.status_code == 200
     schema_data = schema_response.json()
     
@@ -267,7 +269,7 @@ def test_llm_sequential_file_merge():
         print(f"    ... and {len(schema_data['columns']) - 10} more columns")
     
     # Get sample data
-    data_response = client.get(f"/tables/{final_table_name}?limit=5")
+    data_response = client.get(f"/tables/{final_table_name}?limit=5", headers=auth_headers)
     assert data_response.status_code == 200
     data_result = data_response.json()
     
@@ -293,7 +295,7 @@ def test_llm_sequential_file_merge():
     print("="*80)
     
     # Get all import history for this table
-    history_response = client.get(f"/tables/{final_table_name}/lineage")
+    history_response = client.get(f"/tables/{final_table_name}/lineage", headers=auth_headers)
     assert history_response.status_code == 200, f"Failed to get import history: {history_response.text}"
     
     history_data = history_response.json()
@@ -361,7 +363,7 @@ def test_llm_sequential_file_merge():
     print(f"  ✓ Total tracked rows match table rows: {total_tracked_rows}")
     
     # Test import statistics endpoint
-    stats_response = client.get("/import-statistics", params={"table_name": final_table_name})
+    stats_response = client.get("/import-statistics", params={"table_name": final_table_name}, headers=auth_headers)
     assert stats_response.status_code == 200
     stats_data = stats_response.json()
     
@@ -380,7 +382,7 @@ def test_llm_sequential_file_merge():
     print(f"\n  ✓ Import statistics calculated correctly")
     
     # Test individual import detail endpoint
-    first_import_detail = client.get(f"/import-history/{first_import['import_id']}")
+    first_import_detail = client.get(f"/import-history/{first_import['import_id']}", headers=auth_headers)
     assert first_import_detail.status_code == 200
     detail_data = first_import_detail.json()
     

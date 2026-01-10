@@ -198,6 +198,7 @@ def test_auto_execute_failure_marks_file_failed(
     monkeypatch,
     fake_storage_storage,
     in_memory_state,
+    auth_headers,
 ):
     # Disable auto-retry to keep control of the failure path
     monkeypatch.setattr(config.settings, "enable_auto_retry_failed_imports", False)
@@ -273,6 +274,7 @@ def test_auto_execute_failure_marks_file_failed(
             "conflict_resolution": "llm_decide",
             "max_iterations": "1",
         },
+        headers=auth_headers,
     )
 
     assert response.status_code == 200, response.text

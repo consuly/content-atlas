@@ -20,7 +20,7 @@ from tests.utils.system_tables import ensure_system_tables_ready
 client = TestClient(app)
 
 
-def test_headerless_file_merge_with_duplicates():
+def test_headerless_file_merge_with_duplicates(auth_headers):
     """
     Test comprehensive scenario with headerless file, date format differences, and duplicates.
     
@@ -133,7 +133,8 @@ def test_headerless_file_merge_with_duplicates():
             "analysis_mode": "auto_always",
             "conflict_resolution": "llm_decide",
             "max_iterations": 5
-        }
+        },
+        headers=auth_headers
     )
     
     print(f"  Response status: {response_a.status_code}")
@@ -162,7 +163,7 @@ def test_headerless_file_merge_with_duplicates():
     print("  " + "-"*76)
     
     # Check tables after first file
-    tables_response_1 = client.get("/tables")
+    tables_response_1 = client.get("/tables", headers=auth_headers)
     assert tables_response_1.status_code == 200
     tables_data_1 = tables_response_1.json()
     
@@ -218,7 +219,8 @@ def test_headerless_file_merge_with_duplicates():
             "analysis_mode": "auto_always",
             "conflict_resolution": "llm_decide",
             "max_iterations": 7  # More iterations for headerless + schema inference
-        }
+        },
+        headers=auth_headers
     )
     
     print(f"  Response status: {response_b.status_code}")
@@ -295,7 +297,7 @@ def test_headerless_file_merge_with_duplicates():
     print("="*80)
     
     # Check tables after second file
-    tables_response_2 = client.get("/tables")
+    tables_response_2 = client.get("/tables", headers=auth_headers)
     assert tables_response_2.status_code == 200
     tables_data_2 = tables_response_2.json()
     
@@ -356,7 +358,7 @@ def test_headerless_file_merge_with_duplicates():
     print("="*80)
     
     # Get all import history for this table
-    history_response = client.get(f"/tables/{final_table_name}/lineage")
+    history_response = client.get(f"/tables/{final_table_name}/lineage", headers=auth_headers)
     assert history_response.status_code == 200, f"Failed to get import history: {history_response.text}"
     
     history_data = history_response.json()
@@ -455,7 +457,7 @@ def test_headerless_file_merge_with_duplicates():
     print("="*80)
     
     # Get sample data to check date formats
-    data_response = client.get(f"/tables/{final_table_name}?limit=10")
+    data_response = client.get(f"/tables/{final_table_name}?limit=10", headers=auth_headers)
     assert data_response.status_code == 200
     data_result = data_response.json()
     

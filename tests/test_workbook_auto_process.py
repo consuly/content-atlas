@@ -14,11 +14,12 @@ from app.main import app
 client = TestClient(app)
 
 
-def _upload_workbook(bytes_data: bytes, filename: str) -> str:
+def _upload_workbook(bytes_data: bytes, filename: str, headers: dict = None) -> str:
     response = client.post(
         "/upload-to-b2",
         data={"allow_duplicate": "true"},
         files={"file": (filename, io.BytesIO(bytes_data), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -26,12 +27,12 @@ def _upload_workbook(bytes_data: bytes, filename: str) -> str:
     return payload["files"][0]["id"]
 
 
-def _wait_for_job(job_id: str, timeout: float = 5.0) -> dict:
+def _wait_for_job(job_id: str, timeout: float = 5.0, headers: dict = None) -> dict:
     """Poll import job until completion or timeout."""
     deadline = time.monotonic() + timeout
     last_payload = None
     while time.monotonic() < deadline:
-        resp = client.get(f"/import-jobs/{job_id}")
+        resp = client.get(f"/import-jobs/{job_id}", headers=headers)
         assert resp.status_code == 200, resp.text
         last_payload = resp.json()
         job = last_payload.get("job") or {}
@@ -287,7 +288,7 @@ def _upsert_clients(store: Dict[str, Dict], records):
             }
 
 
-def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, in_memory_state):
+def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, in_memory_state, auth_headers):
     import app.api.routers.analysis.routes as analysis_module
 
     target_table = "clients_workbook"
@@ -322,9 +323,9 @@ def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, 
     workbook_path = os.path.join("tests", "xlsx", "test-2-tabs.xlsx")
     with open(workbook_path, "rb") as handle:
         file_bytes = handle.read()
-    file_id = _upload_workbook(file_bytes, filename="test-2-tabs.xlsx")
+    file_id = _upload_workbook(file_bytes, filename="test-2-tabs.xlsx", headers=auth_headers)
 
-    response = client.get(f"/workbooks/{file_id}/sheets")
+    response = client.get(f"/workbooks/{file_id}/sheets", headers=auth_headers)
     assert response.status_code == 200, response.text
     sheets = response.json()["sheets"]
     assert set(sheets) == {"Clients Oct", "Clients Nov"}
@@ -340,6 +341,7 @@ def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, 
             "target_table_name": target_table,
             "target_table_mode": "new",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -347,7 +349,7 @@ def test_auto_process_workbook_merges_sheets(monkeypatch, fake_storage_storage, 
     job_id: Optional[str] = payload.get("job_id")
     assert job_id
 
-    job = _wait_for_job(job_id)
+    job = _wait_for_job(job_id, headers=auth_headers)
     assert job["status"] == "succeeded"
     metadata = job["result_metadata"]
     assert metadata["processed_files"] == 2

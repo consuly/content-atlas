@@ -1661,6 +1661,7 @@ def execute_data_import(
     pre_parsed_records: Optional[List[Dict[str, Any]]] = None,
     pre_mapped: bool = False,
     job_id: Optional[str] = None,
+    organization_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Central function for all data imports.
@@ -1747,7 +1748,8 @@ def execute_data_import(
             file_hash=file_hash,
             source_path=source_path,
             mapping_config=mapping_config,
-            import_strategy=import_strategy
+            import_strategy=import_strategy,
+            organization_id=organization_id
         )
         
         logger.info(f"Starting import: {file_name} → {mapping_config.table_name} (strategy: {import_strategy})")
@@ -2236,6 +2238,7 @@ def execute_data_import(
                     file_name=file_name,
                     pre_mapped=True,
                     import_id=import_id,
+                    organization_id=organization_id,
                 )
             except ValueError as exc:
                 error_text = str(exc)

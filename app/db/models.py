@@ -260,9 +260,10 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
 
             columns_sql = ', '.join(columns)
 
-            # Add metadata columns for import tracking
+            # Add metadata columns for import tracking and multi-tenancy
             # These columns enable undo/rollback and change review functionality
-            index_name = f"idx_{_safe_identifier(table_name)}_import_id"
+            index_import = f"idx_{_safe_identifier(table_name)}_import_id"
+            index_org = f"idx_{_safe_identifier(table_name)}_organization_id"
             create_sql = f"""
             CREATE TABLE "{table_name}" (
                 _row_id SERIAL PRIMARY KEY,
@@ -270,11 +271,13 @@ def create_table_if_not_exists(engine: Engine, config: MappingConfig):
                 _import_id UUID NOT NULL REFERENCES import_history(import_id) ON DELETE CASCADE,
                 _imported_at TIMESTAMP DEFAULT NOW(),
                 _source_row_number INTEGER,
-                _corrections_applied JSONB
+                _corrections_applied JSONB,
+                _organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE
             );
             
-            -- Create index on import_id for efficient queries
-            CREATE INDEX {index_name} ON "{table_name}"(_import_id);
+            -- Create indexes for efficient queries
+            CREATE INDEX {index_import} ON "{table_name}"(_import_id);
+            CREATE INDEX {index_org} ON "{table_name}"(_organization_id);
             """
 
             conn.execute(text(create_sql))
@@ -907,6 +910,7 @@ def insert_records(
     pre_mapped: bool = False,
     import_id: Optional[str] = None,
     has_active_import: Optional[bool] = None,
+    organization_id: Optional[int] = None,
 ) -> Tuple[int, int]:
     """
     Insert records into the table with enhanced duplicate checking.
@@ -1069,10 +1073,10 @@ def insert_records(
 
     # Now perform the insert in a transaction
     # Get columns from first record, EXCLUDING any metadata that might already exist
-    METADATA_COLS = {'_import_id', '_source_row_number', '_corrections_applied', '_imported_at', '_row_id'}
+    METADATA_COLS = {'_import_id', '_source_row_number', '_corrections_applied', '_imported_at', '_row_id', '_organization_id'}
     columns = [col for col in records[0].keys() if col not in METADATA_COLS]
     # Add metadata columns (safe - no duplicates possible)
-    columns.extend(['_import_id', '_source_row_number', '_corrections_applied'])
+    columns.extend(['_import_id', '_source_row_number', '_corrections_applied', '_organization_id'])
     
     # Create safe bind parameter names to handle columns with spaces/special chars
     # Map original column name -> safe param name (e.g. "Primary Email" -> "p_0")
@@ -1115,6 +1119,7 @@ def insert_records(
                 coerced_record['_import_id'] = active_import_id
                 coerced_record['_source_row_number'] = row_num
                 coerced_record['_corrections_applied'] = json.dumps(corrections) if corrections else None
+                coerced_record['_organization_id'] = organization_id
 
                 # Remap record to use safe parameter names
                 safe_record = {param_map[col]: coerced_record.get(col) for col in columns}

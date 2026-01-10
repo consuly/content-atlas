@@ -32,18 +32,19 @@ def _build_zip(files):
             zf.writestr(name, content)
     return buffer.getvalue()
 
-def _upload_zip(zip_bytes, filename="batch.zip"):
+def _upload_zip(zip_bytes, filename="batch.zip", headers=None):
     response = client.post(
         "/upload-to-b2",
         data={"allow_duplicate": "true"},
         files={"file": (filename, io.BytesIO(zip_bytes), "application/zip")},
+        headers=headers,
     )
     assert response.status_code == 200
     return response.json()["files"][0]["id"]
 
-def _wait_for_job(job_id):
+def _wait_for_job(job_id, headers=None):
     for _ in range(60):
-        resp = client.get(f"/import-jobs/{job_id}")
+        resp = client.get(f"/import-jobs/{job_id}", headers=headers)
         job = resp.json().get("job")
         if job and job.get("status") in ("succeeded", "failed"):
             return job
@@ -75,7 +76,7 @@ def fake_storage(monkeypatch):
     monkeypatch.setattr("app.api.routers.analysis.routes._download_file_from_storage", fake_download)
     return storage
 
-def test_loose_matching_merges_tables(fake_storage, monkeypatch):
+def test_loose_matching_merges_tables(fake_storage, monkeypatch, auth_headers):
     """
     Test that a file with >90% similarity to an existing table is merged into it.
     
@@ -87,15 +88,15 @@ def test_loose_matching_merges_tables(fake_storage, monkeypatch):
 
     # Step 1: Import File A
     zip_a = _build_zip({"file_a.csv": CSV_CONTENT_A})
-    id_a = _upload_zip(zip_a, "file_a.zip")
+    id_a = _upload_zip(zip_a, "file_a.zip", headers=auth_headers)
     
     resp_a = client.post("/auto-process-archive", data={
         "file_id": id_a,
         "analysis_mode": "auto_always",
         "conflict_resolution": "llm_decide",
         "llm_instruction": "Keep only the primary email and phone number", # Simplify schema
-    })
-    job_a = _wait_for_job(resp_a.json()["job_id"])
+    }, headers=auth_headers)
+    job_a = _wait_for_job(resp_a.json()["job_id"], headers=auth_headers)
     assert job_a["status"] == "succeeded"
     
     results_a = job_a["result_metadata"]["results"]
@@ -111,15 +112,15 @@ def test_loose_matching_merges_tables(fake_storage, monkeypatch):
 
     # Step 2: Import File B (Loose match)
     zip_b = _build_zip({"file_b.csv": CSV_CONTENT_B})
-    id_b = _upload_zip(zip_b, "file_b.zip")
+    id_b = _upload_zip(zip_b, "file_b.zip", headers=auth_headers)
     
     resp_b = client.post("/auto-process-archive", data={
         "file_id": id_b,
         "analysis_mode": "auto_always",
         "conflict_resolution": "llm_decide",
         "llm_instruction": "Keep only the primary email and phone number",
-    })
-    job_b = _wait_for_job(resp_b.json()["job_id"])
+    }, headers=auth_headers)
+    job_b = _wait_for_job(resp_b.json()["job_id"], headers=auth_headers)
     assert job_b["status"] == "succeeded"
     
     results_b = job_b["result_metadata"]["results"]

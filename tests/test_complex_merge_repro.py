@@ -25,19 +25,20 @@ def _build_zip(file_map: Dict[str, str]) -> bytes:
             zf.writestr(archive_name, content)
     return buffer.getvalue()
 
-def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip") -> str:
+def _upload_zip(zip_bytes: bytes, filename: str = "batch.zip", headers: dict = None) -> str:
     response = client.post(
         "/upload-to-b2",
         data={"allow_duplicate": "true"},
         files={"file": (filename, io.BytesIO(zip_bytes), "application/zip")},
+        headers=headers,
     )
     assert response.status_code == 200, response.text
     return response.json()["files"][0]["id"]
 
-def _wait_for_job(job_id: str, timeout: float = 30.0) -> dict:
+def _wait_for_job(job_id: str, timeout: float = 30.0, headers: dict = None) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        resp = client.get(f"/import-jobs/{job_id}")
+        resp = client.get(f"/import-jobs/{job_id}", headers=headers)
         assert resp.status_code == 200
         job = resp.json().get("job")
         if job and job.get("status") in ("succeeded", "failed"):
@@ -74,7 +75,7 @@ def fake_storage(monkeypatch):
     monkeypatch.setattr("app.api.routers.analysis.routes._download_file_from_storage", fake_download)
     return storage
 
-def test_complex_merge_repro(fake_storage, monkeypatch):
+def test_complex_merge_repro(fake_storage, monkeypatch, auth_headers):
     # Disable retry for speed
     monkeypatch.setattr("app.core.config.settings.enable_auto_retry_failed_imports", False, raising=False)
 
@@ -82,7 +83,7 @@ def test_complex_merge_repro(fake_storage, monkeypatch):
         "complex_contacts_a.csv": CSV_CONTENT_A,
         "complex_contacts_b.csv": CSV_CONTENT_B
     })
-    archive_id = _upload_zip(zip_bytes, filename="complex_batch.zip")
+    archive_id = _upload_zip(zip_bytes, filename="complex_batch.zip", headers=auth_headers)
 
     response = client.post(
         "/auto-process-archive",
@@ -93,11 +94,12 @@ def test_complex_merge_repro(fake_storage, monkeypatch):
             "max_iterations": "5",
             "llm_instruction": "Keep only the primary email and phone number",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200
     job_id = response.json()["job_id"]
 
-    job = _wait_for_job(job_id)
+    job = _wait_for_job(job_id, headers=auth_headers)
     assert job["status"] == "succeeded", f"Job failed: {job.get('error_message')}"
 
     results = job["result_metadata"]["results"]

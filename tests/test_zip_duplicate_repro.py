@@ -11,12 +11,12 @@ from app.db.session import get_engine
 
 client = TestClient(app)
 
-def _wait_for_job(job_id: str, timeout: float = 30.0) -> dict:
+def _wait_for_job(job_id: str, timeout: float = 30.0, auth_headers: dict = None) -> dict:
     """Poll import job until completion or timeout."""
     deadline = time.monotonic() + timeout
     last_payload = None
     while time.monotonic() < deadline:
-        resp = client.get(f"/import-jobs/{job_id}")
+        resp = client.get(f"/import-jobs/{job_id}", headers=auth_headers)
         assert resp.status_code == 200, resp.text
         last_payload = resp.json()
         job = last_payload.get("job") or {}
@@ -72,7 +72,7 @@ def fake_storage(monkeypatch):
     
     return storage
 
-def test_zip_duplicate_detection_repro(monkeypatch, fake_storage):
+def test_zip_duplicate_detection_repro(monkeypatch, fake_storage, auth_headers):
     # 1. Setup Database
     engine = ensure_system_tables_ready()
     table_name = f"repro_zip_dupes_{int(time.time())}"
@@ -92,6 +92,7 @@ def test_zip_duplicate_detection_repro(monkeypatch, fake_storage):
         "/upload-to-b2",
         data={"allow_duplicate": "true"},
         files={"file": ("Mock-data_duplicate.zip", io.BytesIO(zip_bytes), "application/zip")},
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     file_id = response.json()["files"][0]["id"]
@@ -107,13 +108,14 @@ def test_zip_duplicate_detection_repro(monkeypatch, fake_storage):
             "target_table_name": table_name,
             "target_table_mode": "new",
         },
+        headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]
     
     # 4. Wait for Result
     print(f"Waiting for job {job_id}...")
-    job = _wait_for_job(job_id, timeout=120.0)  # Longer timeout for real LLM
+    job = _wait_for_job(job_id, timeout=120.0, auth_headers=auth_headers)  # Longer timeout for real LLM
     
     # 5. Verify Results
     print("JOB RESULT:", job)

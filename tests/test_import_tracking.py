@@ -81,7 +81,7 @@ class TestMetadataColumns:
         assert "_source_row_number" in columns, "Missing _source_row_number column"
         assert "_corrections_applied" in columns, "Missing _corrections_applied column"
     
-    def test_import_id_populated(self, cleanup_test_tables):
+    def test_import_id_populated(self, cleanup_test_tables, auth_headers):
         """Test that import_id is populated for all inserted rows."""
         # Upload a file and verify import_id is set
         csv_content = """name,age
@@ -100,7 +100,7 @@ Bob Wilson,35
             })
         }
         
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
         
         # Query the table and verify import_id is set
@@ -140,7 +140,7 @@ Bob Wilson,35
 class TestCorrectionsTracking:
     """Test that corrections are tracked during import."""
     
-    def test_type_coercion_tracked(self, cleanup_test_tables):
+    def test_type_coercion_tracked(self, cleanup_test_tables, auth_headers):
         """Test that type coercion corrections are logged."""
         # CSV with float values that need INTEGER coercion
         csv_content = """name,age
@@ -158,7 +158,7 @@ Jane Smith,25.5
             })
         }
         
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
         
         # Check corrections were logged
@@ -174,7 +174,7 @@ Jane Smith,25.5
                 assert corrections["age"]["before"] == "30.0"
                 assert corrections["age"]["after"] == 30
     
-    def test_datetime_conversion_tracked(self, cleanup_test_tables):
+    def test_datetime_conversion_tracked(self, cleanup_test_tables, auth_headers):
         """Test that datetime conversions are logged."""
         csv_content = """name,event_date
 John Doe,10/09/2025 8:11 PM
@@ -199,7 +199,7 @@ Jane Smith,2025-10-10
             })
         }
         
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
         
         # Check corrections were logged
@@ -213,7 +213,7 @@ Jane Smith,2025-10-10
                 assert "event_date" in corrections, "Should have correction for event_date field"
                 assert corrections["event_date"]["correction_type"] == "datetime_standardization"
     
-    def test_no_corrections_null_field(self, cleanup_test_tables):
+    def test_no_corrections_null_field(self, cleanup_test_tables, auth_headers):
         """Test that _corrections_applied is NULL when no corrections occur."""
         csv_content = """name,age
 John Doe,30
@@ -230,7 +230,7 @@ Jane Smith,25
             })
         }
         
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
         
         # Check that corrections field is NULL
@@ -246,7 +246,7 @@ Jane Smith,25
 class TestCascadingDelete:
     """Test that cascading deletes work correctly."""
     
-    def test_cascading_delete_removes_data(self, cleanup_test_tables):
+    def test_cascading_delete_removes_data(self, cleanup_test_tables, auth_headers):
         """Test that deleting import_history cascades to data rows."""
         # Upload a file
         csv_content = """name,age
@@ -264,7 +264,7 @@ Jane Smith,25
             })
         }
         
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
         
         # Get the import_id
@@ -293,7 +293,7 @@ Jane Smith,25
 class TestMultipleImports:
     """Test handling multiple imports to the same table."""
     
-    def test_multiple_imports_tracked_separately(self, cleanup_test_tables):
+    def test_multiple_imports_tracked_separately(self, cleanup_test_tables, auth_headers):
         """Test that multiple imports to same table are tracked separately."""
         # First import
         csv_content1 = """name,age
@@ -310,7 +310,7 @@ John Doe,30
             })
         }
         
-        response1 = client.post("/map-data", files=files1, data=data)
+        response1 = client.post("/map-data", files=files1, data=data, headers=auth_headers)
         assert response1.status_code == 200
         
         # Second import
@@ -320,7 +320,7 @@ Bob Wilson,35
 """
         
         files2 = {"file": ("test2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
-        response2 = client.post("/map-data", files=files2, data=data)
+        response2 = client.post("/map-data", files=files2, data=data, headers=auth_headers)
         assert response2.status_code == 200
         
         # Verify both imports are tracked
@@ -340,7 +340,7 @@ Bob Wilson,35
                 count = result.scalar()
                 assert count in [1, 2], "Each import should have 1 or 2 rows"
     
-    def test_selective_undo(self, cleanup_test_tables):
+    def test_selective_undo(self, cleanup_test_tables, auth_headers):
         """Test that we can undo one import without affecting others."""
         # First import
         csv_content1 = """name,age
@@ -357,7 +357,7 @@ John Doe,30
             })
         }
         
-        response1 = client.post("/map-data", files=files1, data=data)
+        response1 = client.post("/map-data", files=files1, data=data, headers=auth_headers)
         assert response1.status_code == 200
         
         # Second import
@@ -366,7 +366,7 @@ Jane Smith,25
 """
         
         files2 = {"file": ("test2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
-        response2 = client.post("/map-data", files=files2, data=data)
+        response2 = client.post("/map-data", files=files2, data=data, headers=auth_headers)
         assert response2.status_code == 200
         
         # Get import IDs
@@ -395,7 +395,7 @@ Jane Smith,25
 class TestSystemTableRecovery:
     """Ensure system tracking tables recover after external resets."""
 
-    def test_import_history_recreated_after_reset(self, cleanup_test_tables):
+    def test_import_history_recreated_after_reset(self, cleanup_test_tables, auth_headers):
         """Import should recreate tracking tables if they were dropped during runtime."""
         engine = get_engine()
         with engine.begin() as conn:
@@ -415,7 +415,7 @@ Alex Reset,42
             })
         }
 
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
 
         with engine.connect() as conn:
@@ -434,7 +434,7 @@ Alex Reset,42
 class TestMetadataHidden:
     """Test that metadata columns are hidden from user queries."""
     
-    def test_metadata_hidden_in_table_rows_endpoint(self, cleanup_test_tables):
+    def test_metadata_hidden_in_table_rows_endpoint(self, cleanup_test_tables, auth_headers):
         """Test that /tables/{table_name} endpoint filters out metadata."""
         # Upload a file
         csv_content = """name,age
@@ -451,11 +451,11 @@ John Doe,30
             })
         }
         
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 200
         
         # Query via API endpoint (correct endpoint without /rows suffix)
-        response = client.get("/tables/test_metadata_hidden")
+        response = client.get("/tables/test_metadata_hidden", headers=auth_headers)
         assert response.status_code == 200
         
         data = response.json()
@@ -477,7 +477,7 @@ John Doe,30
 class TestImportLineage:
     """Test querying import lineage for tables."""
     
-    def test_get_table_import_history(self, cleanup_test_tables):
+    def test_get_table_import_history(self, cleanup_test_tables, auth_headers):
         """Test retrieving all imports for a specific table."""
         # Make two imports
         for i in range(2):
@@ -494,7 +494,7 @@ Person{i},3{i}
                 })
             }
             
-            response = client.post("/map-data", files=files, data=data)
+            response = client.post("/map-data", files=files, data=data, headers=auth_headers)
             assert response.status_code == 200
         
         # Query import history

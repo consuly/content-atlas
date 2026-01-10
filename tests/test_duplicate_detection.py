@@ -12,7 +12,7 @@ from app.domain.imports.history import get_import_history, list_duplicate_rows
 
 client = TestClient(app)
 
-def test_duplicate_detection_file_level():
+def test_duplicate_detection_file_level(auth_headers):
     """Test file-level duplicate detection prevents importing the same file twice."""
     
     # Create a small test CSV file
@@ -49,19 +49,19 @@ Jane Smith,jane@example.com,25
         }}"""
     }
 
-    response = client.post("/map-data", files=files, data=data)
+    response = client.post("/map-data", files=files, data=data, headers=auth_headers)
     # First upload should succeed (or fail due to DB issues, but not duplicates)
     assert response.status_code in [200, 500]
 
     # Second upload of same file should fail with duplicate error
     if response.status_code == 200:  # Only test duplicate if first succeeded
-        response = client.post("/map-data", files=files, data=data)
+        response = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response.status_code == 409  # Conflict - file already imported
         data = response.json()
         assert "already been imported" in data["detail"]
 
 
-def test_duplicate_detection_row_level():
+def test_duplicate_detection_row_level(auth_headers):
     """Test row-level duplicate detection handles overlapping records correctly."""
     
     # Guardrail: disallow disabling file-level check unless retry flag is set
@@ -75,7 +75,7 @@ def test_duplicate_detection_row_level():
             "duplicate_check": {"enabled": true, "check_file_level": false}
         }"""
     }
-    guard_response = client.post("/map-data", files=guard_files, data=guard_data)
+    guard_response = client.post("/map-data", files=guard_files, data=guard_data, headers=auth_headers)
     assert guard_response.status_code == 403
     assert "allow_file_level_retry" in guard_response.json()["detail"]
 
@@ -106,7 +106,7 @@ Jane Smith,jane@example.com,25
         }"""
     }
 
-    response1 = client.post("/map-data", files=files1, data=data)
+    response1 = client.post("/map-data", files=files1, data=data, headers=auth_headers)
     assert response1.status_code in [200, 500]
 
     # Second upload with overlapping data
@@ -117,7 +117,7 @@ Bob Wilson,bob@example.com,35
 """
 
         files2 = {"file": ("test2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
-        response2 = client.post("/map-data", files=files2, data=data)
+        response2 = client.post("/map-data", files=files2, data=data, headers=auth_headers)
         
         # The new duplicate detection system filters out duplicates and inserts only non-duplicates
         # It returns 200 OK with information about what was processed
@@ -168,7 +168,7 @@ Bob Wilson,bob@example.com,35
         assert duplicate_rows[0]["existing_row"]["record"]["email"] == "john@example.com"
 
         # Verify duplicate endpoint
-        dup_response = client.get(f"/import-history/{latest_import['import_id']}/duplicates")
+        dup_response = client.get(f"/import-history/{latest_import['import_id']}/duplicates", headers=auth_headers)
         print("duplicates endpoint:", dup_response.status_code, dup_response.text)
         assert dup_response.status_code == 200
         dup_data = dup_response.json()
@@ -179,7 +179,7 @@ Bob Wilson,bob@example.com,35
 
         duplicate_id = dup_data["duplicates"][0]["id"]
 
-        detail_resp = client.get(f"/import-history/{latest_import['import_id']}/duplicates/{duplicate_id}")
+        detail_resp = client.get(f"/import-history/{latest_import['import_id']}/duplicates/{duplicate_id}", headers=auth_headers)
         assert detail_resp.status_code == 200, detail_resp.text
         detail_data = detail_resp.json()
         assert detail_data["duplicate"]["record"]["name"] == "John Doe"
@@ -193,7 +193,8 @@ Bob Wilson,bob@example.com,35
         }
         merge_resp = client.post(
             f"/import-history/{latest_import['import_id']}/duplicates/{duplicate_id}/merge",
-            json=merge_payload
+            json=merge_payload,
+            headers=auth_headers
         )
         assert merge_resp.status_code == 200, merge_resp.text
         merge_data = merge_resp.json()
@@ -201,7 +202,7 @@ Bob Wilson,bob@example.com,35
         assert "email" in merge_data["updated_columns"]
 
         # After merge, duplicates should be cleared
-        dup_after_merge = client.get(f"/import-history/{latest_import['import_id']}/duplicates").json()
+        dup_after_merge = client.get(f"/import-history/{latest_import['import_id']}/duplicates", headers=auth_headers).json()
         assert dup_after_merge["total_count"] == 0
         assert dup_after_merge["duplicates"] == []
 
@@ -209,7 +210,7 @@ Bob Wilson,bob@example.com,35
         assert updated_history[0]["duplicates_found"] == 0
 
 
-def test_force_import_bypasses_duplicates():
+def test_force_import_bypasses_duplicates(auth_headers):
     """Test that force_import bypasses duplicate checking."""
     
     # Clean up first - be more thorough
@@ -238,7 +239,7 @@ John Doe,john@example.com,30
         }"""
     }
 
-    response1 = client.post("/map-data", files=files, data=data)
+    response1 = client.post("/map-data", files=files, data=data, headers=auth_headers)
     assert response1.status_code in [200, 500]
 
     # Second upload with force_import should succeed even with duplicates
@@ -252,11 +253,11 @@ John Doe,john@example.com,30
             }"""
         }
 
-        response2 = client.post("/map-data", files=files, data=data_force)
+        response2 = client.post("/map-data", files=files, data=data_force, headers=auth_headers)
         assert response2.status_code in [200, 500]  # Should succeed with force_import
 
 
-def test_custom_uniqueness_columns():
+def test_custom_uniqueness_columns(auth_headers):
     """Test duplicate detection with custom uniqueness columns."""
     
     # Clean up first - be more thorough
@@ -286,7 +287,7 @@ Jane Smith,jane@example.com,25
         }"""
     }
 
-    response1 = client.post("/map-data", files=files1, data=data)
+    response1 = client.post("/map-data", files=files1, data=data, headers=auth_headers)
     assert response1.status_code in [200, 500]
 
     # Second upload with same email - system now filters duplicates and continues
@@ -297,7 +298,7 @@ Alice Brown,alice@example.com,28
 """
 
         files2 = {"file": ("test2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
-        response2 = client.post("/map-data", files=files2, data=data)
+        response2 = client.post("/map-data", files=files2, data=data, headers=auth_headers)
         
         # The new duplicate detection system filters out duplicates and inserts only non-duplicates
         # It returns 200 OK with information about what was processed
@@ -311,7 +312,7 @@ Alice Brown,alice@example.com,28
         assert result["duplicates_skipped"] == 1, f"Expected 1 duplicate skipped, got {result['duplicates_skipped']}"
 
 
-def test_small_file_duplicate_detection():
+def test_small_file_duplicate_detection(auth_headers):
     """Test duplicate detection using the small test file for faster execution."""
     
     # Use the small test file we created
@@ -348,18 +349,18 @@ def test_small_file_duplicate_detection():
         }"""
     }
 
-    response1 = client.post("/map-data", files=files, data=data)
+    response1 = client.post("/map-data", files=files, data=data, headers=auth_headers)
     assert response1.status_code in [200, 500]
 
     # Second upload should fail (same file hash)
     if response1.status_code == 200:
-        response2 = client.post("/map-data", files=files, data=data)
+        response2 = client.post("/map-data", files=files, data=data, headers=auth_headers)
         assert response2.status_code == 409  # File already imported
         data = response2.json()
         assert "already been imported" in data["detail"]
 
 
-def test_duplicate_file_preflight_does_not_create_extra_history():
+def test_duplicate_file_preflight_does_not_create_extra_history(auth_headers):
     """Second upload of identical file should short-circuit before creating a new import history row."""
     
     table_name = f"test_preflight_{int(time.time())}"
@@ -384,7 +385,7 @@ def test_duplicate_file_preflight_does_not_create_extra_history():
     except Exception:
         pass
 
-    response1 = client.post("/map-data", files=files, data={"mapping_json": mapping_json})
+    response1 = client.post("/map-data", files=files, data={"mapping_json": mapping_json}, headers=auth_headers)
     assert response1.status_code in [200, 500]
 
     if response1.status_code != 200:
@@ -397,7 +398,7 @@ def test_duplicate_file_preflight_does_not_create_extra_history():
             {"table_name": table_name},
         ).scalar() or 0
 
-    response2 = client.post("/map-data", files=files, data={"mapping_json": mapping_json})
+    response2 = client.post("/map-data", files=files, data={"mapping_json": mapping_json}, headers=auth_headers)
     assert response2.status_code == 409, response2.text
 
     with engine.connect() as conn:
@@ -409,7 +410,7 @@ def test_duplicate_file_preflight_does_not_create_extra_history():
     assert history_count_after == history_count_before
 
 
-def test_duplicate_auto_merge_flow():
+def test_duplicate_auto_merge_flow(auth_headers):
     """Simulate LLM/auto flow: detect duplicate, inspect existing row, and merge via API."""
     
     table_name = f"test_row_duplicates_auto_{int(time.time())}"
@@ -435,7 +436,7 @@ def test_duplicate_auto_merge_flow():
     # First upload (baseline row)
     csv_content1 = "name,email,age\nJohn Doe,john@example.com,30\n"
     files1 = {"file": ("auto1.csv", io.BytesIO(csv_content1.encode()), "text/csv")}
-    response1 = client.post("/map-data", files=files1, data={"mapping_json": mapping_json})
+    response1 = client.post("/map-data", files=files1, data={"mapping_json": mapping_json}, headers=auth_headers)
     assert response1.status_code in [200, 500]
 
     if response1.status_code != 200:
@@ -444,7 +445,7 @@ def test_duplicate_auto_merge_flow():
     # Second upload with updated data for same email to trigger duplicate
     csv_content2 = "name,email,age\nJohn Doe,john@example.com,31\n"
     files2 = {"file": ("auto2.csv", io.BytesIO(csv_content2.encode()), "text/csv")}
-    response2 = client.post("/map-data", files=files2, data={"mapping_json": mapping_json})
+    response2 = client.post("/map-data", files=files2, data={"mapping_json": mapping_json}, headers=auth_headers)
     assert response2.status_code == 200, response2.text
 
     result = response2.json()
@@ -464,11 +465,12 @@ def test_duplicate_auto_merge_flow():
     merge_resp = client.post(
         f"/import-history/{import_id}/duplicates/{duplicate_id}/merge",
         json=merge_payload,
+        headers=auth_headers
     )
     assert merge_resp.status_code == 200, merge_resp.text
 
     # After merge, duplicates should clear
-    dup_after_merge = client.get(f"/import-history/{import_id}/duplicates").json()
+    dup_after_merge = client.get(f"/import-history/{import_id}/duplicates", headers=auth_headers).json()
     assert dup_after_merge["total_count"] == 0
     assert dup_after_merge["duplicates"] == []
 
